@@ -280,10 +280,10 @@ class StreamCardController(StreamingController):
         """Native model reasoning delta (incremental append)."""
         if not self.enabled:
             return False
-        if not self._cfg.show_reasoning:
-            return False
         session = self._resolve_session(message_id, session_key)
         if session is None or session.guard.should_skip("on_reasoning"):
+            return False
+        if not self._cfg.show_reasoning:
             return False
 
         if session.segment_state is None:

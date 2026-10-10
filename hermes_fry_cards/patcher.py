@@ -83,8 +83,18 @@ def _module_to_path(module_name: str) -> Path:
 # 候选代码根目录，按优先级排列（来源: Hermes 官方安装文档 Install Layout）。
 # - per-user git installer: <HERMES_HOME>/hermes-agent/
 # - root-mode (sudo curl|bash): /usr/local/lib/hermes-agent/
+# - 官方 Docker 镜像等非常规布局: 从已安装 `gateway` 包位置反推（如 /opt/hermes）
 def _code_roots() -> list[Path]:
-    return [hermes_home() / "hermes-agent", Path("/usr/local/lib/hermes-agent")]
+    roots = [hermes_home() / "hermes-agent", Path("/usr/local/lib/hermes-agent")]
+    try:
+        spec = importlib.util.find_spec("gateway")
+        for location in (spec.submodule_search_locations or []) if spec else []:
+            root = Path(location).parent
+            if root not in roots:
+                roots.append(root)
+    except Exception:
+        _logger.debug("gateway root discovery failed", exc_info=True)
+    return roots
 
 
 # venv 内 python 解释器候选（覆盖 venv/.venv 命名变体）。

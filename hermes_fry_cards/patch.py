@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
+from datetime import datetime
 from functools import wraps
 from inspect import iscoroutinefunction
 from typing import Any
@@ -425,6 +426,9 @@ def on_cron_deliver(
         ctrl = get_controller()
         if not ctrl.enabled:
             return False
+        # 头部时间取投递时刻：注入点传入的是 job.next_run_at（下一次计划时刻，
+        # 永远是未来时间）；last_run_at 在 _record_run_outcome 时才写入，投递时还是上一轮的值。
+        run_time = datetime.now().astimezone().isoformat()
         return bool(ctrl.on_cron_deliver(
             chat_id=chat_id, content=content, loop=loop,
             task_name=task_name, run_time=run_time,

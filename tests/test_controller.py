@@ -9,7 +9,7 @@ import time
 from contextlib import nullcontext
 from contextvars import ContextVar
 from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
@@ -1262,6 +1262,15 @@ class TestDispatch:
         ctrl._sessions["msg_d"] = session
         assert getattr(ctrl, event)(message_id="msg_d", **kwargs) is True
         assert session.segment_state.segments[0].type == seg_type
+
+    def test_on_reasoning_unknown_session_skips_config_read(self) -> None:
+        """#17: 非目标会话早退，不求值 show_reasoning（每个 delta 不再重读配置）."""
+        ctrl = _setup_ctrl()
+        boom = PropertyMock(
+            side_effect=AssertionError("show_reasoning evaluated before session resolution")
+        )
+        with patch.object(type(ctrl._cfg), "show_reasoning", boom):
+            assert ctrl.on_reasoning(message_id="missing", text="r") is False
 
     def test_thinking_dispatches(self) -> None:
         ctrl = _setup_ctrl()
