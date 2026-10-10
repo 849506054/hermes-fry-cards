@@ -2575,3 +2575,35 @@ def test_missing_duration_treated_as_quick_when_threshold_set() -> None:
     ctrl._cfg = _mock_cfg(header_enabled=True, min_duration=5.0)
     # footer 无 duration 字段 → elapsed=0 → 视为快回复隐藏
     assert ctrl._complete_header_enabled(_session_with_duration(None), []) is False
+
+
+class TestOverflowFallbackReplace:
+    """#22 请求 3：封卡失败 3 次后整卡替换为降级提示卡."""
+
+    @pytest.mark.asyncio
+    async def test_replaces_card_after_retries_exhausted(self) -> None:
+        ctrl = _setup_ctrl()
+        client = ctrl._client
+        client.cardkit_close_streaming = AsyncMock()
+        attempts: list[dict] = []
+
+        async def fail_update(card_id: str, card: dict, **kwargs: object) -> None:
+            attempts.append(card)
+            if len(attempts) <= 3:
+                raise FeishuAPIError("element exceeds the limit", code=300305)
+
+        client.cardkit_update = fail_update
+
+        session = _make_session("msg_ofl")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_ofl"
+        ctrl._sessions["msg_ofl"] = session
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            assert await ctrl._do_complete_card(session) is False
+        assert session.state == SessionState.FAILED
+        # 3 次全量重建失败 + 第 4 次降级替换成功
+        assert len(attempts) == 4
+        fallback = attempts[-1]
+        assert fallback["header"]["template"] == "red"
+        assert "exceeded the Feishu card element limit" in fallback["body"]["elements"][0]["content"]

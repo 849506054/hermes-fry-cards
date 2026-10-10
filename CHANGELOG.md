@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.11] - 2026-10-10
+
+### 变更 / Changed
+- **300305 估算对照日志**（#22 请求 1）:`cardkit_batch_update` 失败告警新增
+  `new_est=[el_id~estimate,...]` 逐项估算;`complete attempt N failed` 告警新增
+  `card_elements`（完成态重建卡片真实元素数，含长文切块二次膨胀）与 `tracked`
+  （流式期追踪估算）两个字段——两条日志配对即可定位低估来自流式估算还是完成态重建。
+
+### 新增 / Added
+- **封卡失败整卡降级替换**（#22 请求 3):3 次 `complete` 重建均失败（典型 300305）
+  后,在 loading 清理与 `close_streaming` 之外追加一步:用
+  `build_overflow_fallback_card()`(红色 header + 双语提示)整卡替换失控的流式卡,
+  提示用户完整内容以纯文本在下方送达,避免聊天里出现「半封卡片 + 纯文本」两张内容
+  重叠的实体。(注:低估的主修复方向待上述日志定位后另行处理;#18 原生 table 已显著
+  缩小完成态表格路径的元素数。)
+
+---
+
 ## [0.4.10] - 2026-10-10
 
 ### 修复 / Fixed

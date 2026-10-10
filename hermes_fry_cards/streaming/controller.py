@@ -7,7 +7,15 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-from ..cardkit.builder import build_background_card, build_complete_card, build_cron_card, build_streaming_card_v2, LOADING_ELEMENT_ID, TOOL_PANEL_ELEMENT_ID
+from ..cardkit.builder import (
+    LOADING_ELEMENT_ID,
+    TOOL_PANEL_ELEMENT_ID,
+    build_background_card,
+    build_complete_card,
+    build_cron_card,
+    build_overflow_fallback_card,
+    build_streaming_card_v2,
+)
 from ..cardkit.markdown import (
     _downgrade_tables,
     clamp_utf8,
@@ -503,7 +511,7 @@ class StreamingController:
             action_summary = summarize_actions(actions)
             _logger.warning(
                 "CardKit batch update failed: %s card=%s seq=%d split=%d elements=%d "
-                "missing=%s missing_state=%s new=[%s] tool_updates=[%s] %s",
+                "missing=%s missing_state=%s new=[%s] new_est=[%s] tool_updates=[%s] %s",
                 e,
                 session.card_id[:12],
                 session.sequence,
@@ -512,6 +520,8 @@ class StreamingController:
                 missing_el_id or "-",
                 segment_state_for_log(segments, missing_el_id),
                 compact_ids(new_el_ids),
+                # 估算量一并打出（#22）：判假 300305 低估来源需要 elements 与逐项估算对照
+                compact_ids([f"{el_id}~{est}" for el_id, est in new_el_estimates.items()]),
                 compact_ids([seg.el_id for seg in updated_tool_segs]),
                 action_summary,
                 exc_info=True,
@@ -970,6 +980,9 @@ class StreamingController:
         )
 
         streaming_closed = False
+        # #22：重建卡片的真实元素数（含完成态长文切块二次膨胀）与流式期估算
+        # tracked 对照打出，用于定位 300305 的低谷来自流式估算还是完成态重建。
+        card_elements = len(card.get("body", {}).get("elements", []))
         for attempt in range(3):
             try:
                 assert self._client is not None
@@ -991,12 +1004,15 @@ class StreamingController:
                 return True
             except FeishuAPIError as e:
                 _logger.warning(
-                    "CardKit complete attempt %d failed: code=%s msg=%s card_id=%s seq=%d",
+                    "CardKit complete attempt %d failed: code=%s msg=%s card_id=%s seq=%d "
+                    "card_elements=%d tracked=%d",
                     attempt,
                     e.code,
                     e,
                     session.card_id,
                     session.sequence,
+                    card_elements,
+                    session.element_count,
                     exc_info=True,
                 )
                 if session.guard.terminate("_do_complete_card", e):
@@ -1006,12 +1022,15 @@ class StreamingController:
                 continue
             except Exception as e:
                 _logger.warning(
-                    "CardKit complete attempt %d failed: %s: %s card_id=%s seq=%d",
+                    "CardKit complete attempt %d failed: %s: %s card_id=%s seq=%d "
+                    "card_elements=%d tracked=%d",
                     attempt,
                     type(e).__name__,
                     e,
                     session.card_id,
                     session.sequence,
+                    card_elements,
+                    session.element_count,
                     exc_info=True,
                 )
                 if attempt < 2:
@@ -1039,6 +1058,21 @@ class StreamingController:
                     exc_info=True,
                 )
             await self._remove_loading_icon(session.card_id, session.sequence + 1)
+            # #22：封卡失败后失控的流式卡会留在聊天里、正文又经纯文本重发一遍——
+            # 用一张小降级卡整卡替换，提示用户内容在下方，避免两张内容重叠的实体。
+            try:
+                session.sequence += 1
+                await self._client.cardkit_update(
+                    session.card_id,
+                    build_overflow_fallback_card(),
+                    sequence=session.sequence,
+                )
+            except Exception:
+                _logger.warning(
+                    "CardKit overflow fallback replace failed for card %s",
+                    session.card_id[:12],
+                    exc_info=True,
+                )
         session.mark_failed(reason="complete_failed_after_retries")
         return False
 
