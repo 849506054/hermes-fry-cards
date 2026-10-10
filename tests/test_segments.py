@@ -256,3 +256,68 @@ class TestAnswerSegmentCap:
             state.on_answer_delta(f"a{i} ")
             state.on_tool_event(i + 1)
         assert sum(1 for s in state.segments if s.type == SegmentType.ANSWER) == 2
+
+
+class TestCompletionOverlapDedup:
+    """流式丢尾时 on_completion_answer 必须原地接上，而不是追加第二段（#19）。
+
+    回归：长回复只流到 985/1097 字就收尾（丢尾）时，原 endswith 守卫只认
+    「流式段以完整完成文本结尾」，判假 → 完整文本被 _new_answer 追加成第二段
+    ANSWER，封卡后正文出现两遍。
+    """
+
+    @staticmethod
+    def _answer_texts(state: SegmentState) -> list[str]:
+        return [s.text for s in state.segments if s.type == SegmentType.ANSWER]
+
+    def test_lagging_stream_merged_in_place(self) -> None:
+        """场景 B：流式落后（本次事故形态）→ 单段完整文本."""
+        final = "答案" + "正文" * 500
+        state = SegmentState()
+        state.on_answer_delta(final[:985])
+        state.on_completion_answer(final)
+        assert self._answer_texts(state) == [final]
+
+    def test_fully_streamed_still_noop(self) -> None:
+        """场景 A：流式已完整送达 → endswith 守卫吞掉，1 段不变."""
+        final = "答案" + "正文" * 500
+        state = SegmentState()
+        state.on_answer_delta(final)
+        state.on_completion_answer(final)
+        assert self._answer_texts(state) == [final]
+
+    def test_interlude_then_final_keeps_two_segments(self) -> None:
+        """场景 C：工具间旁白 + 最终答案（#13 场景）→ 旁白保留，不往回合并."""
+        interlude = "调用工具中"
+        final = "答案" + "正文" * 500
+        state = SegmentState()
+        state.on_answer_delta(interlude)
+        state.on_tool_event(1)
+        state.on_completion_answer(final)
+        assert self._answer_texts(state) == [interlude, final]
+
+    def test_completion_replay_is_idempotent(self) -> None:
+        """场景 D：完成回调重放同一文本 → 仍 1 段."""
+        final = "答案" + "正文" * 500
+        state = SegmentState()
+        state.on_answer_delta(final[:985])
+        state.on_completion_answer(final)
+        state.on_completion_answer(final)
+        assert self._answer_texts(state) == [final]
+
+    def test_interlude_and_lagging_merged_via_overlap(self) -> None:
+        """场景 E：旁白与落后答案同段 → 去重叠后原地接上，旁白不丢."""
+        interlude = "过渡语。"
+        final = "答案" + "正文" * 500
+        state = SegmentState()
+        state.on_answer_delta(interlude + final[:985])
+        state.on_completion_answer(final)
+        assert self._answer_texts(state) == [interlude + final]
+
+    def test_short_coincidental_overlap_not_merged(self) -> None:
+        """场景 F：偶然短重叠（<8 字）→ 不吞并，按新段追加."""
+        state = SegmentState()
+        state.on_answer_delta("第一段尾。")
+        state.on_tool_event(1)
+        state.on_completion_answer("。完全不同的完成文本(长度足够超过阈值)")
+        assert self._answer_texts(state) == ["第一段尾。", "。完全不同的完成文本(长度足够超过阈值)"]
