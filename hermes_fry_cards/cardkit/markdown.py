@@ -24,6 +24,8 @@ __all__ = [
     "_strip_invalid_image_keys",
     "clamp_utf8",
     "optimize_markdown_style",
+    "parse_table_block",
+    "split_markdown_tables",
 ]
 
 
@@ -207,6 +209,40 @@ def _find_tables_outside_code_blocks(text: str) -> list[tuple[int, int, str]]:
         for block in _scan_markdown_blocks(text)
         if block.kind == "table"
     ]
+
+
+def parse_table_block(table_text: str) -> tuple[list[str], list[list[str]]] | None:
+    """markdown 表格块 → (表头, 数据行)；解析失败返回 None.
+
+    第 2 行是 ``---|---`` 分隔行，直接丢弃。
+    """
+    lines = [line for line in table_text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    header = _parse_markdown_row(lines[0])
+    if not header:
+        return None
+    rows: list[list[str]] = []
+    for line in lines[2:]:
+        cells = _parse_markdown_row(line)
+        if cells:
+            rows.append(cells)
+    return header, rows
+
+
+def split_markdown_tables(text: str) -> list[tuple[str, str]]:
+    """正文 → ``[("md"|"table", 片段)]`` 有序序列（表格解析失败按 md 处理）.
+
+    渲染层据此把表格片段换成飞书原生 table 元素，其余文本仍走 markdown 元素。
+    """
+    parts: list[tuple[str, str]] = []
+    for block in _scan_markdown_blocks(text):
+        kind = "table" if block.kind == "table" and parse_table_block(block.text) else "md"
+        if parts and parts[-1][0] == kind == "md":
+            parts[-1] = ("md", parts[-1][1] + block.text)
+        else:
+            parts.append((kind, block.text))
+    return parts
 
 
 # ==========================================
