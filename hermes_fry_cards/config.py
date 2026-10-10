@@ -116,6 +116,8 @@ class Config:
     def __init__(self, home: Path | None = None) -> None:
         self._home = Path(home) if home is not None else None
         self._raw: dict[str, Any] | None = None
+        self._reload_key: tuple[int, int] | None = None
+        self._reload_raw: dict[str, Any] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -190,7 +192,7 @@ class Config:
     def show_reasoning(self) -> bool:
         """是否展示推理过程（display.platforms.feishu.show_reasoning → display.show_reasoning）.
 
-        每次都从磁盘重读，因为 /reasoning 命令会在运行时修改配置文件.
+        经 ``_reload`` 按文件 mtime 读取，因为 /reasoning 命令会在运行时修改配置文件.
         """
         display = self._reload().get("display")
         if not isinstance(display, dict):
@@ -620,9 +622,20 @@ class Config:
         return self._raw
 
     def _reload(self) -> dict[str, Any]:
-        """从磁盘重新读取配置（不更新缓存），供运行时可变的配置项使用."""
+        """从磁盘重新读取配置，供运行时可变的配置项使用.
+
+        以 ``(mtime_ns, size)`` 为键缓存解析结果：配置真被改（如 /reasoning
+        运行时改写）才重解析，稳态下每个流式 delta 不再重复 ``yaml.safe_load``.
+        """
         path = _config_path(self._home)
-        if path.exists():
-            text = path.read_text(encoding="utf-8")
-            return yaml.safe_load(text) or {}
-        return {}
+        try:
+            st = path.stat()
+        except OSError:
+            return {}
+        key = (st.st_mtime_ns, st.st_size)
+        if self._reload_key == key and self._reload_raw is not None:
+            return self._reload_raw
+        text = path.read_text(encoding="utf-8")
+        self._reload_raw = yaml.safe_load(text) or {}
+        self._reload_key = key
+        return self._reload_raw

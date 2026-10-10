@@ -660,3 +660,32 @@ class TestStudioAllowedHosts:
         assert Config(home=tmp_path).studio_allowed_hosts == []
         (tmp_path / "config.yaml").write_text("studio:\n  allowed_hosts: oops\n", encoding="utf-8")
         assert Config(home=tmp_path).studio_allowed_hosts == []
+
+
+class TestReloadCache:
+    """_reload 的 (mtime_ns, size) 守卫缓存（#17）：未改不重解析，改后即时生效."""
+
+    def _write(self, home: Path, text: str) -> Path:
+        path = home / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_unchanged_file_parses_once(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "display:\n  show_reasoning: true\n")
+        cfg = Config(home=tmp_path)
+        assert cfg.show_reasoning is True
+        with patch("hermes_fry_cards.config.yaml.safe_load", side_effect=AssertionError("reparsed")):
+            assert cfg.show_reasoning is True
+
+    def test_changed_file_rereads(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "display:\n  show_reasoning: true\n")
+        cfg = Config(home=tmp_path)
+        assert cfg.show_reasoning is True
+        self._write(tmp_path, "display:\n  show_reasoning: false\n")
+        assert cfg.show_reasoning is False
+        self._write(tmp_path, "display:\n  show_reasoning: true\n  extended: yes\n")
+        assert cfg.show_reasoning is True
+
+    def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
+        cfg = Config(home=tmp_path)
+        assert cfg._reload() == {}

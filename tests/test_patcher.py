@@ -13,7 +13,7 @@ import textwrap
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -908,7 +908,7 @@ class TestOnCronDeliverHook:
             assert on_cron_deliver(chat_id="c1", content="text", loop=None) is True
             ctrl.on_cron_deliver.assert_called_once_with(
                 chat_id="c1", content="text", loop=None,
-                task_name="", run_time="",
+                task_name="", run_time=ANY,
             )
 
     def test_delegates_to_controller(self) -> None:
@@ -924,7 +924,7 @@ class TestOnCronDeliverHook:
             assert result is True
             ctrl.on_cron_deliver.assert_called_once_with(
                 chat_id="c1", content="hello", loop=loop,
-                task_name="", run_time="",
+                task_name="", run_time=ANY,
             )
 
 
@@ -1120,3 +1120,24 @@ class TestGroupSecurityBoundary:
         from hermes_fry_cards.patch import apply_group_security_boundary
         source = SimpleNamespace(chat_type="group", chat_id="oc_g")
         assert apply_group_security_boundary("hi", None, source) == "hi"
+
+
+class TestCodeRoots:
+    """#20: _code_roots 追加从已安装 gateway 包位置反推的代码根（官方镜像 /opt/hermes）."""
+
+    def test_appends_gateway_root(self) -> None:
+        from hermes_fry_cards.patcher import _code_roots
+
+        spec = SimpleNamespace(submodule_search_locations=["/opt/hermes/gateway"])
+        with patch("importlib.util.find_spec", side_effect=lambda name: spec if name == "gateway" else None):
+            roots = _code_roots()
+        assert Path("/opt/hermes") in roots
+        assert roots.index(Path("/opt/hermes")) > roots.index(Path("/usr/local/lib/hermes-agent"))
+
+    def test_fallback_on_discovery_failure(self) -> None:
+        from hermes_fry_cards.config import hermes_home
+        from hermes_fry_cards.patcher import _code_roots
+
+        with patch("importlib.util.find_spec", side_effect=ImportError("boom")):
+            roots = _code_roots()
+        assert roots == [hermes_home() / "hermes-agent", Path("/usr/local/lib/hermes-agent")]

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.8] - 2026-10-10
+
+### 修复 / Fixed
+- **reasoning delta 拖慢长回复 87–262s**（#17）：`on_reasoning()` 每个 delta 都重读并
+  `yaml.safe_load` 整份 config.yaml（20.8KB ≈ 64.6ms/次，py-spy 采样 68% 时间停在
+  `_reload`）。`PluginConfig._reload()` 改为以 `(mtime_ns, size)` 为键缓存解析结果——配置
+  真被改（`/reasoning` 运行时改写）才重解析，稳态零开销；`controller.on_reasoning()` 把
+  `_resolve_session` 判定提到 `show_reasoning` 之前（与 `on_answer` 同序），非飞书会话
+  直接早退。实测同回复 agent 耗时 138.5s → 7.9s。
+- **官方镜像布局下 cron / clarify 钩子静默跳过**（#20）：`_code_roots()` 只认
+  `<HERMES_HOME>/hermes-agent` 与 `/usr/local/lib/hermes-agent` 两种 home 布局，官方
+  Docker 镜像（源码在 `/opt/hermes`）下 `CronPatcher` 找错文件、`ClarifyPatcher` 直接
+  抛错，install 均 try/except 静默跳过——表面装好，实际 cron 卡片与交互按钮全程缺失。
+  现在追加从已安装 `gateway` 包位置反推的真实代码根（`importlib.util.find_spec`），
+  home 布局优先级不变；`verify` 三目标在官方镜像下全部 Compatible。
+- **cron 卡片头部显示未来时间**（#21）：头部时间取的是 `job.next_run_at`（下一次计划
+  时刻），`*/10` 的 job 永远差一个周期。改为投递时刻
+  `datetime.now().astimezone().isoformat()`（`patch.py::on_cron_deliver` 内覆盖，
+  无需重装注入生效）。
+
+---
+
 ## [0.4.7] - 2026-09-29
 
 ### 变更 / Changed
