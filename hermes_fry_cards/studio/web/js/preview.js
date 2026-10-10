@@ -8,10 +8,14 @@
     });
   }
 
-  /* 取文本：i18n_content 中文优先（Studio UI 为中文） */
+  /* 取文本：i18n_content 按 Studio 界面语言优先（中 zh_cn / 英 en_us） */
   function pickText(el) {
     if (!el) return "";
-    if (el.i18n_content) return el.i18n_content.zh_cn || el.i18n_content.en_us || el.content || "";
+    var uiEn = !!(window.FryI18n && window.FryI18n.getLang() === "en");
+    if (el.i18n_content) {
+      return (uiEn ? el.i18n_content.en_us || el.i18n_content.zh_cn
+                   : el.i18n_content.zh_cn || el.i18n_content.en_us) || el.content || "";
+    }
     return el.content || "";
   }
 
@@ -185,7 +189,7 @@
       default: {
         var tag = document.createElement("span");
         tag.className = "unknown-el";
-        tag.textContent = "元素 " + el.tag;
+        tag.textContent = (window.FryI18n ? window.FryI18n.t("pv.element") : "元素 ") + el.tag;
         mount.appendChild(tag);
       }
     }
@@ -206,7 +210,7 @@
     if (!els.length) {
       var empty = document.createElement("div");
       empty.className = "preview-empty";
-      empty.textContent = "(无元素)";
+      empty.textContent = window.FryI18n ? window.FryI18n.t("pv.empty") : "(无元素)";
       body.appendChild(empty);
     }
     els.forEach(function (el) { renderEl(el, body); });

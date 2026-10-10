@@ -49,6 +49,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_append_content_elements` 渲染链逐步对齐：原生 table 1 元素/表 + 文本按
   `_MAX_CHUNK_CHARS` 切块数）的保守上界；估算/渲染共用同一套
   `split_markdown_tables`/`parse_table_block`，不再各扫一遍。
+- **Studio 胶囊导航宽屏下与内容区错位**：tab 条原用固定 `24px` 边距贴视口左边，
+  而 `main` 是 `max-width` 居中布局——宽屏下胶囊超出内容区左边界。改为与 main
+  同一公式的 `max(24px, calc((100vw - max-width)/2 + 24px))` 左边距（960/1380 两档
+  断点同步），并加 `max-width` 防窄屏溢出。
+
+### 新增 / Added
+- **Studio 界面中英文 i18n**：顶栏新增语言切换按钮（主题切换左侧，`fry-lang`
+  localStorage 记忆；`?lang=en` / `#lang=en` 调试直切不写存储）。新增
+  `studio/web/js/i18n.js` 声明式字典模块（`data-i18n` textContent /
+  `data-i18n-html` 富文本 / title / placeholder / aria-label），静态文案、字段
+  chips 标签、toast 提示、状态诊断页、模型别名编辑器（含星期 chips）、预览渲染器
+  `pickText` 语言偏好全部接入；语言切换不重建 DOM，chips 显隐状态与拖动顺序保留。
+
+### 变更 / Changed
+- **Studio 顶栏与内容区同宽居中**：`.topbar` 由全宽贴边改为 `max-width: 960px`
+  （≥1280px 时 1380px）居中——品牌区左缘与右侧 GitHub / 语言 / 主题按钮组右缘
+  均与内容区对齐，不再横跨视口。
+- **Studio 配置页首行压矮**：「模型别名」（矮容器）与「状态栏 · Header/Footer」
+  （高容器）互换位置，首行变为 流式卡片 / 模型别名 / 完成通知——第一屏可见
+  有效内容明显增加。
+- **Studio 信息密度优化（渐进披露 + 瀑布流）**：「模型别名」「群聊安全边界」
+  两个低频区块改为默认折叠的 `details` 卡片，摘要行带启用状态徽标（已启用绿 /
+  已停用灰，跟随主开关实时同步、随界面语言切换）；两处多行长说明收进
+  「ℹ️ 查看说明」折叠条；配置区由 grid 改为 CSS 多列瀑布流（窄屏 1 列 /
+  常规 2 列 / ≥1280px 3 列），卡片按自然高度排列——折叠卡收起后同列后续
+  卡片自动上移，不留行高对齐造成的空洞。
+- **Studio 字段调整改为 CreditDaddy 同款组件设置**：footer 与统一面板 header 两组
+  字段由「复选框 + ↑↓ 箭头」改为 chips 组件——点按切换显隐（置灰 = 隐藏，`aria-pressed`
+  同步）、按住拖动调整顺序（HTML5 DnD，换行感知的中线落点判定 + 左侧墨条落点提示）。
+  chips 由 `FIELD_DEFS` 单源渲染；多行 footer 配置的只读锁定行为不变。
 
 ### 变更 / Changed
 - **300305 估算对照日志**（#22 请求 1）：`cardkit_batch_update` 失败告警新增

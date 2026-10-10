@@ -48,9 +48,13 @@ body {
 }
 
 /* ---------- 顶栏：logo + 大标题 + 副行，右侧主题切换 ---------- */
+/* 与 main 同一居中公式：品牌区左缘、右侧按钮组右缘都与内容区对齐（不再全宽贴边） */
 .topbar {
   display: flex; align-items: center; gap: 16px;
-  padding: 14px 24px 10px;
+  max-width: 960px; margin: 0 auto; padding: 14px 24px 10px;
+}
+@media (min-width: 1280px) {
+  .topbar { max-width: 1380px; }
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand-logo { font-size: 30px; line-height: 1; }
@@ -67,13 +71,22 @@ body {
   text-decoration: none; transition: border-color .15s, transform .15s;
 }
 .icon-link:hover, .icon-btn:hover { border-color: var(--border-strong); transform: translateY(-1px); }
-.icon-link svg, .icon-btn svg, .op-btn svg { display: block; }
+.icon-link svg, .icon-btn svg { display: block; }
+/* 语言切换按钮：显示目标语言（EN / 中） */
+.lang-btn { font-size: 12px; font-weight: 800; letter-spacing: .3px; }
 
 /* ---------- 胶囊导航（CreditDaddy tab 条） ---------- */
+/* main 是 max-width: 960px 居中 + 左右 24px padding；tab 条用同样公式算左边距，
+   保证胶囊左缘始终与内容区左缘对齐（宽屏不再贴视口边「溢出」内容边界外）。 */
 .tabs {
-  display: inline-flex; gap: 2px; margin: 2px 24px 6px;
+  display: inline-flex; gap: 2px;
+  margin: 2px max(24px, calc((100vw - 960px) / 2 + 24px)) 6px;
   background: var(--card); border-radius: 999px; padding: 4px;
-  box-shadow: var(--shadow); width: fit-content;
+  box-shadow: var(--shadow); width: fit-content; max-width: calc(100vw - 48px);
+}
+/* 与 @media (min-width:1280px) 的 main max-width: 1380px 保持同一公式 */
+@media (min-width: 1280px) {
+  .tabs { margin: 2px max(24px, calc((100vw - 1380px) / 2 + 24px)) 6px; }
 }
 .tab {
   border: none; background: transparent; padding: 7px 20px;
@@ -98,12 +111,17 @@ main { max-width: 960px; margin: 14px auto 60px; padding: 0 24px; }
 .hint code, .status-card code { background: var(--code-bg); padding: 1px 6px; border-radius: 5px; font-size: 12px; word-break: break-all; }
 
 /* ---------- 表单：无边框卡片化 ---------- */
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
-/* 宽屏：容器加宽 + 配置表单 3 列（5 组 → 3+2 排布）——必须在 .grid 基础规则之后，否则被级联覆盖 */
+/* 瀑布流多列（CSS columns）:卡片按自然高度排列,折叠卡收起后
+   同列后续卡片自动上移,不留 grid 行高对齐造成的空洞 */
+.grid { columns: 2; column-gap: 16px; }
+.grid > fieldset, .grid > details.fold-card { break-inside: avoid; margin: 0 0 16px; }
+@media (max-width: 760px) { .grid { columns: 1; } }
+/* 宽屏：容器加宽 + 3 列瀑布流；
+   .col-break 强制从新列开始(仅 3 列宽屏生效,避免少列布局溢出多余列) */
 @media (min-width: 1280px) {
   main { max-width: 1380px; }
-  .grid { grid-template-columns: repeat(3, 1fr); }
+  .grid { columns: 3; }
+  .grid > .col-break { break-before: column; }
   .status-grid { grid-template-columns: repeat(4, 1fr); }
 }
 fieldset {
@@ -111,6 +129,37 @@ fieldset {
   background: var(--card); box-shadow: var(--shadow);
   margin: 0; padding: 18px 20px 20px;
 }
+
+/* 可折叠卡片：低频配置默认收起，降低首屏信息密度；摘要行带启用状态徽标 */
+details.fold-card {
+  border: none; border-radius: var(--radius-lg);
+  background: var(--card); box-shadow: var(--shadow);
+  margin: 0; padding: 0;
+}
+details.fold-card > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 15px 20px; font-weight: 700; font-size: 14px; color: var(--text);
+}
+details.fold-card > summary::-webkit-details-marker { display: none; }
+details.fold-card > summary::after { content: "▸"; margin-left: auto; color: var(--grey); transition: transform .15s; }
+details.fold-card[open] > summary::after { transform: rotate(90deg); }
+details.fold-card .fold-badge {
+  padding: 1px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--code-bg); color: var(--text-2);
+}
+details.fold-card .fold-badge.on { background: #e5f9e3; color: #1a7f12; }
+details.fold-card .fold-body { padding: 2px 20px 20px; }
+
+/* 长说明收进「查看说明」折叠条 */
+details.hint-fold { margin-bottom: 8px; }
+details.hint-fold > summary {
+  list-style: none; cursor: pointer; color: var(--text-2); font-size: 12.5px;
+  margin-bottom: 6px; user-select: none;
+}
+details.hint-fold > summary::-webkit-details-marker { display: none; }
+details.hint-fold > summary::before { content: "▸"; display: inline-block; margin-right: 4px; color: var(--grey); transition: transform .15s; }
+details.hint-fold[open] > summary::before { transform: rotate(90deg); }
 legend { font-weight: 700; padding: 0 0 6px; font-size: 14px; color: var(--text); }
 .sub-group + .sub-group { border-top: 1px dashed var(--border); margin-top: 12px; padding-top: 8px; }
 .sub-title { font-size: 12px; font-weight: 700; color: var(--text-2); margin-bottom: 2px; }
@@ -148,20 +197,23 @@ legend { font-weight: 700; padding: 0 0 6px; font-size: 14px; color: var(--text)
 .btn.danger:hover { filter: brightness(.95); }
 .btn.ghost { background: transparent; }
 
-/* ---------- 字段列表（复选框 + ↑↓ 调序） ---------- */
-.field-list { display: flex; flex-direction: column; gap: 2px; }
-.field-row { display: flex; align-items: center; gap: 10px; padding: 3px 8px; border-radius: 8px; }
-.field-row:hover { background: var(--bg-soft); }
-.field-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--ink); margin: 0; }
-.field-name { flex: 1; font-size: 13px; }
-.field-ops { display: flex; gap: 4px; }
-.op-btn {
-  border: 1px solid var(--border); background: var(--card); color: var(--text-2);
-  border-radius: 6px; width: 26px; height: 24px; cursor: pointer;
-  font-size: 12px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+/* ---------- 字段 chips（点按显隐 + 拖动排序 — CreditDaddy 组件设置同款） ---------- */
+.field-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.field-tip { color: var(--text-2); font-size: 12px; }
+.field-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+  border-radius: 999px; padding: 5px 14px 5px 10px; font-size: 13px; font-weight: 600;
+  cursor: grab; user-select: none;
+  transition: border-color .12s, background .12s, color .12s, opacity .12s;
 }
-.op-btn:hover { border-color: var(--border-strong); color: var(--text); }
-.field-list.locked { opacity: .55; pointer-events: none; }
+.field-chip:hover { border-color: var(--border-strong); }
+.field-chip .drag-handle { color: var(--grey); flex-shrink: 0; }
+/* 置灰 = 隐藏（点按切换显隐）；保留可拖回排序 */
+.field-chip.off { background: var(--bg-soft); color: var(--grey); font-weight: 500; opacity: .75; }
+.field-chip.dragging { opacity: .4; cursor: grabbing; }
+.field-chip.drop-mark { border-left: 3px solid var(--ink); padding-left: 7px; }
+.field-chips.locked { opacity: .55; pointer-events: none; }
 
 /* ---------- 预览 ---------- */
 .preview-controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 14px; }
