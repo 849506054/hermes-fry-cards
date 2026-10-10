@@ -116,10 +116,12 @@ main { max-width: 960px; margin: 14px auto 60px; padding: 0 24px; }
 .grid { columns: 2; column-gap: 16px; }
 .grid > fieldset, .grid > details.fold-card { break-inside: avoid; margin: 0 0 16px; }
 @media (max-width: 760px) { .grid { columns: 1; } }
-/* 宽屏：容器加宽 + 3 列瀑布流 */
+/* 宽屏：容器加宽 + 3 列瀑布流；
+   .col-break 强制从新列开始(仅 3 列宽屏生效,避免少列布局溢出多余列) */
 @media (min-width: 1280px) {
   main { max-width: 1380px; }
   .grid { columns: 3; }
+  .grid > .col-break { break-before: column; }
   .status-grid { grid-template-columns: repeat(4, 1fr); }
 }
 fieldset {
