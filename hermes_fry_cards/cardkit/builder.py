@@ -14,6 +14,8 @@ from .markdown import (
     _split_long_text,
     clamp_utf8,
     optimize_markdown_style,
+    parse_table_block,
+    split_markdown_tables,
 )
 
 STREAMING_ELEMENT_ID = "streaming_content"
@@ -140,6 +142,76 @@ def _loading_element() -> dict:
             "size": "16px 16px",
         },
         "element_id": _LOADING_ELEMENT_ID,
+    }
+
+
+_TABLE_PAGE_SIZE = 10
+_TABLE_ROW_MAX_HEIGHT = "999px"
+
+
+def _append_content_elements(
+    elements: list[dict], content: str, *, text_size: str | None = None
+) -> None:
+    """正文 → 元素列表：文本片段出 markdown 元素，表格片段出原生 table 元素.
+
+    仅传字符串/纯文本组件的卡片（完成态、cron、后台推送）共用此入口，
+    保证同一个 markdown 表格在任何卡片里都渲染成同一种元素。
+    """
+    content = _downgrade_tables(optimize_markdown_style(content))
+    content = clamp_utf8(content, preserve_tail=True)
+    for kind, part in split_markdown_tables(content):
+        if kind == "table":
+            parsed = parse_table_block(part)
+            if parsed:
+                elements.append(_build_table_element(*parsed))
+                continue
+        for chunk in _split_long_text(part):
+            if not chunk.strip():
+                continue
+            element: dict[str, Any] = {"tag": "markdown", "content": chunk}
+            if text_size:
+                element["text_size"] = text_size
+            elements.append(element)
+
+
+def _build_table_element(header: list[str], rows: list[list[str]]) -> dict[str, Any]:
+    """飞书原生 table 元素 — 列宽 auto + 行高 auto.
+
+    markdown 表格不支持设置列宽/行高：长单元格折行后被固定行高裁掉。
+    原生表格可设 `columns[].width: auto`（按内容给宽）与 `row_height: auto`，
+    长文本完整显示；三列总宽超出画布时表格左右可滑动。
+    """
+    columns = [
+        {
+            "name": f"c{index}",
+            "display_name": name,
+            "data_type": "lark_md",
+            "width": "auto",
+        }
+        for index, name in enumerate(header)
+    ]
+    table_rows = [
+        {
+            f"c{index}": row[index] if index < len(row) else ""
+            for index in range(len(header))
+        }
+        for row in rows
+    ]
+    return {
+        "tag": "table",
+        "page_size": _TABLE_PAGE_SIZE,
+        "row_height": "auto",
+        "row_max_height": _TABLE_ROW_MAX_HEIGHT,
+        "header_style": {
+            "text_align": "left",
+            "text_size": "notation",
+            "background_style": "none",
+            "text_color": "default",
+            "bold": True,
+            "lines": 1,
+        },
+        "columns": columns,
+        "rows": table_rows,
     }
 
 
@@ -743,10 +815,7 @@ def build_complete_card(
                 })
         elif seg.type == SegmentType.ANSWER and seg.text:
             has_answer = True
-            content = _downgrade_tables(optimize_markdown_style(seg.text))
-            content = clamp_utf8(content, preserve_tail=True)
-            for chunk in _split_long_text(content):
-                elements.append({"tag": "markdown", "content": chunk, "text_size": body_text_size})
+            _append_content_elements(elements, seg.text, text_size=body_text_size)
 
     # 推理+工具合并成底部一个统一面板（在答案之后、footer 之前）
     # 短回复或无工具调用时不展示统一面板（避免冗余 header）
@@ -911,9 +980,7 @@ def build_cron_card(
     summary = content[:120].replace("\n", " ").replace("```", "").strip()
     if summary:
         card["config"]["summary"] = {"content": summary}
-    for chunk in _split_long_text(clamp_utf8(optimize_markdown_style(content))):
-        if chunk.strip():
-            card["body"]["elements"].append({"tag": "markdown", "content": chunk})
+    _append_content_elements(card["body"]["elements"], content)
     return card
 
 
@@ -931,7 +998,5 @@ def build_background_card(preview: str, content: str) -> dict[str, Any]:
     summary = body[:120].replace("\n", " ").replace("```", "").strip()
     if summary:
         card["config"]["summary"] = {"content": summary}
-    for chunk in _split_long_text(clamp_utf8(optimize_markdown_style(body))):
-        if chunk.strip():
-            card["body"]["elements"].append({"tag": "markdown", "content": chunk})
+    _append_content_elements(card["body"]["elements"], body)
     return card

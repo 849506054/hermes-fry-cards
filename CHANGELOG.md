@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.9] - 2026-10-10
+
+### 修复 / Fixed
+- **卡片内 markdown 表格长单元格被裁字**（#18）：飞书富文本表格按可用宽度折行但行高
+  固定不涨，折出的第 2、3 行被硬裁（三列以上、单元格文本偏长时移动端基本必现）。
+  渲染管线改为把表格片段输出为**原生 `table` 元素**（`columns[].width: "auto"` +
+  `row_height: "auto"`，超宽自动可滑动），文本片段仍走 markdown 元素——完成态卡片
+  ANSWER 段、`build_cron_card()`、`build_background_card()` 三处共用
+  `_append_content_elements()` 统一入口。超限兜底沿用 `_MAX_CARD_TABLES = 5`
+  的 `_downgrade_tables()` 字段列表（第 6 个表格起仍无损压缩）。
+
+---
+
 ## [0.4.8] - 2026-10-10
 
 ### 修复 / Fixed

@@ -25,6 +25,8 @@ from hermes_fry_cards.cardkit.markdown import (
     _split_long_text,
     _strip_invalid_image_keys,
     optimize_markdown_style,
+    parse_table_block,
+    split_markdown_tables,
 )
 from hermes_fry_cards.streaming.segments import Segment
 
@@ -137,6 +139,92 @@ class TestDowngradeTables:
         assert "42" in result
         # 压缩产物中不再含 markdown 表格管道行
         assert "|---|" not in result.split("Table 7")[1]
+
+
+# --- 原生 table 元素（#18） ---
+
+
+class TestParseTableBlock:
+    def test_parses_header_and_rows(self) -> None:
+        parsed = parse_table_block("| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |")
+        assert parsed
+        header, rows = parsed
+        assert [h.strip() for h in header] == ["A", "B"]
+        assert rows == [["1", "2"], ["3", "4"]]
+
+    def test_preserves_inline_markup(self) -> None:
+        parsed = parse_table_block("| A |\n|---|\n| **bold** `code` |")
+        assert parsed
+        assert parsed[1][0][0].strip() == "**bold** `code`"
+
+    def test_rejects_non_table(self) -> None:
+        assert parse_table_block("just text") is None
+
+
+class TestSplitMarkdownTables:
+    def test_table_and_text_ordered(self) -> None:
+        parts = split_markdown_tables("intro\n\n| A |\n|---|\n| 1 |\n\noutro")
+        kinds = [kind for kind, _ in parts]
+        assert kinds == ["md", "table", "md"]
+        assert parts[0][1].strip() == "intro"
+        assert parts[2][1].strip() == "outro"
+
+    def test_table_inside_code_block_stays_md(self) -> None:
+        parts = split_markdown_tables("```\n| A |\n|---|\n| 1 |\n```")
+        assert [kind for kind, _ in parts] == ["md"]
+
+    def test_adjacent_md_blocks_merged(self) -> None:
+        parts = split_markdown_tables("a\n\nb")
+        assert parts == [("md", "a\n\nb")]
+
+
+class TestNativeTableCards:
+    def test_complete_card_answer_table_becomes_native(self) -> None:
+        seg = _seg("answer", "| A | B |\n|---|---|\n| x**粗** | y |")
+        card = build_complete_card(segments=[seg], all_tool_steps=[])
+        tables = [el for el in card["body"]["elements"] if el.get("tag") == "table"]
+        assert len(tables) == 1
+        table = tables[0]
+        assert [col["display_name"] for col in table["columns"]] == ["A", "B"]
+        assert all(col["width"] == "auto" for col in table["columns"])
+        assert table["row_height"] == "auto"
+        assert table["rows"] == [{"c0": "x**粗**", "c1": "y"}]
+
+    def test_complete_card_text_around_table_preserved(self) -> None:
+        seg = _seg("answer", "前文\n\n| A |\n|---|\n| 1 |\n\n后文")
+        card = build_complete_card(segments=[seg], all_tool_steps=[])
+        texts = [
+            el["content"] for el in card["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ]
+        assert any("前文" in t for t in texts)
+        assert any("后文" in t for t in texts)
+
+    def test_table_element_pads_short_rows(self) -> None:
+        from hermes_fry_cards.cardkit.builder import _build_table_element
+
+        element = _build_table_element(["A", "B", "C"], [["1", "2"]])
+        assert element["rows"] == [{"c0": "1", "c1": "2", "c2": ""}]
+
+    def test_overflow_tables_still_downgraded(self) -> None:
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+        seg = _seg("answer", "\n\n".join([table] * 6))
+        card = build_complete_card(segments=[seg], all_tool_steps=[])
+        tables = [el for el in card["body"]["elements"] if el.get("tag") == "table"]
+        assert len(tables) == 5
+        texts = [
+            el["content"] for el in card["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ]
+        assert any("Table 6 · Row 1" in t for t in texts)
+
+    def test_background_card_table_becomes_native(self) -> None:
+        from hermes_fry_cards.cardkit.builder import build_background_card
+
+        card = build_background_card("p", "| A | B |\n|---|---|\n| 1 | 2 |")
+        tables = [el for el in card["body"]["elements"] if el.get("tag") == "table"]
+        assert len(tables) == 1
+        assert tables[0]["rows"] == [{"c0": "1", "c1": "2"}]
 
 
 # --- 文本拆分 ---
@@ -778,7 +866,10 @@ class TestBuildCronCard:
 
         content = "| A | B |\n|---|---|\n| 1 | 2 |"
         card = build_cron_card(content)
-        assert "| A | B |" in card["body"]["elements"][0]["content"]
+        tables = [el for el in card["body"]["elements"] if el.get("tag") == "table"]
+        assert len(tables) == 1
+        assert [col["display_name"] for col in tables[0]["columns"]] == ["A", "B"]
+        assert tables[0]["rows"] == [{"c0": "1", "c1": "2"}]
 
     def test_header_with_task_name(self) -> None:
         from hermes_fry_cards.cardkit.builder import build_cron_card
