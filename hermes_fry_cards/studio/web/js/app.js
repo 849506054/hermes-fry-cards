@@ -22,40 +22,112 @@
     applyTheme(cur === "dark" ? "light" : "dark");
   });
 
-  /* ---------- 字段列表（勾选启用，↑↓ 调整顺序） ---------- */
-  function moveField(containerId, field, dir) {
+  /* ---------- 字段 chips（点按显隐 / 拖动排序 — CreditDaddy 组件设置同款） ---------- */
+  var GRIP_SVG =
+    '<svg class="drag-handle" viewBox="0 0 16 16" width="10" height="12" fill="currentColor" aria-hidden="true">' +
+    '<circle cx="5" cy="3.2" r="1.4"/><circle cx="11" cy="3.2" r="1.4"/>' +
+    '<circle cx="5" cy="8" r="1.4"/><circle cx="11" cy="8" r="1.4"/>' +
+    '<circle cx="5" cy="12.8" r="1.4"/><circle cx="11" cy="12.8" r="1.4"/></svg>';
+  var FIELD_DEFS = {
+    "f-footer-fields": [
+      ["status", "状态"], ["elapsed", "耗时"], ["speed", "速度"], ["cache", "缓存命中"],
+      ["model", "模型"], ["tokens", "Tokens"], ["context", "上下文"],
+    ],
+    "f-panel-fields": [
+      ["model", "🍟 模型"], ["reasoning", "💭 思考数"], ["tools", "🔧 工具数"], ["context", "上下文"],
+      ["elapsed", "⏱️ 耗时"], ["speed", "⚡ 速度"], ["cache", "缓存命中"], ["tokens", "Tokens"], ["status", "状态"],
+    ],
+  };
+
+  function renderFieldChips(containerId) {
     var box = document.getElementById(containerId);
-    var rows = Array.prototype.slice.call(box.querySelectorAll(".field-row"));
-    var idx = -1;
-    rows.forEach(function (r, i) { if (r.dataset.field === field) idx = i; });
-    var to = idx + dir;
-    if (idx < 0 || to < 0 || to >= rows.length) return;
-    var ref = rows[to];
-    box.removeChild(rows[idx]);
-    if (dir < 0) box.insertBefore(rows[idx], ref);
-    else box.insertBefore(rows[idx], ref.nextSibling);
+    FIELD_DEFS[containerId].forEach(function (def) {
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "field-chip";
+      chip.draggable = true;
+      chip.dataset.field = def[0];
+      chip.setAttribute("aria-pressed", "true");
+      chip.innerHTML = GRIP_SVG + "<span>" + esc(def[1]) + "</span>";
+      box.appendChild(chip);
+    });
   }
-  document.querySelectorAll(".field-list").forEach(function (box) {
+  Object.keys(FIELD_DEFS).forEach(renderFieldChips);
+
+  /* 点按切换显隐（置灰 = 隐藏） */
+  document.querySelectorAll(".field-chips").forEach(function (box) {
     box.addEventListener("click", function (e) {
-      var btn = e.target.closest(".op-btn");
-      if (!btn || box.classList.contains("locked")) return;
-      var row = btn.closest(".field-row");
-      moveField(box.id, row.dataset.field, parseInt(btn.dataset.move, 10));
+      var chip = e.target.closest(".field-chip");
+      if (!chip || box.classList.contains("locked")) return;
+      var off = chip.classList.toggle("off");
+      chip.setAttribute("aria-pressed", off ? "false" : "true");
     });
   });
 
-  /* 按 order 重排字段行（已保存顺序在前，未选字段保持相对顺序跟在后面） */
+  /* 按住拖动调整顺序（HTML5 DnD） */
+  var dragChip = null;
+
+  /* 返回“应插到它前面”的 chip；null = 插到末尾（filter 掉被拖动者自身） */
+  function dropRefChip(box, x, y) {
+    var chips = Array.prototype.slice
+      .call(box.querySelectorAll(".field-chip"))
+      .filter(function (c) { return c !== dragChip; });
+    for (var i = 0; i < chips.length; i++) {
+      var r = chips[i].getBoundingClientRect();
+      if (y > r.bottom) continue;                       // 该行已过，看下一行
+      if (y >= r.top && x >= r.left + r.width / 2) continue; // 同行中线右侧 → 看下一个
+      return chips[i];
+    }
+    return null;
+  }
+
+  document.querySelectorAll(".field-chips").forEach(function (box) {
+    box.addEventListener("dragstart", function (e) {
+      var chip = e.target.closest(".field-chip");
+      if (!chip || box.classList.contains("locked")) { e.preventDefault(); return; }
+      dragChip = chip;
+      chip.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", chip.dataset.field);
+    });
+    box.addEventListener("dragover", function (e) {
+      if (!dragChip) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      box.querySelectorAll(".field-chip.drop-mark").forEach(function (c) { c.classList.remove("drop-mark"); });
+      var ref = dropRefChip(box, e.clientX, e.clientY);
+      if (ref) ref.classList.add("drop-mark");
+    });
+    box.addEventListener("drop", function (e) {
+      if (!dragChip) return;
+      e.preventDefault();
+      var ref = dropRefChip(box, e.clientX, e.clientY);
+      if (ref) box.insertBefore(dragChip, ref);
+      else box.appendChild(dragChip);
+    });
+    box.addEventListener("dragleave", function (e) {
+      if (e.relatedTarget && box.contains(e.relatedTarget)) return;
+      box.querySelectorAll(".field-chip.drop-mark").forEach(function (c) { c.classList.remove("drop-mark"); });
+    });
+    box.addEventListener("dragend", function () {
+      box.querySelectorAll(".field-chip.drop-mark").forEach(function (c) { c.classList.remove("drop-mark"); });
+      if (dragChip) dragChip.classList.remove("dragging");
+      dragChip = null;
+    });
+  });
+
+  /* 按 order 重排 chips（已保存顺序在前，未选字段保持相对顺序跟在后面） */
   function orderRows(container, order) {
     if (!container || !order || !order.length) return;
-    var rows = Array.prototype.slice.call(container.querySelectorAll(".field-row"));
+    var chips = Array.prototype.slice.call(container.querySelectorAll(".field-chip"));
     var byField = {};
-    rows.forEach(function (r) { byField[r.dataset.field] = r; });
+    chips.forEach(function (r) { byField[r.dataset.field] = r; });
     var seen = {};
     var result = [];
     order.forEach(function (f) {
       if (byField[f] && !seen[f]) { result.push(byField[f]); seen[f] = true; }
     });
-    rows.forEach(function (r) {
+    chips.forEach(function (r) {
       if (!seen[r.dataset.field]) { result.push(r); seen[r.dataset.field] = true; }
     });
     result.forEach(function (r) { container.appendChild(r); });
@@ -150,14 +222,11 @@
     var footerBox = document.getElementById("f-footer-fields");
     footerBox.classList.toggle("locked", multi);
     if (!multi) orderRows(footerBox, firstRow);
-    footerBox.querySelectorAll(".field-row").forEach(function (r) {
-      r.querySelector("input").checked = firstRow.indexOf(r.dataset.field) >= 0;
-    });
-    var multi = __origFields && __origFields.length > 1;
-    document.querySelectorAll("#f-footer-fields .chip").forEach(function (c) {
-      c.disabled = !!multi;
-      c.style.opacity = multi ? 0.5 : "";
-      c.style.cursor = multi ? "not-allowed" : "pointer";
+    footerBox.querySelectorAll(".field-chip").forEach(function (c) {
+      var on = firstRow.indexOf(c.dataset.field) >= 0;
+      c.classList.toggle("off", !on);
+      c.setAttribute("aria-pressed", on ? "true" : "false");
+      c.draggable = !multi;
     });
     var note = $("#fields-note");
     if (note) note.hidden = !multi;
@@ -174,8 +243,10 @@
 
     var pf = d.panel_fields || [];
     orderRows(document.getElementById("f-panel-fields"), pf);
-    document.querySelectorAll("#f-panel-fields .field-row").forEach(function (r) {
-      r.querySelector("input").checked = pf.indexOf(r.dataset.field) >= 0;
+    document.querySelectorAll("#f-panel-fields .field-chip").forEach(function (c) {
+      var on = pf.indexOf(c.dataset.field) >= 0;
+      c.classList.toggle("off", !on);
+      c.setAttribute("aria-pressed", on ? "true" : "false");
     });
 
     var gsb = ((state.gateway || {}).group_security_boundary) || {};
@@ -205,18 +276,18 @@
       .map(function (s) { return s.trim(); })
       .filter(Boolean);
 
-    // 按列表内实际顺序（含 ↑↓ 调整结果）收集勾选字段
+    // 按 DOM 实际顺序（含拖动调整结果）收集未置灰的字段
     var picked = [];
-    document.querySelectorAll("#f-footer-fields .field-row").forEach(function (r) {
-      if (r.querySelector("input").checked) picked.push(r.dataset.field);
+    document.querySelectorAll("#f-footer-fields .field-chip").forEach(function (c) {
+      if (!c.classList.contains("off")) picked.push(c.dataset.field);
     });
     var fields;
     if (__origFields && __origFields.length > 1) fields = __origFields; // 多行原样保留
     else fields = picked.length ? [picked] : [];
 
     var pickedPanel = [];
-    document.querySelectorAll("#f-panel-fields .field-row").forEach(function (r) {
-      if (r.querySelector("input").checked) pickedPanel.push(r.dataset.field);
+    document.querySelectorAll("#f-panel-fields .field-chip").forEach(function (c) {
+      if (!c.classList.contains("off")) pickedPanel.push(c.dataset.field);
     });
     var panelFields = pickedPanel;
 

@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   断点同步），并加 `max-width` 防窄屏溢出。
 
 ### 变更 / Changed
+- **Studio 字段调整改为 CreditDaddy 同款组件设置**：footer 与统一面板 header 两组
+  字段由「复选框 + ↑↓ 箭头」改为 chips 组件——点按切换显隐（置灰 = 隐藏，`aria-pressed`
+  同步）、按住拖动调整顺序（HTML5 DnD，换行感知的中线落点判定 + 左侧墨条落点提示）。
+  chips 由 `FIELD_DEFS` 单源渲染；多行 footer 配置的只读锁定行为不变。
+
+### 变更 / Changed
 - **300305 估算对照日志**（#22 请求 1）：`cardkit_batch_update` 失败告警新增
   `new_est=[el_id~estimate,...]` 逐项估算；`complete attempt N failed` 告警新增
   `card_elements`（完成态重建卡片真实元素数，含长文切块二次膨胀）与 `tracked`

@@ -67,7 +67,7 @@ body {
   text-decoration: none; transition: border-color .15s, transform .15s;
 }
 .icon-link:hover, .icon-btn:hover { border-color: var(--border-strong); transform: translateY(-1px); }
-.icon-link svg, .icon-btn svg, .op-btn svg { display: block; }
+.icon-link svg, .icon-btn svg { display: block; }
 
 /* ---------- 胶囊导航（CreditDaddy tab 条） ---------- */
 /* main 是 max-width: 960px 居中 + 左右 24px padding；tab 条用同样公式算左边距，
@@ -155,20 +155,23 @@ legend { font-weight: 700; padding: 0 0 6px; font-size: 14px; color: var(--text)
 .btn.danger:hover { filter: brightness(.95); }
 .btn.ghost { background: transparent; }
 
-/* ---------- 字段列表（复选框 + ↑↓ 调序） ---------- */
-.field-list { display: flex; flex-direction: column; gap: 2px; }
-.field-row { display: flex; align-items: center; gap: 10px; padding: 3px 8px; border-radius: 8px; }
-.field-row:hover { background: var(--bg-soft); }
-.field-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--ink); margin: 0; }
-.field-name { flex: 1; font-size: 13px; }
-.field-ops { display: flex; gap: 4px; }
-.op-btn {
-  border: 1px solid var(--border); background: var(--card); color: var(--text-2);
-  border-radius: 6px; width: 26px; height: 24px; cursor: pointer;
-  font-size: 12px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+/* ---------- 字段 chips（点按显隐 + 拖动排序 — CreditDaddy 组件设置同款） ---------- */
+.field-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.field-tip { color: var(--text-2); font-size: 12px; }
+.field-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+  border-radius: 999px; padding: 5px 14px 5px 10px; font-size: 13px; font-weight: 600;
+  cursor: grab; user-select: none;
+  transition: border-color .12s, background .12s, color .12s, opacity .12s;
 }
-.op-btn:hover { border-color: var(--border-strong); color: var(--text); }
-.field-list.locked { opacity: .55; pointer-events: none; }
+.field-chip:hover { border-color: var(--border-strong); }
+.field-chip .drag-handle { color: var(--grey); flex-shrink: 0; }
+/* 置灰 = 隐藏（点按切换显隐）；保留可拖回排序 */
+.field-chip.off { background: var(--bg-soft); color: var(--grey); font-weight: 500; opacity: .75; }
+.field-chip.dragging { opacity: .4; cursor: grabbing; }
+.field-chip.drop-mark { border-left: 3px solid var(--ink); padding-left: 7px; }
+.field-chips.locked { opacity: .55; pointer-events: none; }
 
 /* ---------- 预览 ---------- */
 .preview-controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 14px; }
