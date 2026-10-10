@@ -57,15 +57,21 @@ class SegmentState:
         "_counter",
         "segments",
         "max_reasoning_panels",
+        "max_answer_segments",
     )
 
-    def __init__(self, max_reasoning_panels: int = 3) -> None:
+    def __init__(self, max_reasoning_panels: int = 3, max_answer_segments: int = 8) -> None:
         self._counter = 0
         self._completion_answers: set[str] = set()
         self.segments: list[Segment] = []
         # 限制独立 reasoning 面板数量，超出后合并进最后一个 reasoning 面板，
         # 避免「不支持分段思考」的模型频繁切换 thinking/tool 时产生海量面板导致卡片元素溢出。
         self.max_reasoning_panels = max_reasoning_panels
+        # 限制独立 answer 段数量，超出后合并进最后一个 answer 段。与上面同源：
+        # answer↔tool 频繁交替时每个 answer 段至少占 1 个卡片元素，而 TOOL 段共享
+        # 同一个 tool_panel element_id 只占一个面板——不设上限的只有 answer，
+        # 20 轮工具调用就能产生 20 个 answer 段把卡片元素推向飞书 200 硬上限。
+        self.max_answer_segments = max_answer_segments
 
     def _new_reasoning(self, text: str) -> Segment:
         c = self._counter
@@ -128,8 +134,23 @@ class SegmentState:
         if self.segments and self.segments[-1].type == SegmentType.ANSWER:
             self.segments[-1].text += text
             self.segments[-1].dirty = True
-        else:
-            self._new_answer(text)
+            return
+
+        # 与 reasoning 面板同源的防爆闸。answer↔tool 频繁交替时（每个工具调用前后
+        # 都吐一句过渡语的模型，典型如 step-5-preview）每次交替都会新建一个 answer
+        # segment，而每个 answer 段在卡片上至少占 1 个元素。实测 20 轮工具调用产生
+        # 20 个 answer 段（reasoning 已被 max_reasoning_panels 闸住、TOOL 段共享同一个
+        # tool_panel element_id 只占一个面板，唯独 answer 无上限），把 _counter 推到
+        # 82、卡片元素逼近飞书 200 硬上限，表现为 300305 反复失败 + 疯狂拆卡。
+        # 达到上限后合并进最后一个 answer 段：内容不丢、元素数不涨。
+        answer_count = sum(1 for s in self.segments if s.type == SegmentType.ANSWER)
+        if answer_count >= self.max_answer_segments:
+            for seg in reversed(self.segments):
+                if seg.type == SegmentType.ANSWER:
+                    seg.text += text
+                    seg.dirty = True
+                    return
+        self._new_answer(text)
 
     def on_completion_answer(self, text: str) -> None:
         """Append final completion text once, preserving interim answer segments."""
