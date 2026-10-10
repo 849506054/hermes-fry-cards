@@ -111,13 +111,15 @@ main { max-width: 960px; margin: 14px auto 60px; padding: 0 24px; }
 .hint code, .status-card code { background: var(--code-bg); padding: 1px 6px; border-radius: 5px; font-size: 12px; word-break: break-all; }
 
 /* ---------- 表单：无边框卡片化 ---------- */
-/* align-items: start — 折叠卡/矮卡不被同行高卡撑出空白 */
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
-@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
-/* 宽屏：容器加宽 + 配置表单 3 列（5 组 → 3+2 排布）——必须在 .grid 基础规则之后，否则被级联覆盖 */
+/* 瀑布流多列（CSS columns）:卡片按自然高度排列,折叠卡收起后
+   同列后续卡片自动上移,不留 grid 行高对齐造成的空洞 */
+.grid { columns: 2; column-gap: 16px; }
+.grid > fieldset, .grid > details.fold-card { break-inside: avoid; margin: 0 0 16px; }
+@media (max-width: 760px) { .grid { columns: 1; } }
+/* 宽屏：容器加宽 + 3 列瀑布流 */
 @media (min-width: 1280px) {
   main { max-width: 1380px; }
-  .grid { grid-template-columns: repeat(3, 1fr); }
+  .grid { columns: 3; }
   .status-grid { grid-template-columns: repeat(4, 1fr); }
 }
 fieldset {
