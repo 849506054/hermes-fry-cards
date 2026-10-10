@@ -111,7 +111,8 @@ main { max-width: 960px; margin: 14px auto 60px; padding: 0 24px; }
 .hint code, .status-card code { background: var(--code-bg); padding: 1px 6px; border-radius: 5px; font-size: 12px; word-break: break-all; }
 
 /* ---------- 表单：无边框卡片化 ---------- */
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* align-items: start — 折叠卡/矮卡不被同行高卡撑出空白 */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
 @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
 /* 宽屏：容器加宽 + 配置表单 3 列（5 组 → 3+2 排布）——必须在 .grid 基础规则之后，否则被级联覆盖 */
 @media (min-width: 1280px) {
@@ -124,6 +125,37 @@ fieldset {
   background: var(--card); box-shadow: var(--shadow);
   margin: 0; padding: 18px 20px 20px;
 }
+
+/* 可折叠卡片：低频配置默认收起，降低首屏信息密度；摘要行带启用状态徽标 */
+details.fold-card {
+  border: none; border-radius: var(--radius-lg);
+  background: var(--card); box-shadow: var(--shadow);
+  margin: 0; padding: 0;
+}
+details.fold-card > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 15px 20px; font-weight: 700; font-size: 14px; color: var(--text);
+}
+details.fold-card > summary::-webkit-details-marker { display: none; }
+details.fold-card > summary::after { content: "▸"; margin-left: auto; color: var(--grey); transition: transform .15s; }
+details.fold-card[open] > summary::after { transform: rotate(90deg); }
+details.fold-card .fold-badge {
+  padding: 1px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--code-bg); color: var(--text-2);
+}
+details.fold-card .fold-badge.on { background: #e5f9e3; color: #1a7f12; }
+details.fold-card .fold-body { padding: 2px 20px 20px; }
+
+/* 长说明收进「查看说明」折叠条 */
+details.hint-fold { margin-bottom: 8px; }
+details.hint-fold > summary {
+  list-style: none; cursor: pointer; color: var(--text-2); font-size: 12.5px;
+  margin-bottom: 6px; user-select: none;
+}
+details.hint-fold > summary::-webkit-details-marker { display: none; }
+details.hint-fold > summary::before { content: "▸"; display: inline-block; margin-right: 4px; color: var(--grey); transition: transform .15s; }
+details.hint-fold[open] > summary::before { transform: rotate(90deg); }
 legend { font-weight: 700; padding: 0 0 6px; font-size: 14px; color: var(--text); }
 .sub-group + .sub-group { border-top: 1px dashed var(--border); margin-top: 12px; padding-top: 8px; }
 .sub-title { font-size: 12px; font-weight: 700; color: var(--text-2); margin-bottom: 2px; }

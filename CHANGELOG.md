@@ -69,6 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Studio 配置页首行压矮**：「模型别名」（矮容器）与「状态栏 · Header/Footer」
   （高容器）互换位置，首行变为 流式卡片 / 模型别名 / 完成通知——第一屏可见
   有效内容明显增加。
+- **Studio 信息密度优化（渐进披露）**：「模型别名」「群聊安全边界」两个低频
+  区块改为默认折叠的 `details` 卡片，摘要行带启用状态徽标（已启用绿 /
+  已停用灰，跟随主开关实时同步、随界面语言切换）；两处多行长说明收进
+  「ℹ️ 查看说明」折叠条；`.grid` 加 `align-items: start` 避免折叠卡被同行
+  高卡撑出空白。
 - **Studio 字段调整改为 CreditDaddy 同款组件设置**：footer 与统一面板 header 两组
   字段由「复选框 + ↑↓ 箭头」改为 chips 组件——点按切换显隐（置灰 = 隐藏，`aria-pressed`
   同步）、按住拖动调整顺序（HTML5 DnD，换行感知的中线落点判定 + 左侧墨条落点提示）。

@@ -71,6 +71,7 @@ window.FryI18n = (function () {
       "",
     ],
     "btn.add-alias": ["＋ 添加别名", "＋ Add alias"],
+    "hint.more": ["ℹ️ 查看说明", "ℹ️ Details"],
     "alias.empty": ["暂无别名——模型名将按 ⇲ 截断显示。", "No aliases — model names will be ⇲-truncated."],
     "ph.alias-key": ["匹配子串，如 deepseek", "Match substring, e.g. deepseek"],
     "ph.alias-name": ["显示名，如 梁文谷⚡️", "Display name, e.g. LiangWengu⚡️"],

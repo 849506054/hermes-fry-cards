@@ -30,6 +30,7 @@
     I18N.setLang(I18N.getLang() === "en" ? "zh" : "en");
     refreshFieldChipLabels();
     renderAliasRows();
+    syncFoldBadges();
     if (document.querySelector('.panel[data-panel="status"]').classList.contains("active")) loadStatus();
   });
 
@@ -189,6 +190,17 @@
     return data;
   }
 
+  /* ---------- 折叠卡片摘要徽标（跟随主开关显示 已启用/已停用） ---------- */
+  function syncFoldBadges() {
+    document.querySelectorAll("[data-fold-badge]").forEach(function (b) {
+      var input = document.getElementById(b.dataset.foldBadge);
+      var on = !!(input && input.checked);
+      b.textContent = I18N.t(on ? "st.on" : "st.off");
+      b.classList.toggle("on", on);
+    });
+  }
+  document.getElementById("config-form").addEventListener("change", syncFoldBadges);
+
   /* ---------- 配置表单 ---------- */
   var __origChatTypes = undefined;
   var __origFields = undefined;
@@ -273,6 +285,7 @@
     var gsb = ((state.gateway || {}).group_security_boundary) || {};
     setCheck("f-gsb-enabled", gsb.enabled);
     document.getElementById("f-gsb-allow").value = (gsb.allow_chats || []).join("\n");
+    syncFoldBadges();
   }
 
   function num(sel) {
