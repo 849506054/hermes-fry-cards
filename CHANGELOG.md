@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   去重叠分支：完成文本与最后一段 ANSWER 是前缀/重叠关系（≥ `_MIN_OVERLAP_TAIL = 8`
   字）时原地接上而非追加；旁白段与 `_completion_answers` 重放去重行为不变
   （#13 契约回归测试锁定）。
+- **表密集型长回复拆卡估算低估，根治 300305 复发**（#22 请求 2）：
+  `estimate_answer_elements()` 重写为**两条路径取大者**——流式路径（1 个 markdown
+  元素 + 表格按 `(1+数据行)×列` 展开服务端单元格（表头行此前漏计）+ 每张 markdown
+  图片 1 个 img 元素（此前完全未计））与完成态路径（与 #18 的
+  `_append_content_elements` 渲染链逐步对齐：原生 table 1 元素/表 + 文本按
+  `_MAX_CHUNK_CHARS` 切块数）的保守上界；估算/渲染共用同一套
+  `split_markdown_tables`/`parse_table_block`，不再各扫一遍。
 
 ### 变更 / Changed
 - **300305 估算对照日志**（#22 请求 1）：`cardkit_batch_update` 失败告警新增
@@ -54,8 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   后，在 loading 清理与 `close_streaming` 之外追加一步：用
   `build_overflow_fallback_card()`（红色 header + 双语提示）整卡替换失控的流式卡，
   提示用户完整内容以纯文本在下方送达，避免聊天里出现「半封卡片 + 纯文本」两张内容
-  重叠的实体。（注：低估的主修复方向待上述日志定位后另行处理；#18 原生 table 已显著
-  缩小完成态表格路径的元素数。）
+  重叠的实体。
 
 ---
 

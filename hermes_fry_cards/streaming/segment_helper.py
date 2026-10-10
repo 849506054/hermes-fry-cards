@@ -20,46 +20,53 @@ FOOTER_RESERVE = 2  # footer 元素预留（hr + markdown）
 
 
 def estimate_answer_elements(text: str) -> int:
-    """估算 answer segment 当前文本在服务端占用的元素数。
+    """估算 answer segment 当前文本在服务端占用的元素数（保守取两条路径的大者）。
 
-    服务端真实元素 = 流式 markdown 元素本身 + 两个隐藏膨胀源：
-    1. markdown 表格展开：每个单元格在服务端渲染为独立元素（计入 200 上限）
-    2. 完成态长文切块：build_complete_card 按 _MAX_CHUNK_CHARS 拆成多个
-       markdown 元素（流式态单元素，完成态多元素，取大者保守估算）
+    服务端真实元素来自两条路径：
+    1. 流式态：answer 是单个 markdown 元素，但 markdown 表格在服务端渲染时
+       每个单元格（含表头）展开为独立元素并计入 200 硬上限（#5/#22 实测证实），
+       markdown 图片每张也占 1 个 img 元素；
+    2. 完成态：build_complete_card 经 _append_content_elements 重建——表格片段
+       出原生 table 元素（1 元素/表，超限表格已被 _downgrade_tables 降级为字段
+       列表并入文本），文本片段按 _MAX_CHUNK_CHARS 切块为多个 markdown 元素。
 
-    流式阶段 answer 文本持续增长，此估算必须每次 flush 重算并同步差值，
-    否则 element_count 严重低估 → 撞 300305 才被动拆卡。
+    取 max(流式, 完成态) 作为保守上界。流式阶段 answer 文本持续增长，此估算必须
+    每次 flush 重算并同步差值，否则 element_count 严重低估 → 撞 300305 才被动拆卡。
     """
     if not text or not text.strip():
         return 1
     from ..cardkit.markdown import (
-        _MAX_CHUNK_CHARS,
         _ANSWER_MAX_BYTES,
         _downgrade_tables,
-        _find_tables_outside_code_blocks,
+        _split_long_text,
         optimize_markdown_style,
+        parse_table_block,
+        split_markdown_tables,
     )
-    # 必须与 build_complete_card 的 answer 渲染链完全一致：
-    #   optimize_markdown_style → _downgrade_tables → clamp_utf8 → _split_long_text
-    # 少任何一步都会让估算偏离真实元素数。此前漏了 optimize_markdown_style：
-    # 它会抽走代码块再用占位符还原，而表格识别（_scan_markdown_blocks）对 fence
-    # 内外一视同仁地扫——若原文某段 pipe 字符在 optimize 前后被重排/还原，
-    # _find_tables_outside_code_blocks 的命中集合就变了，cells 随之失真。
+    # 必须与 _append_content_elements 的渲染链完全一致：
+    #   optimize_markdown_style → _downgrade_tables → clamp_utf8 → split_markdown_tables
     content = _downgrade_tables(optimize_markdown_style(text))
     # clamp_utf8 会把超长回答截断到 _ANSWER_MAX_BYTES，截断后行数减少、
-    # 表格可能被腰斩，chunks 也应按截断后的长度算，否则高估。
-    content = content if len(content.encode("utf-8")) <= _ANSWER_MAX_BYTES else content[:_ANSWER_MAX_BYTES]
-    cells = 0
-    for _start, _end, raw in _find_tables_outside_code_blocks(content):
-        rows = [ln for ln in raw.strip().splitlines() if ln.strip()]
-        if not rows:
-            continue
-        cols = max(1, rows[0].count("|") - 1)
-        # 表头行 + 分隔行不渲染为数据单元格，但表格容器与行列结构仍有开销，
-        # 按 (rows-1)*cols 估算数据格，另加 1 个表格元素
-        cells += max(1, (len(rows) - 1)) * cols + 1
-    chunks = max(1, -(-len(content) // _MAX_CHUNK_CHARS))
-    return max(1, chunks) + cells
+    # 表格可能被腰斩，两条路径都应按截断后的内容算，否则高估。
+    if len(content.encode("utf-8")) > _ANSWER_MAX_BYTES:
+        content = content[:_ANSWER_MAX_BYTES]
+
+    streaming = 1  # 流式态 answer 的 markdown 元素本身
+    complete = 0
+    for kind, part in split_markdown_tables(content):
+        if kind == "table":
+            parsed = parse_table_block(part)
+            if parsed:
+                header, rows = parsed
+                # 服务端把表头行也渲染为单元格：(1+数据行数)*列数 + 表格容器开销
+                streaming += (1 + max(1, len(rows))) * len(header) + 1
+                complete += 1  # 原生 table 元素只占 1 个元素位
+                continue
+        for chunk in _split_long_text(part):
+            if chunk.strip():
+                complete += 1
+            streaming += chunk.count("![")  # markdown 图片 → img 元素
+    return max(1, streaming, complete)
 
 
 def estimate_segment_elements(seg: Segment, all_steps: list[ToolDisplayStep]) -> int:

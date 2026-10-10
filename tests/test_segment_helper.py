@@ -110,3 +110,30 @@ def test_find_tool_split_offset_returns_none_for_single_step() -> None:
     seg = Segment(SegmentType.TOOL, "tool")
 
     assert find_tool_split_offset(base_count=1, seg=seg, all_steps=[_step()]) is None
+
+
+def test_estimate_answer_elements_exact_table_expansion() -> None:
+    """流式路径:表头行也渲染为单元格 — (1+数据行)*列 + 容器 + markdown 元素本身."""
+    table = "| A | B | C |\n|---|---|---|\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |"
+    # 流式: 1(markdown) + (1+2)*3(表头+数据格) + 1(容器) = 11;完成态仅 1(原生 table)
+    assert estimate_answer_elements(table) == 11
+
+
+def test_estimate_answer_elements_complete_path_dominant() -> None:
+    """长文本场景完成态切块多于流式单元素,取大者."""
+    # 完成态: 5 块(2400*4+400);流式: 1
+    assert estimate_answer_elements("x" * 10000) == 5
+
+
+def test_estimate_answer_elements_counts_images() -> None:
+    """markdown 图片每张占 1 个 img 元素(流式路径)."""
+    text = "图1 ![a](img_v3_1) 图2 ![b](img_v3_2) 图3 ![c](img_v3_3)"
+    assert estimate_answer_elements(text) == 4
+
+
+def test_estimate_answer_elements_mixed_table_and_text() -> None:
+    """表格+长文混合:流式(单元格)与完成态(原生表格+切块)分别算,取大者."""
+    table = "| A | B |\n|---|---|\n| 1 | 2 |"
+    text = table + "\n\n" + "y" * 5000
+    # 流式: 1 + (1+1)*2+1 = 6;完成态: 1(table) + 3(chunks) = 4 → 取 6
+    assert estimate_answer_elements(text) == 6
