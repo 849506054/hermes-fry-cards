@@ -4,6 +4,8 @@
 
   var $ = function (sel) { return document.querySelector(sel); };
   var esc = window.FryPreview.escapeHtml;
+  var I18N = window.FryI18n;
+  I18N.apply();
 
   /* ---------- 主题（亮 / 暗，localStorage 记忆） ---------- */
   var ICON_MOON = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
@@ -22,6 +24,15 @@
     applyTheme(cur === "dark" ? "light" : "dark");
   });
 
+  /* ---------- 语言切换（中 / 英，localStorage 记忆） ---------- */
+  var langBtn = document.getElementById("lang-toggle");
+  langBtn.addEventListener("click", function () {
+    I18N.setLang(I18N.getLang() === "en" ? "zh" : "en");
+    refreshFieldChipLabels();
+    renderAliasRows();
+    if (document.querySelector('.panel[data-panel="status"]').classList.contains("active")) loadStatus();
+  });
+
   /* ---------- 字段 chips（点按显隐 / 拖动排序 — CreditDaddy 组件设置同款） ---------- */
   var GRIP_SVG =
     '<svg class="drag-handle" viewBox="0 0 16 16" width="10" height="12" fill="currentColor" aria-hidden="true">' +
@@ -30,12 +41,13 @@
     '<circle cx="5" cy="12.8" r="1.4"/><circle cx="11" cy="12.8" r="1.4"/></svg>';
   var FIELD_DEFS = {
     "f-footer-fields": [
-      ["status", "状态"], ["elapsed", "耗时"], ["speed", "速度"], ["cache", "缓存命中"],
-      ["model", "模型"], ["tokens", "Tokens"], ["context", "上下文"],
+      ["status", "field.status"], ["elapsed", "field.elapsed"], ["speed", "field.speed"],
+      ["cache", "field.cache"], ["model", "field.model"], ["tokens", "field.tokens"], ["context", "field.context"],
     ],
     "f-panel-fields": [
-      ["model", "🍟 模型"], ["reasoning", "💭 思考数"], ["tools", "🔧 工具数"], ["context", "上下文"],
-      ["elapsed", "⏱️ 耗时"], ["speed", "⚡ 速度"], ["cache", "缓存命中"], ["tokens", "Tokens"], ["status", "状态"],
+      ["model", "field.model_p"], ["reasoning", "field.reasoning_p"], ["tools", "field.tools_p"],
+      ["context", "field.context"], ["elapsed", "field.elapsed_p"], ["speed", "field.speed_p"],
+      ["cache", "field.cache"], ["tokens", "field.tokens"], ["status", "field.status"],
     ],
   };
 
@@ -47,12 +59,21 @@
       chip.className = "field-chip";
       chip.draggable = true;
       chip.dataset.field = def[0];
+      chip.dataset.labelKey = def[1];
       chip.setAttribute("aria-pressed", "true");
-      chip.innerHTML = GRIP_SVG + "<span>" + esc(def[1]) + "</span>";
+      chip.innerHTML = GRIP_SVG + "<span>" + esc(I18N.t(def[1])) + "</span>";
       box.appendChild(chip);
     });
   }
   Object.keys(FIELD_DEFS).forEach(renderFieldChips);
+
+  /* 语言切换时只更新标签文本，不重建 DOM——显隐状态与拖动顺序全部保留 */
+  function refreshFieldChipLabels() {
+    document.querySelectorAll(".field-chip").forEach(function (chip) {
+      var span = chip.querySelector("span:last-child");
+      if (span && chip.dataset.labelKey) span.textContent = I18N.t(chip.dataset.labelKey);
+    });
+  }
 
   /* 点按切换显隐（置灰 = 隐藏） */
   document.querySelectorAll(".field-chips").forEach(function (box) {
@@ -159,7 +180,7 @@
     var res = await fetch(path, opts);
     var data = null;
     try { data = await res.json(); }
-    catch (e) { data = { ok: false, error: "响应不是 JSON (HTTP " + res.status + ")" }; }
+    catch (e) { data = { ok: false, error: I18N.t("toast.badjson") + res.status + ")" }; }
     if (!res.ok) {
       var err = new Error((data && data.error) || "HTTP " + res.status);
       err.status = res.status;
@@ -187,7 +208,7 @@
     if (!found) {
       var o = document.createElement("option");
       o.value = s;
-      o.textContent = s + "（自定义）";
+      o.textContent = s + (I18N.getLang() === "en" ? " (custom)" : "（自定义）");
       el.appendChild(o);
     }
     el.value = s;
@@ -342,8 +363,8 @@
   }
 
   $("#btn-reload").addEventListener("click", function () {
-    loadState().then(function () { toast("已重新读取磁盘配置", ""); })
-      .catch(function (e) { toast("读取失败：" + e.message, "err"); });
+    loadState().then(function () { toast(I18N.t("toast.reloaded"), ""); })
+      .catch(function (e) { toast(I18N.t("toast.readfail") + e.message, "err"); });
   });
 
   async function saveConfig() {
@@ -363,13 +384,13 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ entries: collectAliases() }),
       });
-      parts.push("别名 " + aliasData.count + " 条");
-      toast(parts.length ? "已保存：" + parts.join("；") : "无配置变化", "ok");
+      parts.push(I18N.t("toast.aliases").replace("{}", aliasData.count));
+      toast(parts.length ? I18N.t("toast.saved") + parts.join(" · ") : I18N.t("toast.nochange"), "ok");
       await loadState();
       await loadAliases();
       return true;
     } catch (err) {
-      toast("保存失败：" + err.message, "err");
+      toast(I18N.t("toast.savefail") + err.message, "err");
       return false;
     } finally {
       btn.disabled = false;
@@ -416,7 +437,7 @@
       mount.innerHTML = "";
       mount.appendChild(window.FryPreview.renderCard(data.card));
     } catch (err) {
-      toast("预览失败：" + err.message, "err");
+      toast(I18N.t("toast.previewfail") + err.message, "err");
     } finally {
       btn.disabled = false;
     }
@@ -424,22 +445,22 @@
 
   /* ---------- 状态诊断 ---------- */
   function hookBadge(v) {
-    if (v === "installed") return '<span class="badge ok">已安装</span>';
-    if (v === "not_installed") return '<span class="badge warn">未安装</span>';
-    return '<span class="badge mute">不可用</span>';
+    if (v === "installed") return '<span class="badge ok">' + esc(I18N.t("st.installed")) + "</span>";
+    if (v === "not_installed") return '<span class="badge warn">' + esc(I18N.t("st.not-installed")) + "</span>";
+    return '<span class="badge mute">' + esc(I18N.t("st.unavailable")) + "</span>";
   }
 
   function verifyLine(name, v) {
     var cls = v === "compatible" ? "ok" : v === "incompatible" ? "bad" : "mute";
-    var txt = v === "compatible" ? "兼容" : v === "incompatible" ? "不兼容" : "不可用";
-    return '<div class="status-line"><span>' + name + '</span><span class="badge ' + cls + '">' + txt + "</span></div>";
+    var txt = I18N.t(v === "compatible" ? "st.compatible" : v === "incompatible" ? "st.incompatible" : "st.unavailable");
+    return '<div class="status-line"><span>' + name + '</span><span class="badge ' + cls + '">' + esc(txt) + "</span></div>";
   }
 
   function renderStatus(st) {
     var patchedBadge;
-    if (st.patched === null || st.patched === undefined) patchedBadge = '<span class="badge mute">未找到 Hermes</span>';
-    else if (st.patched) patchedBadge = '<span class="badge ok">已注入</span>';
-    else patchedBadge = '<span class="badge warn">未注入</span>';
+    if (st.patched === null || st.patched === undefined) patchedBadge = '<span class="badge mute">' + esc(I18N.t("st.no-hermes")) + "</span>";
+    else if (st.patched) patchedBadge = '<span class="badge ok">' + esc(I18N.t("st.patches-installed")) + "</span>";
+    else patchedBadge = '<span class="badge warn">' + esc(I18N.t("st.patches-missing")) + "</span>";
     var markers = Object.keys(st.markers || {}).map(function (k) {
       var v = st.markers[k];
       return '<span class="badge ' + (v ? "ok" : "bad") + '">' + esc(k) + "</span>";
@@ -447,31 +468,31 @@
 
     $("#status-mount").innerHTML =
       '<div class="status-grid">' +
-      '<div class="status-card"><h3>网关补丁</h3>' +
-      '<div class="status-line"><span>状态</span>' + patchedBadge + "</div>" +
+      '<div class="status-card"><h3>' + esc(I18N.t("st.patched-gw")) + "</h3>" +
+      '<div class="status-line"><span>' + esc(I18N.t("st.state")) + "</span>" + patchedBadge + "</div>" +
       (st.target ? '<div class="status-line mono">' + esc(st.target) + "</div>" : "") +
       (markers ? '<div class="status-line">' + markers + "</div>" : "") +
       '<div class="status-line"><span>Cron</span>' + hookBadge(st.cron_hook) +
       "<span>Clarify</span>" + hookBadge(st.clarify_hook) + "</div></div>" +
 
-      '<div class="status-card"><h3>兼容性（verify）</h3>' +
+      '<div class="status-card"><h3>' + esc(I18N.t("st.verify")) + "</h3>" +
       verifyLine("gateway", st.verify.gateway) +
       verifyLine("cron", st.verify.cron) +
       verifyLine("clarify", st.verify.clarify) + "</div>" +
 
-      '<div class="status-card"><h3>运行配置</h3>' +
-      '<div class="status-line"><span>流式卡片</span>' +
-      (st.streaming_enabled ? '<span class="badge ok">已启用</span>' : '<span class="badge warn">已停用</span>') +
+      '<div class="status-card"><h3>' + esc(I18N.t("st.runtime")) + "</h3>" +
+      '<div class="status-line"><span>' + esc(I18N.t("st.streaming")) + "</span>" +
+      (st.streaming_enabled ? '<span class="badge ok">' + esc(I18N.t("st.on")) + "</span>" : '<span class="badge warn">' + esc(I18N.t("st.off")) + "</span>") +
       "</div>" +
-      '<div class="status-line"><span>内容提示语</span><span class="badge mute">' + esc(st.content_lang || "-") + "</span></div>" +
-      '<div class="status-line"><span>飞书凭据</span>' +
-      (st.credentials ? '<span class="badge ok">已配置</span>' : '<span class="badge bad">缺失</span>') + "</div></div>" +
+      '<div class="status-line"><span>' + esc(I18N.t("st.content-lang")) + '</span><span class="badge mute">' + esc(st.content_lang || "-") + "</span></div>" +
+      '<div class="status-line"><span>' + esc(I18N.t("st.creds")) + "</span>" +
+      (st.credentials ? '<span class="badge ok">' + esc(I18N.t("st.configured")) + "</span>" : '<span class="badge bad">' + esc(I18N.t("st.missing")) + "</span>") + "</div></div>" +
 
-      '<div class="status-card"><h3>Hermes 环境</h3>' +
-      '<div class="status-line"><span>插件版本</span><span class="badge mute">' + esc(st.fry_version || "未知") + "</span></div>" +
-      '<div class="status-line"><span>Hermes Agent</span><span class="badge mute">' + esc(st.hermes_version || "未找到 CLI") + "</span></div>" +
-      '<div class="status-line mono">' + esc(st.hermes_python || "（未找到 hermes python）") + "</div>" +
-      '<div class="status-line mono">' + esc(st.install_dir || "（未找到安装目录）") + "</div></div>" +
+      '<div class="status-card"><h3>' + esc(I18N.t("st.env")) + "</h3>" +
+      '<div class="status-line"><span>' + esc(I18N.t("st.plugin-ver")) + '</span><span class="badge mute">' + esc(st.fry_version || I18N.t("st.unknown")) + "</span></div>" +
+      '<div class="status-line"><span>Hermes Agent</span><span class="badge mute">' + esc(st.hermes_version || I18N.t("st.no-cli")) + "</span></div>" +
+      '<div class="status-line mono">' + esc(st.hermes_python || I18N.t("st.no-python")) + "</div>" +
+      '<div class="status-line mono">' + esc(st.install_dir || I18N.t("st.no-dir")) + "</div></div>" +
       "</div>";
   }
 
@@ -481,14 +502,14 @@
       var data = await api("/api/state");
       renderStatus(data.status);
     } catch (err) {
-      mount.innerHTML = '<div class="status-card"><div class="status-line">加载失败：' + esc(err.message) + "</div></div>";
+      mount.innerHTML = '<div class="status-card"><div class="status-line">' + esc(I18N.t("st.loadfail") + err.message) + "</div></div>";
     }
   }
 
   $("#btn-refresh-status").addEventListener("click", loadStatus);
 
   $("#btn-restart").addEventListener("click", async function () {
-    if (!window.confirm("重启 Hermes 网关？运行中的会话会被中断。")) return;
+    if (!window.confirm(I18N.t("confirm.restart"))) return;
     var btn = $("#btn-restart");
     btn.disabled = true;
     try {
@@ -497,19 +518,19 @@
         headers: { "Content-Type": "application/json" },
         body: "{}",
       });
-      if (d.ok) toast("网关重启成功", "ok");
-      else toast("重启失败：" + (d.error || (d.output || "").slice(-300) || "未知错误"), "err");
+      if (d.ok) toast(I18N.t("toast.restart-ok"), "ok");
+      else toast(I18N.t("toast.restart-fail") + (d.error || (d.output || "").slice(-300) || I18N.t("toast.unknown-err")), "err");
       if (d.output) console.log("[restart]", d.output);
       loadStatus();
     } catch (err) {
-      toast("重启请求失败：" + err.message, "err");
+      toast(I18N.t("toast.restart-reqfail") + err.message, "err");
     } finally {
       btn.disabled = false;
     }
   });
 
   /* ---------- 模型别名编辑器 ---------- */
-  var DAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
+  function dayLabel(di) { return (I18N.getLang() === "en" ? ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] : ["日", "一", "二", "三", "四", "五", "六"])[di]; }
   var aliasEntries = []; // [{key, value: string | {name, timeAliases}}]
 
   function aliasIsObject(entry) {
@@ -520,7 +541,7 @@
     var host = $("#alias-rows");
     host.innerHTML = "";
     if (!aliasEntries.length) {
-      host.innerHTML = '<div class="alias-empty">暂无别名——模型名将按 ⇲ 截断显示。</div>';
+      host.innerHTML = '<div class="alias-empty">' + esc(I18N.t("alias.empty")) + "</div>";
       return;
     }
     aliasEntries.forEach(function (entry, i) {
@@ -542,12 +563,12 @@
             // 中文习惯周一开始显示；底层数据仍 0=周日（claw 兼容），仅展示顺序调整
             var dayChips = [1, 2, 3, 4, 5, 6, 0].map(function (di) {
               var on = days.indexOf(di) >= 0 ? " on" : "";
-              return '<button type="button" class="chip day-chip' + on + '" data-day="' + di + '">' + DAY_LABELS[di] + "</button>";
+              return '<button type="button" class="chip day-chip' + on + '" data-day="' + di + '">' + dayLabel(di) + "</button>";
             }).join("");
             var presets =
               '<span class="day-presets">' +
-              '<button type="button" class="chip day-preset' + (sameDays(days, [1, 2, 3, 4, 5]) ? " on" : "") + '" data-mode="work">工作日</button>' +
-              '<button type="button" class="chip day-preset' + (sameDays(days, [0, 6]) ? " on" : "") + '" data-mode="weekend">周末</button>' +
+              '<button type="button" class="chip day-preset' + (sameDays(days, [1, 2, 3, 4, 5]) ? " on" : "") + '" data-mode="work">' + esc(I18N.t("preset.work")) + "</button>" +
+              '<button type="button" class="chip day-preset' + (sameDays(days, [0, 6]) ? " on" : "") + '" data-mode="weekend">' + esc(I18N.t("preset.weekend")) + "</button>" +
               "</span>";
             // 两段式：星期一行（含快捷选择）/ 时间+名称一行——窄列（三列布局）下不再随机换行
             return (
@@ -557,7 +578,7 @@
               '<input type="time" class="rule-start" value="' + (rule.start || "") + '">' +
               "<span>–</span>" +
               '<input type="time" class="rule-end" value="' + (rule.end || "") + '">' +
-              '<input type="text" class="rule-name" placeholder="该时段显示名" value="' + escAttr(rule.name) + '">' +
+              '<input type="text" class="rule-name" placeholder="' + escAttr(I18N.t("ph.rule-name")) + '" value="' + escAttr(rule.name) + '">' +
               '<button type="button" class="chip rule-del">✕</button>' +
               "</div>" +
               "</div>"
@@ -568,17 +589,17 @@
         rulesHtml =
           '<div class="alias-rules">' +
           rulesInner +
-          '<div><button type="button" class="chip add-rule">＋ 时段规则</button></div>' +
-          '<div class="alias-default-row"><span>其他时间（以上规则都不命中时）：</span>' +
-          '<input type="text" class="alias-default-name" placeholder="默认显示名" value="' + escAttr(nameVal) + '"></div>' +
+          '<div><button type="button" class="chip add-rule">' + esc(I18N.t("btn.add-rule")) + "</button></div>" +
+          '<div class="alias-default-row"><span>' + esc(I18N.t("alias.default-row")) + "</span>" +
+          '<input type="text" class="alias-default-name" placeholder="' + escAttr(I18N.t("ph.alias-default")) + '" value="' + escAttr(nameVal) + '"></div>' +
           "</div>";
       }
       div.innerHTML =
         '<div class="alias-row">' +
-        '<input type="text" class="alias-key" placeholder="匹配子串，如 deepseek" value="' + escAttr(entry.key) + '">' +
-        (isObj ? "" : '<input type="text" class="alias-name" placeholder="显示名，如 梁文谷⚡️" value="' + escAttr(nameVal) + '">') +
-        '<button type="button" class="chip alias-time' + (isObj ? " on" : "") + '" title="时段人设">🕐</button>' +
-        '<button type="button" class="chip alias-del" title="删除">✕</button>' +
+        '<input type="text" class="alias-key" placeholder="' + escAttr(I18N.t("ph.alias-key")) + '" value="' + escAttr(entry.key) + '">' +
+        (isObj ? "" : '<input type="text" class="alias-name" placeholder="' + escAttr(I18N.t("ph.alias-name")) + '" value="' + escAttr(nameVal) + '">') +
+        '<button type="button" class="chip alias-time' + (isObj ? " on" : "") + '" title="' + escAttr(I18N.t("title.alias-time")) + '">🕐</button>' +
+        '<button type="button" class="chip alias-del" title="' + escAttr(I18N.t("title.del")) + '">✕</button>' +
         "</div>" +
         rulesHtml;
       host.appendChild(div);
@@ -596,7 +617,7 @@
         return { key: e.key, value: e.value };
       });
     } catch (e) {
-      toast("读取别名失败：" + e.message, "err");
+      toast(I18N.t("toast.readfail") + e.message, "err");
       aliasEntries = [];
     }
     renderAliasRows();
@@ -632,7 +653,7 @@
       if (aliasIsObject(entry)) {
         if (
           (entry.value.timeAliases || []).length &&
-          !window.confirm("转回静态名称将丢弃全部时段规则，仅保留默认名。继续？")
+          !window.confirm(I18N.t("confirm.alias-static"))
         ) {
           return;
         }
@@ -705,5 +726,5 @@
   /* ---------- 初始化 ---------- */
   loadState()
     .then(function () { return loadAliases(); })
-    .catch(function (e) { toast("读取配置失败：" + e.message, "err"); });
+    .catch(function (e) { toast(I18N.t("toast.readfail") + e.message, "err"); });
 })();

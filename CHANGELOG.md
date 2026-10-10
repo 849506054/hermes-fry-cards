@@ -54,7 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   同一公式的 `max(24px, calc((100vw - max-width)/2 + 24px))` 左边距（960/1380 两档
   断点同步），并加 `max-width` 防窄屏溢出。
 
+### 新增 / Added
+- **Studio 界面中英文 i18n**：顶栏新增语言切换按钮（主题切换左侧，`fry-lang`
+  localStorage 记忆；`?lang=en` / `#lang=en` 调试直切不写存储）。新增
+  `studio/web/js/i18n.js` 声明式字典模块（`data-i18n` textContent /
+  `data-i18n-html` 富文本 / title / placeholder / aria-label），静态文案、字段
+  chips 标签、toast 提示、状态诊断页、模型别名编辑器（含星期 chips）、预览渲染器
+  `pickText` 语言偏好全部接入；语言切换不重建 DOM，chips 显隐状态与拖动顺序保留。
+
 ### 变更 / Changed
+- **Studio 顶栏与内容区同宽居中**：`.topbar` 由全宽贴边改为 `max-width: 960px`
+  （≥1280px 时 1380px）居中——品牌区左缘与右侧 GitHub / 语言 / 主题按钮组右缘
+  均与内容区对齐，不再横跨视口。
 - **Studio 字段调整改为 CreditDaddy 同款组件设置**：footer 与统一面板 header 两组
   字段由「复选框 + ↑↓ 箭头」改为 chips 组件——点按切换显隐（置灰 = 隐藏，`aria-pressed`
   同步）、按住拖动调整顺序（HTML5 DnD，换行感知的中线落点判定 + 左侧墨条落点提示）。

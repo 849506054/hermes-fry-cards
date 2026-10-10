@@ -5,7 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>🍟 fry-cards Studio</title>
 <link rel="stylesheet" href="/css/style.css">
-<script>try { document.documentElement.setAttribute("data-theme", localStorage.getItem("fry-theme") || "light"); } catch (e) { }</script>
+<script>
+try {
+  document.documentElement.setAttribute("data-theme", localStorage.getItem("fry-theme") || "light");
+  document.documentElement.setAttribute("lang", (localStorage.getItem("fry-lang") || "zh") === "en" ? "en" : "zh-CN");
+} catch (e) { }
+</script>
 </head>
 <body>
 <header class="topbar">
@@ -13,25 +18,26 @@
     <span class="brand-logo">🍟</span>
     <div class="brand-text">
       <div class="brand-title">fry-cards <span class="brand-sub">Studio</span></div>
-      <div class="brand-meta"><span id="brand-version"></span><span class="brand-dot">·</span>配置 <code>~/.hermes/config.yaml</code></div>
+      <div class="brand-meta"><span id="brand-version"></span><span class="brand-dot">·</span><span data-i18n="brand.meta">配置 <code>~/.hermes/config.yaml</code></span></div>
     </div>
   </div>
   <div class="topbar-right">
     <a class="icon-link" href="https://github.com/techysy/hermes-fry-cards" target="_blank" rel="noreferrer" title="GitHub" aria-label="GitHub"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
-    <button type="button" id="theme-toggle" class="icon-btn" title="切换亮 / 暗主题" aria-label="切换主题"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
+    <button type="button" id="lang-toggle" class="icon-btn lang-btn" data-i18n-title="title.lang" data-i18n-aria="title.lang" aria-label="切换语言">EN</button>
+    <button type="button" id="theme-toggle" class="icon-btn" data-i18n-title="title.theme" data-i18n-aria="title.theme" title="切换亮 / 暗主题" aria-label="切换主题"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></button>
   </div>
 </header>
 
 <nav class="tabs" id="tabs">
-  <button class="tab active" data-tab="config">配置</button>
-  <button class="tab" data-tab="preview">预览</button>
-  <button class="tab" data-tab="status">状态</button>
+  <button class="tab active" data-tab="config" data-i18n="tab.config">配置</button>
+  <button class="tab" data-tab="preview" data-i18n="tab.preview">预览</button>
+  <button class="tab" data-tab="status" data-i18n="tab.status">状态</button>
 </nav>
 
 <main>
   <!-- ================= 配置 ================= -->
   <section class="panel active" data-panel="config">
-    <div class="hint warn">
+    <div class="hint warn" data-i18n-html data-i18n="hint.warn">
       ⚠️ 保存会<strong>重写整个 config.yaml（YAML 注释会丢失）</strong>；写前自动备份到
       <code>~/.hermes/backups/fry_studio/</code>（保留 20 份）。
       只写白名单键，你手写的其他配置原样保留。保存后需 <code>hermes gateway restart</code> 生效。
@@ -39,105 +45,105 @@
     <form id="config-form">
       <div class="grid">
         <fieldset>
-          <legend>流式卡片</legend>
-          <label class="row"><span class="lbl">启用流式卡片</span><input type="checkbox" id="f-enabled"></label>
-          <label class="row"><span class="lbl">卡片宽度 width_mode</span>
+          <legend data-i18n="legend.streaming">流式卡片</legend>
+          <label class="row"><span class="lbl" data-i18n="lbl.enabled">启用流式卡片</span><input type="checkbox" id="f-enabled"></label>
+          <label class="row"><span class="lbl" data-i18n="lbl.width">卡片宽度 width_mode</span>
             <select id="f-width"><option value="default">default</option><option value="compact">compact</option><option value="fill">fill</option></select>
           </label>
-          <label class="row"><span class="lbl">内容提示语语言</span>
-            <select id="f-content-lang"><option value="zh">zh（中文）</option><option value="en">en（English）</option></select>
+          <label class="row"><span class="lbl" data-i18n="lbl.content-lang">内容提示语语言</span>
+            <select id="f-content-lang"><option value="zh" data-i18n="opt.zh">zh（中文）</option><option value="en" data-i18n="opt.en">en（English）</option></select>
           </label>
-          <label class="row"><span class="lbl">发卡片的聊天类型</span>
+          <label class="row"><span class="lbl" data-i18n="lbl.chat-types">发卡片的聊天类型</span>
             <select id="f-chat-types">
-              <option value="all">全部类型</option>
-              <option value="dm">仅私聊 dm</option>
-              <option value="group">仅群聊 group</option>
+              <option value="all" data-i18n="opt.all">全部类型</option>
+              <option value="dm" data-i18n="opt.dm">仅私聊 dm</option>
+              <option value="group" data-i18n="opt.group">仅群聊 group</option>
             </select>
           </label>
-          <label class="row"><span class="lbl">正文文字大小</span>
-            <select id="f-body-text-size"><option value="normal_v2">normal_v2</option><option value="normal">normal</option><option value="heading">heading（大）</option><option value="notation">notation（小）</option></select>
+          <label class="row"><span class="lbl" data-i18n="lbl.body-size">正文文字大小</span>
+            <select id="f-body-text-size"><option value="normal_v2">normal_v2</option><option value="normal">normal</option><option value="heading" data-i18n="opt.heading">heading（大）</option><option value="notation" data-i18n="opt.notation">notation（小）</option></select>
           </label>
         </fieldset>
 
         <fieldset>
-          <legend>状态栏 · 顶部 Header 与底部 Footer</legend>
+          <legend data-i18n="legend.statusbar">状态栏 · 顶部 Header 与底部 Footer</legend>
           <div class="sub-group">
-            <div class="sub-title">Header 顶部状态栏</div>
-            <label class="row"><span class="lbl">显示 header</span><input type="checkbox" id="f-header-enabled"></label>
-            <label class="row"><span class="lbl">快捷回复去标题阈值（秒，0=始终显示）</span>
+            <div class="sub-title" data-i18n="sub.header">Header 顶部状态栏</div>
+            <label class="row"><span class="lbl" data-i18n="lbl.header-enabled">显示 header</span><input type="checkbox" id="f-header-enabled"></label>
+            <label class="row"><span class="lbl" data-i18n="lbl.header-min">快捷回复去标题阈值（秒，0=始终显示）</span>
               <input type="number" id="f-header-min-duration" min="0" max="86400" step="0.5">
             </label>
           </div>
           <div class="sub-group">
-            <div class="sub-title">Footer 底部元数据栏</div>
-            <div class="hint" style="margin-bottom: 8px;">ℹ️ 一般不开启：模型 / 耗时 / 上下文等元数据由「统一面板」承载。</div>
-            <label class="row"><span class="lbl">显示 footer</span><input type="checkbox" id="f-footer-enabled"></label>
-            <label class="row"><span class="lbl">显示字段标签</span><input type="checkbox" id="f-footer-show-label"></label>
-            <label class="row"><span class="lbl">文字大小</span>
-              <select id="f-footer-text-size"><option value="notation">notation（小）</option><option value="normal">normal</option></select>
+            <div class="sub-title" data-i18n="sub.footer">Footer 底部元数据栏</div>
+            <div class="hint" style="margin-bottom: 8px;" data-i18n="hint.footer">ℹ️ 一般不开启：模型 / 耗时 / 上下文等元数据由「统一面板」承载。</div>
+            <label class="row"><span class="lbl" data-i18n="lbl.footer-enabled">显示 footer</span><input type="checkbox" id="f-footer-enabled"></label>
+            <label class="row"><span class="lbl" data-i18n="lbl.footer-label">显示字段标签</span><input type="checkbox" id="f-footer-show-label"></label>
+            <label class="row"><span class="lbl" data-i18n="lbl.text-size">文字大小</span>
+              <select id="f-footer-text-size"><option value="notation" data-i18n="opt.notation">notation（小）</option><option value="normal">normal</option></select>
             </label>
-            <div class="row col"><span class="lbl">footer 字段</span>
-              <span class="field-tip">点按切换显隐（置灰 = 隐藏）；按住拖动调整顺序。</span>
+            <div class="row col"><span class="lbl" data-i18n="lbl.footer-fields">footer 字段</span>
+              <span class="field-tip" data-i18n="tip.fields">点按切换显隐（置灰 = 隐藏）；按住拖动调整顺序。</span>
               <div class="field-chips" id="f-footer-fields"></div>
-              <span class="lbl" id="fields-note" hidden>当前为多行字段配置：保存时原样保留，UI 不可编辑。</span>
+              <span class="lbl" id="fields-note" hidden data-i18n="fields-note">当前为多行字段配置：保存时原样保留，UI 不可编辑。</span>
             </div>
           </div>
         </fieldset>
 
         <fieldset>
-          <legend>完成通知</legend>
-          <label class="row"><span class="lbl">卡片完成后发送提醒消息</span><input type="checkbox" id="f-completion-notice"></label>
-          <label class="row"><span class="lbl">提醒文字前缀</span><input type="text" id="f-completion-notice-text" maxlength="80"></label>
-          <div class="hint">通知会回复在卡片消息下，仅在卡片成功收尾后发送；错误会附带「出错」。</div>
+          <legend data-i18n="legend.notice">完成通知</legend>
+          <label class="row"><span class="lbl" data-i18n="lbl.notice-enabled">卡片完成后发送提醒消息</span><input type="checkbox" id="f-completion-notice"></label>
+          <label class="row"><span class="lbl" data-i18n="lbl.notice-text">提醒文字前缀</span><input type="text" id="f-completion-notice-text" maxlength="80"></label>
+          <div class="hint" data-i18n="hint.notice">通知会回复在卡片消息下，仅在卡片成功收尾后发送；错误会附带「出错」。</div>
         </fieldset>
 
         <fieldset>
-          <legend>统一面板（header 字段自由组合）</legend>
-          <label class="row"><span class="lbl">完成态面板保持展开</span><input type="checkbox" id="f-panel-expanded"></label>
-          <label class="row"><span class="lbl">展示推理过程</span><input type="checkbox" id="f-show-reasoning"></label>
-          <label class="row"><span class="lbl">展示工具调用面板</span><input type="checkbox" id="f-show-tool-use"></label>
-          <label class="row"><span class="lbl">面板 header 显示上下文</span><input type="checkbox" id="f-show-context"></label>
-          <label class="row"><span class="lbl">上下文显示格式</span>
+          <legend data-i18n="legend.panel">统一面板（header 字段自由组合）</legend>
+          <label class="row"><span class="lbl" data-i18n="lbl.panel-expanded">完成态面板保持展开</span><input type="checkbox" id="f-panel-expanded"></label>
+          <label class="row"><span class="lbl" data-i18n="lbl.show-reasoning">展示推理过程</span><input type="checkbox" id="f-show-reasoning"></label>
+          <label class="row"><span class="lbl" data-i18n="lbl.show-tool-use">展示工具调用面板</span><input type="checkbox" id="f-show-tool-use"></label>
+          <label class="row"><span class="lbl" data-i18n="lbl.show-context">面板 header 显示上下文</span><input type="checkbox" id="f-show-context"></label>
+          <label class="row"><span class="lbl" data-i18n="lbl.context-mode">上下文显示格式</span>
             <select id="f-context-mode">
               <option value="text">text</option><option value="bar">bar</option>
               <option value="text_bar">text_bar</option><option value="block">block</option>
               <option value="block_text">block_text</option>
             </select>
           </label>
-          <label class="row"><span class="lbl">最多独立推理面板数（1~50）</span>
+          <label class="row"><span class="lbl" data-i18n="lbl.max-panels">最多独立推理面板数（1~50）</span>
             <input type="number" id="f-max-panels" min="1" max="50" step="1">
           </label>
-          <label class="row"><span class="lbl">面板最小耗时阈值（秒，短回复不显示）</span>
+          <label class="row"><span class="lbl" data-i18n="lbl.unified-min">面板最小耗时阈值（秒，短回复不显示）</span>
             <input type="number" id="f-unified-min-duration" min="0" max="600" step="0.5">
           </label>
-          <label class="row"><span class="lbl">面板 header 截断长模型名</span><input type="checkbox" id="f-truncate-model"></label>
-          <div class="row col"><span class="lbl">面板 header 字段</span>
-            <span class="field-tip">点按切换显隐（置灰 = 隐藏）；按住拖动调整顺序。</span>
+          <label class="row"><span class="lbl" data-i18n="lbl.truncate-model">面板 header 截断长模型名</span><input type="checkbox" id="f-truncate-model"></label>
+          <div class="row col"><span class="lbl" data-i18n="lbl.panel-fields">面板 header 字段</span>
+            <span class="field-tip" data-i18n="tip.fields">点按切换显隐（置灰 = 隐藏）；按住拖动调整顺序。</span>
             <div class="field-chips" id="f-panel-fields"></div>
-            <span class="hint">ℹ️ 思考数/工具数为面板专属计数；上下文跟随上方「显示上下文」开关与显示格式；无数据的字段自动隐藏。</span>
+            <span class="hint" data-i18n="hint.panel-fields">ℹ️ 思考数/工具数为面板专属计数；上下文跟随上方「显示上下文」开关与显示格式；无数据的字段自动隐藏。</span>
           </div>
         </fieldset>
 
         <fieldset>
-          <legend>模型别名（统一面板 header 模型名）</legend>
-          <label class="row"><span class="lbl">启用别名（关闭则回落 ⇲ 截断）</span><input type="checkbox" id="f-alias-enabled"></label>
-          <div class="hint" style="margin-bottom: 8px;">
+          <legend data-i18n="legend.alias">模型别名（统一面板 header 模型名）</legend>
+          <label class="row"><span class="lbl" data-i18n="lbl.alias-enabled">启用别名（关闭则回落 ⇲ 截断）</span><input type="checkbox" id="f-alias-enabled"></label>
+          <div class="hint" style="margin-bottom: 8px;" data-i18n-html data-i18n="hint.alias">
             键 = 模型名子串（不区分大小写，按添加顺序首中即生效）；值填显示名，或点 🕐 加
             <b>时段人设</b>——按北京时间 HH:MM + 星期自动切换（如 DeepSeek 峰谷：峰段梁文锋⚡️ / 谷段梁文谷⚡️）。
             改完下一条消息即热生效。
           </div>
           <div id="alias-rows" class="alias-rows"></div>
-          <button type="button" class="btn ghost" id="btn-add-alias" style="margin-top: 8px;">＋ 添加别名</button>
+          <button type="button" class="btn ghost" id="btn-add-alias" style="margin-top: 8px;" data-i18n="btn.add-alias">＋ 添加别名</button>
         </fieldset>
 
         <fieldset>
-          <legend>🛡️ 群聊安全边界（modular Hermes 0.21+）</legend>
-          <label class="row"><span class="lbl">启用（群聊回复套输出边界，私聊 DM 不受影响）</span><input type="checkbox" id="f-gsb-enabled"></label>
+          <legend data-i18n="legend.gsb">🛡️ 群聊安全边界（modular Hermes 0.21+）</legend>
+          <label class="row"><span class="lbl" data-i18n="lbl.gsb-enabled">启用（群聊回复套输出边界，私聊 DM 不受影响）</span><input type="checkbox" id="f-gsb-enabled"></label>
           <div class="row col">
-            <span class="lbl">豁免群白名单（一行一个 chat_id，oc_xxx；填入的群不套边界）</span>
+            <span class="lbl" data-i18n="lbl.gsb-allow">豁免群白名单（一行一个 chat_id，oc_xxx；填入的群不套边界）</span>
             <textarea id="f-gsb-allow" class="gsb-allow" rows="3" placeholder="oc_xxxxxxxxxxxxxxxx"></textarea>
           </div>
-          <div class="hint" style="margin-bottom: 0;">
+          <div class="hint" style="margin-bottom: 0;" data-i18n-html data-i18n="hint.gsb">
             开启后群聊回复将被约束：<b>不透露 API key / 密码 / 令牌 / 内网 IP / 凭据 / 私人信息</b>，
             被群友索要时婉拒并引导私聊。边界走每轮 ephemeral prompt 注入（不碰持久 system prompt），
             hook 逻辑在插件内，<code>hermes update</code> 不会覆盖；改完下一条消息生效，必要时
@@ -146,50 +152,51 @@
         </fieldset>
       </div>
       <div class="actions">
-        <button type="button" class="btn ghost" id="btn-reload">放弃修改，重新读取</button>
-        <button type="button" class="btn primary" id="btn-save-preview">保存并预览</button>
-        <button type="submit" class="btn" id="btn-save">仅保存</button>
+        <button type="button" class="btn ghost" id="btn-reload" data-i18n="btn.reload">放弃修改，重新读取</button>
+        <button type="button" class="btn primary" id="btn-save-preview" data-i18n="btn.save-preview">保存并预览</button>
+        <button type="submit" class="btn" id="btn-save" data-i18n="btn.save">仅保存</button>
       </div>
     </form>
   </section>
 
   <!-- ================= 预览 ================= -->
   <section class="panel" data-panel="preview">
-    <div class="hint">
+    <div class="hint" data-i18n-html data-i18n="hint.preview">
       服务端用<strong>真实 builder</strong> 渲染（与线上卡片同一代码路径），非前端模拟。
       未保存的表单改动不会参与渲染；统一面板阈值等深层项以<strong>已保存配置</strong>为准。
     </div>
     <div class="preview-controls">
-      <label>场景
+      <label><span data-i18n="lbl.scenario">场景</span>
         <select id="p-scenario">
-          <option value="workflow">工作流交错（思考+工具+答案）</option>
-          <option value="short">快捷回复（短耗时）</option>
-          <option value="tables">多表格压力（第6张起压缩）</option>
-          <option value="longtext">超长文本（18KB 截断）</option>
+          <option value="workflow" data-i18n="opt.sc-workflow">工作流交错（思考+工具+答案）</option>
+          <option value="short" data-i18n="opt.sc-short">快捷回复（短耗时）</option>
+          <option value="tables" data-i18n="opt.sc-tables">多表格压力（第6张起压缩）</option>
+          <option value="longtext" data-i18n="opt.sc-longtext">超长文本（18KB 截断）</option>
         </select>
       </label>
-      <label>状态
-        <select id="p-state"><option value="completed">完成态</option><option value="streaming">流式中</option></select>
+      <label><span data-i18n="lbl.state">状态</span>
+        <select id="p-state"><option value="completed" data-i18n="opt.completed">完成态</option><option value="streaming" data-i18n="opt.streaming">流式中</option></select>
       </label>
-      <label>结果
-        <select id="p-outcome"><option value="completed">✅ 完成</option><option value="error">❌ 出错</option><option value="aborted">🛑 中止</option></select>
+      <label><span data-i18n="lbl.outcome">结果</span>
+        <select id="p-outcome"><option value="completed" data-i18n="opt.oc-done">✅ 完成</option><option value="error" data-i18n="opt.oc-error">❌ 出错</option><option value="aborted" data-i18n="opt.oc-aborted">🛑 中止</option></select>
       </label>
-      <button type="button" class="btn primary" id="btn-render">渲染预览</button>
+      <button type="button" class="btn primary" id="btn-render" data-i18n="btn.render">渲染预览</button>
     </div>
-    <div id="preview-mount" class="preview-mount"><div class="preview-empty">点击「渲染预览」查看卡片</div></div>
+    <div id="preview-mount" class="preview-mount"><div class="preview-empty" data-i18n="preview.empty">点击「渲染预览」查看卡片</div></div>
   </section>
 
   <!-- ================= 状态 ================= -->
   <section class="panel" data-panel="status">
     <div class="actions">
-      <button type="button" class="btn ghost" id="btn-refresh-status">刷新</button>
-      <button type="button" class="btn danger" id="btn-restart">重启网关</button>
+      <button type="button" class="btn ghost" id="btn-refresh-status" data-i18n="btn.refresh">刷新</button>
+      <button type="button" class="btn danger" id="btn-restart" data-i18n="btn.restart">重启网关</button>
     </div>
-    <div id="status-mount"><div class="preview-empty">加载中…</div></div>
+    <div id="status-mount"><div class="preview-empty" data-i18n="status.loading">加载中…</div></div>
   </section>
 </main>
 
 <div id="toast" class="toast" hidden></div>
+<script src="/js/i18n.js"></script>
 <script src="/js/preview.js"></script>
 <script src="/js/app.js"></script>
 </body>

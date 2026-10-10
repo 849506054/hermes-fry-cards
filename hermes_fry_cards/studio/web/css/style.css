@@ -48,9 +48,13 @@ body {
 }
 
 /* ---------- 顶栏：logo + 大标题 + 副行，右侧主题切换 ---------- */
+/* 与 main 同一居中公式：品牌区左缘、右侧按钮组右缘都与内容区对齐（不再全宽贴边） */
 .topbar {
   display: flex; align-items: center; gap: 16px;
-  padding: 14px 24px 10px;
+  max-width: 960px; margin: 0 auto; padding: 14px 24px 10px;
+}
+@media (min-width: 1280px) {
+  .topbar { max-width: 1380px; }
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand-logo { font-size: 30px; line-height: 1; }
@@ -68,6 +72,8 @@ body {
 }
 .icon-link:hover, .icon-btn:hover { border-color: var(--border-strong); transform: translateY(-1px); }
 .icon-link svg, .icon-btn svg { display: block; }
+/* 语言切换按钮：显示目标语言（EN / 中） */
+.lang-btn { font-size: 12px; font-weight: 800; letter-spacing: .3px; }
 
 /* ---------- 胶囊导航（CreditDaddy tab 条） ---------- */
 /* main 是 max-width: 960px 居中 + 左右 24px padding；tab 条用同样公式算左边距，
