@@ -70,10 +70,17 @@ body {
 .icon-link svg, .icon-btn svg, .op-btn svg { display: block; }
 
 /* ---------- 胶囊导航（CreditDaddy tab 条） ---------- */
+/* main 是 max-width: 960px 居中 + 左右 24px padding；tab 条用同样公式算左边距，
+   保证胶囊左缘始终与内容区左缘对齐（宽屏不再贴视口边「溢出」内容边界外）。 */
 .tabs {
-  display: inline-flex; gap: 2px; margin: 2px 24px 6px;
+  display: inline-flex; gap: 2px;
+  margin: 2px max(24px, calc((100vw - 960px) / 2 + 24px)) 6px;
   background: var(--card); border-radius: 999px; padding: 4px;
-  box-shadow: var(--shadow); width: fit-content;
+  box-shadow: var(--shadow); width: fit-content; max-width: calc(100vw - 48px);
+}
+/* 与 @media (min-width:1280px) 的 main max-width: 1380px 保持同一公式 */
+@media (min-width: 1280px) {
+  .tabs { margin: 2px max(24px, calc((100vw - 1380px) / 2 + 24px)) 6px; }
 }
 .tab {
   border: none; background: transparent; padding: 7px 20px;

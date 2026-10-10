@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_append_content_elements` 渲染链逐步对齐：原生 table 1 元素/表 + 文本按
   `_MAX_CHUNK_CHARS` 切块数）的保守上界；估算/渲染共用同一套
   `split_markdown_tables`/`parse_table_block`，不再各扫一遍。
+- **Studio 胶囊导航宽屏下与内容区错位**：tab 条原用固定 `24px` 边距贴视口左边，
+  而 `main` 是 `max-width` 居中布局——宽屏下胶囊超出内容区左边界。改为与 main
+  同一公式的 `max(24px, calc((100vw - max-width)/2 + 24px))` 左边距（960/1380 两档
+  断点同步），并加 `max-width` 防窄屏溢出。
 
 ### 变更 / Changed
 - **300305 估算对照日志**（#22 请求 1）：`cardkit_batch_update` 失败告警新增
