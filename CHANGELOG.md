@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.10] - 2026-10-10
+
+### 修复 / Fixed
+- **完成态卡片正文出现两遍**（#19）：流式丢尾（卡片只推到答案前缀就收尾）时，
+  `on_completion_answer` 的 `endswith` 守卫只认「流式段以完整完成文本结尾」，判假后
+  把完整文本 `_new_answer` 追加成第二段 ANSWER，封卡后同一段内容出现两遍。新增
+  去重叠分支：完成文本与最后一段 ANSWER 是前缀/重叠关系（≥ `_MIN_OVERLAP_TAIL = 8`
+  字）时原地接上而非追加；旁白段与 `_completion_answers` 重放去重行为不变
+  （#13 契约回归测试锁定）。
+
+---
+
 ## [0.4.9] - 2026-10-10
 
 ### 修复 / Fixed

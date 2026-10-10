@@ -12,6 +12,11 @@ class SegmentType(StrEnum):
     TOOL = "tool"
 
 
+# 判定「流式段尾与完成文本开头重叠」所需的最小重叠长度：低于此值多为偶然同字，
+# 按新段追加（保留工具间旁白语义）；落后流式的真实重叠通常达数百字。
+_MIN_OVERLAP_TAIL = 8
+
+
 class Segment:
     """单个内容段 — reasoning / answer / tool."""
 
@@ -162,6 +167,24 @@ class SegmentState:
         ):
             self._completion_answers.add(text)
             return
+
+        # 流式落后（卡片只推到答案前缀就收尾）时，完成文本就是同一段答案的完整版本：
+        # 与已有 ANSWER 段去重叠后原地接上，而不是再追加一段（否则封卡后正文出现两遍）。
+        for segment in reversed(self.segments):
+            if segment.type != SegmentType.ANSWER:
+                continue
+            if text.startswith(segment.text):
+                self._completion_answers.add(text)
+                segment.text = text
+                segment.dirty = True
+                return
+            for overlap in range(len(segment.text), _MIN_OVERLAP_TAIL - 1, -1):
+                if segment.text.endswith(text[:overlap]):
+                    self._completion_answers.add(text)
+                    segment.text = segment.text[:-overlap] + text
+                    segment.dirty = True
+                    return
+            break
 
         self._completion_answers.add(text)
         self._new_answer(text)
