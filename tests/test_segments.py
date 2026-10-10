@@ -7,7 +7,7 @@ import time
 import pytest
 
 from hermes_fry_cards.streaming import segments as segments_module
-from hermes_fry_cards.streaming.segments import Segment, SegmentState
+from hermes_fry_cards.streaming.segments import Segment, SegmentState, SegmentType
 
 
 class TestSegmentDefaults:
@@ -206,3 +206,53 @@ class TestMultiRound:
         assert state.segments[2].tool_end_offset == 3  # tool1 finalized by tool2
         assert state.segments[4].tool_end_offset == 5  # tool2 finalized by finalize
         assert state.segments[5].elapsed_ms > 0  # r2 finalized by a2
+
+
+# ── answer 段防爆闸（回归：300305 疯狂拆卡）────────────────────────────
+
+
+class TestAnswerSegmentCap:
+    """answer↔tool 频繁交替时 answer 段数量必须有上限。
+
+    回归：step-5-preview 这类每个工具调用前后都吐过渡语的模型，20 轮工具调用
+    产生 20 个独立 answer 段（reasoning 有 max_reasoning_panels 闸、TOOL 段共享
+    同一个 tool_panel element_id，唯独 answer 无上限），把 _counter 推到 82、
+    卡片元素逼近飞书 200 硬上限 → 300305 反复失败 + 疯狂拆卡。
+    """
+
+    def test_answer_segments_capped_under_tool_alternation(self) -> None:
+        state = SegmentState()
+        for i in range(20):
+            state.on_reasoning_delta(f"think {i} ")
+            state.on_answer_delta(f"过渡语 {i} ")
+            state.on_tool_event(i + 1)
+
+        answers = [s for s in state.segments if s.type == SegmentType.ANSWER]
+        assert len(answers) == state.max_answer_segments
+        # 未加闸时这里是 20，segment 总数 43
+        assert len(state.segments) < 25
+
+    def test_cap_preserves_all_answer_text(self) -> None:
+        state = SegmentState()
+        for i in range(20):
+            state.on_answer_delta(f"a{i} ")
+            state.on_tool_event(i + 1)
+
+        merged = "".join(s.text for s in state.segments if s.type == SegmentType.ANSWER)
+        for i in range(20):
+            assert f"a{i} " in merged, f"合并后丢了 a{i}"
+
+    def test_short_conversations_keep_separate_segments(self) -> None:
+        """未达上限时行为不变——既有契约（a1 → tool → mid 是独立段）必须保持。"""
+        state = SegmentState()
+        state.on_answer_delta("a1")
+        state.on_tool_event(2)
+        state.on_answer_delta("mid")
+        assert [s.type for s in state.segments] == ["answer", "tool", "answer"]
+
+    def test_cap_is_configurable(self) -> None:
+        state = SegmentState(max_answer_segments=2)
+        for i in range(6):
+            state.on_answer_delta(f"a{i} ")
+            state.on_tool_event(i + 1)
+        assert sum(1 for s in state.segments if s.type == SegmentType.ANSWER) == 2

@@ -34,10 +34,21 @@ def estimate_answer_elements(text: str) -> int:
         return 1
     from ..cardkit.markdown import (
         _MAX_CHUNK_CHARS,
+        _ANSWER_MAX_BYTES,
         _downgrade_tables,
         _find_tables_outside_code_blocks,
+        optimize_markdown_style,
     )
-    content = _downgrade_tables(text)
+    # 必须与 build_complete_card 的 answer 渲染链完全一致：
+    #   optimize_markdown_style → _downgrade_tables → clamp_utf8 → _split_long_text
+    # 少任何一步都会让估算偏离真实元素数。此前漏了 optimize_markdown_style：
+    # 它会抽走代码块再用占位符还原，而表格识别（_scan_markdown_blocks）对 fence
+    # 内外一视同仁地扫——若原文某段 pipe 字符在 optimize 前后被重排/还原，
+    # _find_tables_outside_code_blocks 的命中集合就变了，cells 随之失真。
+    content = _downgrade_tables(optimize_markdown_style(text))
+    # clamp_utf8 会把超长回答截断到 _ANSWER_MAX_BYTES，截断后行数减少、
+    # 表格可能被腰斩，chunks 也应按截断后的长度算，否则高估。
+    content = content if len(content.encode("utf-8")) <= _ANSWER_MAX_BYTES else content[:_ANSWER_MAX_BYTES]
     cells = 0
     for _start, _end, raw in _find_tables_outside_code_blocks(content):
         rows = [ln for ln in raw.strip().splitlines() if ln.strip()]
