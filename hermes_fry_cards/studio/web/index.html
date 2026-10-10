@@ -66,28 +66,15 @@ try {
         </fieldset>
 
         <fieldset>
-          <legend data-i18n="legend.statusbar">状态栏 · 顶部 Header 与底部 Footer</legend>
-          <div class="sub-group">
-            <div class="sub-title" data-i18n="sub.header">Header 顶部状态栏</div>
-            <label class="row"><span class="lbl" data-i18n="lbl.header-enabled">显示 header</span><input type="checkbox" id="f-header-enabled"></label>
-            <label class="row"><span class="lbl" data-i18n="lbl.header-min">快捷回复去标题阈值（秒，0=始终显示）</span>
-              <input type="number" id="f-header-min-duration" min="0" max="86400" step="0.5">
-            </label>
+          <legend data-i18n="legend.alias">模型别名（统一面板 header 模型名）</legend>
+          <label class="row"><span class="lbl" data-i18n="lbl.alias-enabled">启用别名（关闭则回落 ⇲ 截断）</span><input type="checkbox" id="f-alias-enabled"></label>
+          <div class="hint" style="margin-bottom: 8px;" data-i18n-html data-i18n="hint.alias">
+            键 = 模型名子串（不区分大小写，按添加顺序首中即生效）；值填显示名，或点 🕐 加
+            <b>时段人设</b>——按北京时间 HH:MM + 星期自动切换（如 DeepSeek 峰谷：峰段梁文锋⚡️ / 谷段梁文谷⚡️）。
+            改完下一条消息即热生效。
           </div>
-          <div class="sub-group">
-            <div class="sub-title" data-i18n="sub.footer">Footer 底部元数据栏</div>
-            <div class="hint" style="margin-bottom: 8px;" data-i18n="hint.footer">ℹ️ 一般不开启：模型 / 耗时 / 上下文等元数据由「统一面板」承载。</div>
-            <label class="row"><span class="lbl" data-i18n="lbl.footer-enabled">显示 footer</span><input type="checkbox" id="f-footer-enabled"></label>
-            <label class="row"><span class="lbl" data-i18n="lbl.footer-label">显示字段标签</span><input type="checkbox" id="f-footer-show-label"></label>
-            <label class="row"><span class="lbl" data-i18n="lbl.text-size">文字大小</span>
-              <select id="f-footer-text-size"><option value="notation" data-i18n="opt.notation">notation（小）</option><option value="normal">normal</option></select>
-            </label>
-            <div class="row col"><span class="lbl" data-i18n="lbl.footer-fields">footer 字段</span>
-              <span class="field-tip" data-i18n="tip.fields">点按切换显隐（置灰 = 隐藏）；按住拖动调整顺序。</span>
-              <div class="field-chips" id="f-footer-fields"></div>
-              <span class="lbl" id="fields-note" hidden data-i18n="fields-note">当前为多行字段配置：保存时原样保留，UI 不可编辑。</span>
-            </div>
-          </div>
+          <div id="alias-rows" class="alias-rows"></div>
+          <button type="button" class="btn ghost" id="btn-add-alias" style="margin-top: 8px;" data-i18n="btn.add-alias">＋ 添加别名</button>
         </fieldset>
 
         <fieldset>
@@ -125,15 +112,28 @@ try {
         </fieldset>
 
         <fieldset>
-          <legend data-i18n="legend.alias">模型别名（统一面板 header 模型名）</legend>
-          <label class="row"><span class="lbl" data-i18n="lbl.alias-enabled">启用别名（关闭则回落 ⇲ 截断）</span><input type="checkbox" id="f-alias-enabled"></label>
-          <div class="hint" style="margin-bottom: 8px;" data-i18n-html data-i18n="hint.alias">
-            键 = 模型名子串（不区分大小写，按添加顺序首中即生效）；值填显示名，或点 🕐 加
-            <b>时段人设</b>——按北京时间 HH:MM + 星期自动切换（如 DeepSeek 峰谷：峰段梁文锋⚡️ / 谷段梁文谷⚡️）。
-            改完下一条消息即热生效。
+          <legend data-i18n="legend.statusbar">状态栏 · 顶部 Header 与底部 Footer</legend>
+          <div class="sub-group">
+            <div class="sub-title" data-i18n="sub.header">Header 顶部状态栏</div>
+            <label class="row"><span class="lbl" data-i18n="lbl.header-enabled">显示 header</span><input type="checkbox" id="f-header-enabled"></label>
+            <label class="row"><span class="lbl" data-i18n="lbl.header-min">快捷回复去标题阈值（秒，0=始终显示）</span>
+              <input type="number" id="f-header-min-duration" min="0" max="86400" step="0.5">
+            </label>
           </div>
-          <div id="alias-rows" class="alias-rows"></div>
-          <button type="button" class="btn ghost" id="btn-add-alias" style="margin-top: 8px;" data-i18n="btn.add-alias">＋ 添加别名</button>
+          <div class="sub-group">
+            <div class="sub-title" data-i18n="sub.footer">Footer 底部元数据栏</div>
+            <div class="hint" style="margin-bottom: 8px;" data-i18n="hint.footer">ℹ️ 一般不开启：模型 / 耗时 / 上下文等元数据由「统一面板」承载。</div>
+            <label class="row"><span class="lbl" data-i18n="lbl.footer-enabled">显示 footer</span><input type="checkbox" id="f-footer-enabled"></label>
+            <label class="row"><span class="lbl" data-i18n="lbl.footer-label">显示字段标签</span><input type="checkbox" id="f-footer-show-label"></label>
+            <label class="row"><span class="lbl" data-i18n="lbl.text-size">文字大小</span>
+              <select id="f-footer-text-size"><option value="notation" data-i18n="opt.notation">notation（小）</option><option value="normal">normal</option></select>
+            </label>
+            <div class="row col"><span class="lbl" data-i18n="lbl.footer-fields">footer 字段</span>
+              <span class="field-tip" data-i18n="tip.fields">点按切换显隐（置灰 = 隐藏）；按住拖动调整顺序。</span>
+              <div class="field-chips" id="f-footer-fields"></div>
+              <span class="lbl" id="fields-note" hidden data-i18n="fields-note">当前为多行字段配置：保存时原样保留，UI 不可编辑。</span>
+            </div>
+          </div>
         </fieldset>
 
         <fieldset>
