@@ -7,50 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.4.11] - 2026-10-10
+## [0.5.0] - 2026-10-10
 
-### 变更 / Changed
-- **300305 估算对照日志**（#22 请求 1）:`cardkit_batch_update` 失败告警新增
-  `new_est=[el_id~estimate,...]` 逐项估算;`complete attempt N failed` 告警新增
-  `card_elements`（完成态重建卡片真实元素数，含长文切块二次膨胀）与 `tracked`
-  （流式期追踪估算）两个字段——两条日志配对即可定位低估来自流式估算还是完成态重建。
-
-### 新增 / Added
-- **封卡失败整卡降级替换**（#22 请求 3):3 次 `complete` 重建均失败（典型 300305）
-  后,在 loading 清理与 `close_streaming` 之外追加一步:用
-  `build_overflow_fallback_card()`(红色 header + 双语提示)整卡替换失控的流式卡,
-  提示用户完整内容以纯文本在下方送达,避免聊天里出现「半封卡片 + 纯文本」两张内容
-  重叠的实体。(注:低估的主修复方向待上述日志定位后另行处理;#18 原生 table 已显著
-  缩小完成态表格路径的元素数。)
-
----
-
-## [0.4.10] - 2026-10-10
-
-### 修复 / Fixed
-- **完成态卡片正文出现两遍**（#19）：流式丢尾（卡片只推到答案前缀就收尾）时，
-  `on_completion_answer` 的 `endswith` 守卫只认「流式段以完整完成文本结尾」，判假后
-  把完整文本 `_new_answer` 追加成第二段 ANSWER，封卡后同一段内容出现两遍。新增
-  去重叠分支：完成文本与最后一段 ANSWER 是前缀/重叠关系（≥ `_MIN_OVERLAP_TAIL = 8`
-  字）时原地接上而非追加；旁白段与 `_completion_answers` 重放去重行为不变
-  （#13 契约回归测试锁定）。
-
----
-
-## [0.4.9] - 2026-10-10
-
-### 修复 / Fixed
-- **卡片内 markdown 表格长单元格被裁字**（#18）：飞书富文本表格按可用宽度折行但行高
-  固定不涨，折出的第 2、3 行被硬裁（三列以上、单元格文本偏长时移动端基本必现）。
-  渲染管线改为把表格片段输出为**原生 `table` 元素**（`columns[].width: "auto"` +
-  `row_height: "auto"`，超宽自动可滑动），文本片段仍走 markdown 元素——完成态卡片
-  ANSWER 段、`build_cron_card()`、`build_background_card()` 三处共用
-  `_append_content_elements()` 统一入口。超限兜底沿用 `_MAX_CARD_TABLES = 5`
-  的 `_downgrade_tables()` 字段列表（第 6 个表格起仍无损压缩）。
-
----
-
-## [0.4.8] - 2026-10-10
+集中修复 @849506054 报告的 6 条 issue（#17–#22，全部带实测数据与根因定位）；
+版本号直接落在 0.5.0，中间的 0.4.8–0.4.11 未单独发布。
 
 ### 修复 / Fixed
 - **reasoning delta 拖慢长回复 87–262s**（#17）：`on_reasoning()` 每个 delta 都重读并
@@ -69,6 +29,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   时刻），`*/10` 的 job 永远差一个周期。改为投递时刻
   `datetime.now().astimezone().isoformat()`（`patch.py::on_cron_deliver` 内覆盖，
   无需重装注入生效）。
+- **卡片内 markdown 表格长单元格被裁字**（#18）：飞书富文本表格按可用宽度折行但行高
+  固定不涨，折出的第 2、3 行被硬裁（三列以上、单元格文本偏长时移动端基本必现）。
+  渲染管线改为把表格片段输出为**原生 `table` 元素**（`columns[].width: "auto"` +
+  `row_height: "auto"`，超宽自动可滑动），文本片段仍走 markdown 元素——完成态卡片
+  ANSWER 段、`build_cron_card()`、`build_background_card()` 三处共用
+  `_append_content_elements()` 统一入口。超限兜底沿用 `_MAX_CARD_TABLES = 5`
+  的 `_downgrade_tables()` 字段列表（第 6 个表格起仍无损压缩）。
+- **完成态卡片正文出现两遍**（#19）：流式丢尾（卡片只推到答案前缀就收尾）时，
+  `on_completion_answer` 的 `endswith` 守卫只认「流式段以完整完成文本结尾」，判假后
+  把完整文本 `_new_answer` 追加成第二段 ANSWER，封卡后同一段内容出现两遍。新增
+  去重叠分支：完成文本与最后一段 ANSWER 是前缀/重叠关系（≥ `_MIN_OVERLAP_TAIL = 8`
+  字）时原地接上而非追加；旁白段与 `_completion_answers` 重放去重行为不变
+  （#13 契约回归测试锁定）。
+
+### 变更 / Changed
+- **300305 估算对照日志**（#22 请求 1）：`cardkit_batch_update` 失败告警新增
+  `new_est=[el_id~estimate,...]` 逐项估算；`complete attempt N failed` 告警新增
+  `card_elements`（完成态重建卡片真实元素数，含长文切块二次膨胀）与 `tracked`
+  （流式期追踪估算）两个字段——两条日志配对即可定位低估来自流式估算还是完成态重建。
+
+### 新增 / Added
+- **封卡失败整卡降级替换**（#22 请求 3）：3 次 `complete` 重建均失败（典型 300305）
+  后，在 loading 清理与 `close_streaming` 之外追加一步：用
+  `build_overflow_fallback_card()`（红色 header + 双语提示）整卡替换失控的流式卡，
+  提示用户完整内容以纯文本在下方送达，避免聊天里出现「半封卡片 + 纯文本」两张内容
+  重叠的实体。（注：低估的主修复方向待上述日志定位后另行处理；#18 原生 table 已显著
+  缩小完成态表格路径的元素数。）
 
 ---
 
