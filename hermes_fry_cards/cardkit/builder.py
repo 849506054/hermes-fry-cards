@@ -1000,3 +1000,28 @@ def build_background_card(preview: str, content: str) -> dict[str, Any]:
         card["config"]["summary"] = {"content": summary}
     _append_content_elements(card["body"]["elements"], body)
     return card
+
+
+def build_overflow_fallback_card() -> dict[str, Any]:
+    """封卡失败（300305 元素超限）的降级卡片：一句提示，正文由纯文本兜底投递（#22）."""
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "locales": _LOCALES},
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": _T["status_error"][0],
+                "i18n_content": _t("status_error"),
+            },
+            "template": "red",
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": _T["card_overflow_fallback"][0],
+                    "i18n_content": _t("card_overflow_fallback"),
+                }
+            ]
+        },
+    }

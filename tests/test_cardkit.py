@@ -1016,3 +1016,19 @@ class TestCompleteCardFooter:
         # 仅保留 answer，无任何状态/统计 footer
         assert all("✅" not in c and "💭" not in c and "🔧" not in c for c in contents)
         assert any("hi" in c for c in contents)
+
+
+class TestOverflowFallbackCard:
+    """封卡失败（300305）时的降级卡（#22 请求 3）：一句提示替代「半封卡片 + 纯文本重发」."""
+
+    def test_shape_and_i18n(self) -> None:
+        from hermes_fry_cards.cardkit.builder import build_overflow_fallback_card
+
+        card = build_overflow_fallback_card()
+        assert card["schema"] == "2.0"
+        assert card["header"]["template"] == "red"
+        elements = card["body"]["elements"]
+        assert len(elements) == 1
+        content = elements[0]["content"]
+        assert "plain text" in content
+        assert "纯文本" in elements[0]["i18n_content"]["zh_cn"]
