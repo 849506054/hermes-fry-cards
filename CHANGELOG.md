@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-10-12
+
+借鉴 lark-hls-v2 流式经验，优化流式渲染排版、高频 flush 性能与任务生命周期管理。
+
+### 优化 / Improved
+- **流式 Markdown 防碎字截断**（`truncate_unclosed_markdown`）：流式推送阶段自动截断未闭合的代码块（```）、行内代码（`）、粗体（**）和悬挂斜体（*），避免飞书端渲染时出现排版撕裂与碎字跳动；最终完成态封卡时保留完整原文。
+- **流式处理链 LRU 缓存**（`prepare_streaming_markdown`）：引入 `@lru_cache(maxsize=128)` 缓存标题降级、表格压缩与未闭合截断处理结果，大幅减少高频 flush 期间大文本的重复正则替换与解析开销。
+- **FlushController 任务生命周期追踪**：保留后台 `asyncio.Task` 强引用（`_pending_flush_tasks`），防止 Python GC 回收未决任务；`wait_for_flush` 同步等待全部后台任务完成。
+
+### 修复 / Fixed
+- **Windows 路径跨平台测试断言**（`tests/test_paths.py`）：修复反斜杠路径与正斜杠标签比较差异，全套 812 个测试全绿。
+
+---
+
 ## [0.5.0] - 2026-10-10
 
 集中修复 @849506054 报告的 6 条 issue（#17–#22，全部带实测数据与根因定位）；

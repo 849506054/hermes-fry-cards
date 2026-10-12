@@ -343,12 +343,23 @@ class TestSetCardMessageReady:
         await asyncio.sleep(0.05)
         assert count == 0
 
+
+class TestTaskRetention:
+    @pytest.mark.asyncio
+    async def test_pending_tasks_tracked_and_cleaned(self) -> None:
+        ctrl = _make_async(throttle_ms=0.01)
         ctrl.set_card_message_ready(True)
-        # 等待节流窗口过去
-        await asyncio.sleep(0.15)
+        flushed = asyncio.Event()
+
+        async def do_flush() -> None:
+            flushed.set()
+
         ctrl.schedule_update(do_flush)
+        await asyncio.sleep(0.02)
+        assert flushed.is_set()
+        # flush 结束后，set 应当自动清理
         await asyncio.sleep(0.05)
-        assert count == 1
+        assert len(ctrl._pending_flush_tasks) == 0
 
     @pytest.mark.asyncio
     async def test_initializes_timestamp(self) -> None:

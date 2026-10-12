@@ -30,6 +30,7 @@ class FlushController:
         self._completed = False
         self._card_message_ready = False
         self._flush_resolvers: list[asyncio.Future[None]] = []
+        self._pending_flush_tasks: set[asyncio.Task[None]] = set()
         self._loop = loop if loop is not None else asyncio.get_running_loop()
 
     @property
@@ -80,7 +81,7 @@ class FlushController:
 
     async def wait_for_flush(self) -> None:
         """等待进行中的 flush 完成."""
-        if not self._flush_in_progress:
+        if not self._flush_in_progress and not self._pending_flush_tasks:
             return
         future: asyncio.Future[None] = self._loop.create_future()
         self._flush_resolvers.append(future)
@@ -112,11 +113,17 @@ class FlushController:
             do_flush,
         )
 
+    def _create_flush_task(self, do_flush: Callable[[], Awaitable[None]]) -> asyncio.Task[None]:
+        task = self._loop.create_task(self._do_flush(do_flush))
+        self._pending_flush_tasks.add(task)
+        task.add_done_callback(self._pending_flush_tasks.discard)
+        return task
+
     def _do_flush_task(self, do_flush: Callable[[], Awaitable[None]]) -> None:
         self._pending_timer = None
         # 直接 create_task，消除 call_soon 间接调用在 timer 触发与任务执行之间的窗口：
         # mark_completed() 在该窗口内到达时，_do_flush 开头的 _completed 检查已来不及。
-        self._loop.create_task(self._do_flush(do_flush))
+        self._create_flush_task(do_flush)
 
     async def _do_flush(self, do_flush: Callable[[], Awaitable[None]]) -> None:
         if self._completed or self._flush_in_progress:
@@ -147,7 +154,7 @@ class FlushController:
         # 此时即使 _needs_reflush 被竞态清零，也按已完成处理（不再重刷）。
         if self._needs_reflush and not self._completed and not completed_snapshot:
             self._needs_reflush = False
-            self._loop.create_task(self._do_flush(do_flush))
+            self._create_flush_task(do_flush)
 
     def _cancel_timer(self) -> None:
         if self._pending_timer is not None:

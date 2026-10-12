@@ -17,9 +17,9 @@ from ..cardkit.builder import (
     build_streaming_card_v2,
 )
 from ..cardkit.markdown import (
-    _downgrade_tables,
     clamp_utf8,
     optimize_markdown_style,
+    prepare_streaming_markdown,
 )
 from ..feishu import (
     CARDKIT_CONTENT_FAILED,
@@ -413,7 +413,7 @@ class StreamingController:
                     content = seg.text
                     if session.image_resolver:
                         content = session.image_resolver.resolve_images(content)
-                    content = _downgrade_tables(optimize_markdown_style(content)) or " "
+                    content = prepare_streaming_markdown(content) or " "
                     content = clamp_utf8(content, preserve_tail=False)
                     session.sequence += 1
                     _logger.info(

@@ -111,10 +111,10 @@ def test_not_found_diagnostic_lists_tried_roots(
     with pytest.raises(PatcherError) as exc_info:
         cls()
     msg = str(exc_info.value)
-    assert label in msg
+    assert str(Path(label)) in msg or label in msg.replace("\\", "/")
     assert "tried:" in msg
     assert str(tmp_path / "hermes-agent") in msg
-    assert "/usr/local/lib/hermes-agent" in msg
+    assert str(Path("/usr/local/lib/hermes-agent")) in msg
     assert "HERMES_HOME" in msg
 
 

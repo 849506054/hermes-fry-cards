@@ -11,6 +11,8 @@ from hermes_fry_cards.cardkit.markdown import (
     _find_tables_outside_code_blocks,
     _scan_markdown_blocks,
     clamp_utf8,
+    prepare_streaming_markdown,
+    truncate_unclosed_markdown,
 )
 from hermes_fry_cards.feishu import (
     CARDKIT_FREQUENCY_LIMITED,
@@ -149,3 +151,48 @@ class TestContentLangSelection:
         result = _downgrade_tables(text)
         assert "compact field lists" in result
         assert "紧凑字段列表" not in result
+
+
+# --- 截断未闭合 Markdown 标记与流式流水线 ---
+
+
+class TestTruncateUnclosedMarkdown:
+    def test_empty_text(self) -> None:
+        assert truncate_unclosed_markdown("") == ""
+
+    def test_closed_elements_remain_untouched(self) -> None:
+        text = "Hello **world** with `code` and\n```python\nprint(1)\n```\nAll closed."
+        assert truncate_unclosed_markdown(text) == text
+
+    def test_unclosed_fenced_code_block(self) -> None:
+        text = "Prefix\n```python\ndef foo():\n    pass"
+        # 奇数个 ```，截断至最后一个 ```
+        assert truncate_unclosed_markdown(text) == "Prefix\n"
+
+    def test_unclosed_inline_code(self) -> None:
+        text = "Normal text with `partial code"
+        assert truncate_unclosed_markdown(text) == "Normal text with "
+
+    def test_unclosed_bold(self) -> None:
+        text = "Text with **bold text in progress"
+        assert truncate_unclosed_markdown(text) == "Text with "
+
+    def test_trailing_single_asterisk_truncated(self) -> None:
+        text = "Text with single asterisk *"
+        assert truncate_unclosed_markdown(text) == "Text with single asterisk "
+
+    def test_trailing_double_asterisk_truncated(self) -> None:
+        text = "Text ending in **"
+        assert truncate_unclosed_markdown(text) == "Text ending in "
+
+
+class TestPrepareStreamingMarkdown:
+    def test_pipeline_integrates_truncation_and_caching(self) -> None:
+        raw = "# Heading 1\n\nSome text with **broken bold"
+        res1 = prepare_streaming_markdown(raw)
+        assert "#### Heading 1" in res1
+        assert "**broken bold" not in res1
+        # LRU 缓存测试：多次调用同一实例返回相同内容
+        res2 = prepare_streaming_markdown(raw)
+        assert res1 == res2
+

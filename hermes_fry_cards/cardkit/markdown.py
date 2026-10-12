@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .i18n import _content_t
 
@@ -25,7 +26,9 @@ __all__ = [
     "clamp_utf8",
     "optimize_markdown_style",
     "parse_table_block",
+    "prepare_streaming_markdown",
     "split_markdown_tables",
+    "truncate_unclosed_markdown",
 ]
 
 
@@ -441,3 +444,55 @@ def _split_long_text(text: str, limit: int = _MAX_CHUNK_CHARS) -> list[str]:
         chunks.append(text[:cut])
         text = text[cut:].lstrip("\n")
     return chunks
+
+
+def truncate_unclosed_markdown(text: str) -> str:
+    """截断未闭合的 Markdown 成对标记，避免流式排版撕裂与碎字.
+
+    流式阶段调用，保证推送的临时文本标记完整闭合；被截断的部分随后续增量自然闭合补齐。
+    """
+    if not text:
+        return text
+
+    result = text
+
+    # 1. 检查代码块 ```（成对出现，未闭合则截断至最后开口处）
+    fenced_count = result.count("```")
+    if fenced_count % 2 != 0:
+        last_open = result.rfind("```")
+        if last_open >= 0:
+            result = result[:last_open]
+
+    # 2. 检查行内代码 `
+    backtick_count = result.count("`")
+    if backtick_count % 2 != 0:
+        last_open = result.rfind("`")
+        if last_open >= 0:
+            result = result[:last_open]
+
+    # 3. 检查粗体 **
+    bold_count = result.count("**")
+    if bold_count % 2 != 0:
+        last_open = result.rfind("**")
+        if last_open >= 0:
+            result = result[:last_open]
+
+    # 4. 检查悬挂的斜体 *（排除 **）
+    if result.endswith("*") and not result.endswith("**"):
+        result = result[:-1]
+
+    return result if result else text
+
+
+@lru_cache(maxsize=128)
+def prepare_streaming_markdown(text: str) -> str:
+    """流式 Answer 的 Markdown 优化管道（带 LRU 缓存）:
+
+    1. optimize_markdown_style 标题降级与代码块保护
+    2. _downgrade_tables 表格无损压缩
+    3. truncate_unclosed_markdown 截断未闭合标记防碎字
+    """
+    opt = optimize_markdown_style(text)
+    dt = _downgrade_tables(opt)
+    return truncate_unclosed_markdown(dt)
+
