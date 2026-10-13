@@ -268,7 +268,8 @@ class TestCompletionOverlapDedup:
 
     @staticmethod
     def _answer_texts(state: SegmentState) -> list[str]:
-        return [s.text for s in state.segments if s.type == SegmentType.ANSWER]
+        """非空 ANSWER 段文本（合并后被清空的段不参与断言）."""
+        return [s.text for s in state.segments if s.type == SegmentType.ANSWER and s.text]
 
     def test_lagging_stream_merged_in_place(self) -> None:
         """场景 B：流式落后（本次事故形态）→ 单段完整文本."""
@@ -322,6 +323,43 @@ class TestCompletionOverlapDedup:
         state.on_completion_answer("。完全不同的完成文本(长度足够超过阈值)")
         assert self._answer_texts(state) == ["第一段尾。", "。完全不同的完成文本(长度足够超过阈值)"]
 
+    def test_multi_answer_split_by_reasoning_merged(self) -> None:
+        """场景 G：reasoning 把一轮回复切成多个 answer 段 → 合并成一段，开头不出现两遍.
+
+        回归：on_completion_answer 只跟「最后一个」ANSWER 段去重，被 reasoning/tool
+        切开的其余段仍留着被 final 覆盖的开头，封卡后「表格+正文」出现两遍。
+        流式前缀可能缺行（表格分隔行还没推到），故判据是「按序拼接是 final 的子序列」。
+        """
+        head = "升级已验证生效：\n\n| 判据 | 值 |"
+        tail = "\n| 注入时刻 | 22:00:48 |"
+        final = head + "\n|---|---|" + tail + "\n\n正文。"
+        state = SegmentState()
+        state.on_reasoning_delta("推" * 200)
+        state.on_answer_delta(head)
+        state.on_reasoning_delta("再想" * 50)
+        state.on_answer_delta(tail)
+        state.on_completion_answer(final)
+        assert self._answer_texts(state) == [final]
+
+    def test_multi_answer_split_by_tool_merged(self) -> None:
+        """场景 H：tool 交替产生的多个 answer 段 → 合并成一段."""
+        state = SegmentState()
+        state.on_answer_delta("开头A")
+        state.on_tool_event(1)
+        state.on_answer_delta("接续B")
+        state.on_tool_event(2)
+        state.on_answer_delta("接续C")
+        state.on_completion_answer("开头A接续B接续C结尾")
+        assert self._answer_texts(state) == ["开头A接续B接续C结尾"]
+
+    def test_multi_answer_unrelated_final_not_merged(self) -> None:
+        """场景 I：多段拼接不是 final 子序列（旁白 + 异答案）→ 不合并，段全部保留."""
+        state = SegmentState()
+        state.on_answer_delta("第一句旁白。")
+        state.on_reasoning_delta("想")
+        state.on_answer_delta("第二句旁白。")
+        state.on_completion_answer("完全不同的最终答案")
+        assert self._answer_texts(state) == ["第一句旁白。", "第二句旁白。", "完全不同的最终答案"]
 
 class TestCompletionAnswerReplaced:
     """收尾闸门打回重写（replaced=True）：流式段里的旧稿不是合法历史，用定稿整段替换。"""
@@ -355,3 +393,4 @@ class TestCompletionAnswerReplaced:
         state.on_answer_delta("此前文本。最终结果: 已完成。")
         state.on_completion_answer("最终结果: 已完成。")
         assert self._answer_texts(state) == ["此前文本。最终结果: 已完成。"]
+

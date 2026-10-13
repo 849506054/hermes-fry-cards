@@ -115,6 +115,11 @@ class TestStripReasoningTags:
         text = "💭 **Reasoning:**\n```\nstep 1\nstep 2\n```\n\nHello world"
         assert strip_reasoning_tags(text) == "Hello world"
 
+    def test_hermes_reasoning_prepend_zh_stripped(self) -> None:
+        # 中文环境下的 💭 **推理：** 同样必须被剥掉，防止与流式正文产生双份答案
+        text = "💭 **推理：**\n```\n1 step\n2 step\n```\n\n收到，这是答案"
+        assert strip_reasoning_tags(text) == "收到，这是答案"
+
     def test_hermes_reasoning_prepend_only(self) -> None:
         text = "💭 **Reasoning:**\n```\nonly reasoning\n```\n\n"
         assert strip_reasoning_tags(text).strip() == ""

@@ -182,6 +182,26 @@ class SegmentState:
 
         # 流式落后（卡片只推到答案前缀就收尾）时，完成文本就是同一段答案的完整版本：
         # 与已有 ANSWER 段去重叠后原地接上，而不是再追加一段（否则封卡后正文出现两遍）。
+        #
+        # 多段合并：reasoning / tool 会把一轮回复切成多个 answer 段，而 final_response 是
+        # 全文。旧实现只跟「最后一个」answer 段去重，前面的段仍留着被 final 覆盖的开头，
+        # 封卡后开头（表格+正文）出现两遍。判据用「按序拼接的段文本是 final 的子序列」：
+        # 流式前缀可能缺行（表格分隔行还没推到）而非严格前缀，子序列容得下这种差异。
+        _answer_segs = [s for s in self.segments if s.type == SegmentType.ANSWER and s.text]
+        if len(_answer_segs) >= 2:
+            _joined = "".join(s.text for s in _answer_segs)
+            _it = iter(text)
+            if all(_ch in _it for _ch in _joined):
+                _first, *_rest = _answer_segs
+                _first.text = text
+                _first.dirty = True
+                for _stale in _rest:
+                    _stale.text = ""
+                    _stale.dirty = False
+                    _stale.created = False
+                self._completion_answers.add(text)
+                return
+
         for segment in reversed(self.segments):
             if segment.type != SegmentType.ANSWER:
                 continue

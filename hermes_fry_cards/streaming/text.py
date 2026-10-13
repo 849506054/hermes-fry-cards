@@ -15,11 +15,13 @@ _REASONING_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 _REASONING_TAIL_RE = re.compile(r"<\s*" + _REASONING_TAG + r"\s*>[\s\S]*$", re.IGNORECASE)
-# Hermes 在 show_reasoning 开启时会把推理以该格式前置拼进最终 response
-# （run.py: response = f"💭 **Reasoning:**\n```\n{reasoning}\n```\n\n{response}"）。
+# Hermes 在 show_reasoning 开启时会把推理以该格式前置拼进最终 response：
+# 英文环境：💭 **Reasoning:**\n```\n{reasoning}\n```\n\n{response}
+# 中文环境：💭 **推理：**\n```\n{reasoning}\n```\n\n{response}
 # 卡片的推理已由 💭 面板单独渲染，正文里的这一份必须剥掉，否则完成卡片前后重复。
 _HERMES_REASONING_HEADER_RE = re.compile(
-    r"^\s*💭\s*\*\*\s*Reasoning:?\s*\*\*[ \t]*\n```[^\n]*\n"
+    r"^\s*💭\s*\*\*\s*(?:Reasoning|推理)[：:]?\s*\*\*[ \t]*\n```[^\n]*\n",
+    re.IGNORECASE,
 )
 
 
