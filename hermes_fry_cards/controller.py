@@ -532,6 +532,7 @@ class StreamCardController(StreamingController):
         tokens: dict | None = None,
         context: dict | None = None,
         session_key: str | None = None,
+        answer_rewritten: bool = False,
     ) -> bool:
         """消息处理完成，并等待卡片真正收尾后返回是否已发送."""
         if not self.enabled:
@@ -567,6 +568,7 @@ class StreamCardController(StreamingController):
             model=model,
             tokens=tokens,
             context=context,
+            answer_rewritten=answer_rewritten,
         )
         if is_error:
             session.mark_failed(reason="agent_returned_error")
@@ -800,11 +802,12 @@ class StreamCardController(StreamingController):
         model: str,
         tokens: dict | None,
         context: dict | None,
+        answer_rewritten: bool = False,
     ) -> None:
         if answer and session.segment_state:
             final_answer = strip_reasoning_tags(answer)
             if final_answer:
-                session.segment_state.on_completion_answer(final_answer)
+                session.segment_state.on_completion_answer(final_answer, replaced=answer_rewritten)
 
         # duration 为 0 时 fallback 到 session 已运行时间
         _duration = duration
