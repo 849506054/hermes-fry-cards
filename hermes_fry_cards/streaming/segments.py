@@ -157,11 +157,23 @@ class SegmentState:
                     return
         self._new_answer(text)
 
-    def on_completion_answer(self, text: str) -> None:
-        """Append final completion text once, preserving interim answer segments."""
+    def on_completion_answer(self, text: str, *, replaced: bool = False) -> None:
+        """Append final completion text once, preserving interim answer segments.
+
+        ``replaced=True`` = 本轮答案被收尾闸门打回后重写（调用方从 finish_reason 判定）：
+        流式段里那段旧稿不是合法历史，用定稿整段替换，否则封卡后正文出现旧稿+定稿两段。
+        """
         if not text or text in self._completion_answers:
             return
-        if any(
+        if replaced:
+            for segment in reversed(self.segments):
+                if segment.type != SegmentType.ANSWER:
+                    continue
+                self._completion_answers.add(text)
+                segment.text = text
+                segment.dirty = True
+                return
+        elif any(
             segment.type == SegmentType.ANSWER and segment.text.endswith(text)
             for segment in self.segments
         ):

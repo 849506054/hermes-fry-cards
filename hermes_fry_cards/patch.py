@@ -250,8 +250,13 @@ async def on_message_completed_wait(
     tokens: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
     session_key: str | None = None,
+    answer_rewritten: bool = False,
 ) -> bool:
-    """[注入点 2] return 前 — message.completed，等待卡片完成收尾."""
+    """[注入点 2] return 前 — message.completed，等待卡片完成收尾.
+
+    ``answer_rewritten`` = 本轮答案被收尾闸门打回并重写（网关按本轮消息的
+    finish_reason=verify_hook_continue 判定）：流式段里的旧稿要用定稿整段替换。
+    """
     return bool(
         await ctrl.on_completed_wait(
             message_id=message_id,
@@ -262,6 +267,7 @@ async def on_message_completed_wait(
             tokens=tokens,
             context=context,
             session_key=session_key,
+            answer_rewritten=answer_rewritten,
         )
     )
 

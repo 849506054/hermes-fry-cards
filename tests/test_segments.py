@@ -321,3 +321,37 @@ class TestCompletionOverlapDedup:
         state.on_tool_event(1)
         state.on_completion_answer("。完全不同的完成文本(长度足够超过阈值)")
         assert self._answer_texts(state) == ["第一段尾。", "。完全不同的完成文本(长度足够超过阈值)"]
+
+
+class TestCompletionAnswerReplaced:
+    """收尾闸门打回重写（replaced=True）：流式段里的旧稿不是合法历史，用定稿整段替换。"""
+
+    @staticmethod
+    def _answer_texts(state):
+        return [s.text for s in state.segments if s.type == SegmentType.ANSWER]
+
+    def test_draft_replaced_by_final(self) -> None:
+        state = SegmentState()
+        state.on_answer_delta("旧稿(会被闸门打回)")
+        state.on_answer_delta("重写后的定稿")
+        state.on_completion_answer("重写后的定稿", replaced=True)
+        assert self._answer_texts(state) == ["重写后的定稿"]
+
+    def test_interlude_preserved_last_answer_replaced(self) -> None:
+        state = SegmentState()
+        state.on_answer_delta("先看一下配置。")
+        state.on_tool_event(1)
+        state.on_answer_delta("旧稿")
+        state.on_completion_answer("定稿", replaced=True)
+        assert self._answer_texts(state) == ["先看一下配置。", "定稿"]
+
+    def test_replaced_without_streamed_answer_appends(self) -> None:
+        state = SegmentState()
+        state.on_completion_answer("定稿", replaced=True)
+        assert self._answer_texts(state) == ["定稿"]
+
+    def test_default_path_keeps_prefix(self) -> None:
+        state = SegmentState()
+        state.on_answer_delta("此前文本。最终结果: 已完成。")
+        state.on_completion_answer("最终结果: 已完成。")
+        assert self._answer_texts(state) == ["此前文本。最终结果: 已完成。"]
