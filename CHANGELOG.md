@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.2] - 2026-10-13
+
+修复 #32：收尾闸门打回重写时卡片正文保留旧稿。
+
+### 修复 / Fixed
+- **闸门打回后旧稿残留卡片**（#32）：答案被 Hermes 收尾闸门打回重写时，流式旧稿已写进
+  ANSWER 段，完成钩子只在「完成文本是流式段后缀」时去重，段首旧稿被当作合法历史保留，
+  封卡后正文出现「旧稿 + 定稿」两段。新增 `answer_rewritten` 替换信号一路透传：网关完成
+  钩子按本轮 `agent_messages` 的 `finish_reason=verify_hook_continue` 判定（`patcher.py`），
+  `on_completion_answer(..., replaced=True)` 用定稿整段替换最近一个 ANSWER 段，旁白等更早
+  的段保留；默认去重口径（后缀/前缀/重叠）完全不变。
+  **升级注意**：钩子内容有变，需重跑 `uninstall` + `install` 刷新注入块。
+
+---
+
 ## [0.5.1] - 2026-10-12
 
 借鉴 lark-hls-v2 流式经验，优化流式渲染排版、高频 flush 性能与任务生命周期管理。
