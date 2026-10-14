@@ -196,19 +196,22 @@ class StreamCardController(StreamingController):
         chat_type: str = "",
         anchor_id: str | None = None,
         session_key: str | None = None,
-    ) -> None:
+    ) -> str | None:
         """消息处理开始 — 创建会话 + 发占位卡片.
 
         message_id 缺失时（后台通知/clarify 恢复等合成轮次）降级为 synthetic
         会话：卡片直接 send_card_to_chat，不再放弃卡片回退纯文本。
+
+        返回实际创建的 message_id（合成轮次为 ``syn-*``），失败返回 None。
+        排队续轮的收尾钩子需要它把卡片归属传给完成钩子（#35）。
         """
         if not self.enabled:
-            return
+            return None
         synthetic = False
         if not message_id:
             if not chat_id or not session_key:
                 _logger.warning("on_message_started: missing message_id, chat=%s", chat_id[:12])
-                return
+                return None
             import uuid as _uuid
 
             message_id = "syn-" + _uuid.uuid4().hex[:16]
@@ -221,17 +224,17 @@ class StreamCardController(StreamingController):
                 chat_id[:12],
                 message_id[:12],
             )
-            return
+            return None
         existing = self._sessions.get(message_id)
         if existing is not None and not existing.state.is_terminal:
-            return
+            return message_id
 
         self._prune_stale_sessions()
 
         loop = self._get_loop()
         if loop is None:
             _logger.warning("no event loop available, skipping: msg=%s", message_id[:12])
-            return
+            return None
         session = CardSession(message_id, chat_id, loop)
         session.synthetic = synthetic
         self._register_session(session, anchor_id=anchor_id, session_key=session_key)
@@ -245,6 +248,7 @@ class StreamCardController(StreamingController):
         )
 
         session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
+        return message_id
 
     def _mark_text_fallback_needed(self, session: CardSession) -> None:
         keys = {session.message_id}

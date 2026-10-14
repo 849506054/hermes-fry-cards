@@ -222,9 +222,12 @@ class SegmentState:
     ) -> Segment:
         """在 step 边界拆分一个 tool segment，返回承接后续 steps 的新 segment."""
         seg = self.segments[index]
-        c = self._counter
         self._counter += 1
-        new_seg = Segment(SegmentType.TOOL, f"tools_{c}")
+        # 所有 TOOL segment 共享底部同一个面板元素（同 _new_tool 的 "tool_panel"，
+        # 即 cardkit.builder.TOOL_PANEL_ELEMENT_ID）：拆段只是把一个面板拆成两段
+        # 渲染，不能另起 tools_N 元素 id —— 卡片上没有那个元素，后续批更新会报
+        # 300313 not find elementID 并陷入「回滚重建 → 再回落」的抖动。
+        new_seg = Segment(SegmentType.TOOL, "tool_panel")
         new_seg.tool_offset = split_tool_offset
         new_seg.tool_end_offset = seg.tool_end_offset
         new_seg.start_time = seg.start_time
