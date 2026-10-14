@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+from collections.abc import Callable
 import importlib.util
 import logging
 import os
@@ -26,6 +27,7 @@ _HOOK_NAMES = [
     "COMPLETE",
     "FOLLOWUP_COMPLETE",
     "FOLLOWUP_RESULT",
+    "FOLLOWUP_DONE",
     "TOOL",
     "ANSWER",
     "THINKING",
@@ -44,16 +46,17 @@ MK_START, MK_START_END = MARKERS[1]
 MK_COMPLETE, MK_COMPLETE_END = MARKERS[2]
 MK_FOLLOWUP_COMPLETE, MK_FOLLOWUP_COMPLETE_END = MARKERS[3]
 MK_FOLLOWUP_RESULT, MK_FOLLOWUP_RESULT_END = MARKERS[4]
-MK_TOOL, MK_TOOL_END = MARKERS[5]
-MK_ANSWER, MK_ANSWER_END = MARKERS[6]
-MK_THINKING, MK_THINKING_END = MARKERS[7]
-MK_REASONING, MK_REASONING_END = MARKERS[8]
-MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[9]
-MK_ABORT, MK_ABORT_END = MARKERS[10]
-MK_STOP, MK_STOP_END = MARKERS[11]
-MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[12]
-MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[13]
-MK_CLARIFY, MK_CLARIFY_END = MARKERS[14]
+MK_FOLLOWUP_DONE, MK_FOLLOWUP_DONE_END = MARKERS[5]
+MK_TOOL, MK_TOOL_END = MARKERS[6]
+MK_ANSWER, MK_ANSWER_END = MARKERS[7]
+MK_THINKING, MK_THINKING_END = MARKERS[8]
+MK_REASONING, MK_REASONING_END = MARKERS[9]
+MK_BACKGROUND_REVIEW, MK_BACKGROUND_REVIEW_END = MARKERS[10]
+MK_ABORT, MK_ABORT_END = MARKERS[11]
+MK_STOP, MK_STOP_END = MARKERS[12]
+MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[13]
+MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[14]
+MK_CLARIFY, MK_CLARIFY_END = MARKERS[15]
 
 # Group-security boundary is MODULAR-ONLY (targets ``_combined_ephemeral_prompt`` in
 # gateway/run_turn_runner.py, which exists only in the Hermes 0.21+ modular layout). Kept out of
@@ -393,6 +396,44 @@ def _followup_result_hook(indent: str) -> str:
             "            followup_result=followup_result,",
             "        )",
             *_hook_exception_lines("followup_result"),
+        ],
+    )
+
+
+def _followup_done_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_FOLLOWUP_DONE,
+        MK_FOLLOWUP_DONE_END,
+        [
+            "try:",
+            "    from hermes_fry_cards.patch import (",
+            "        on_queued_followup_completed, on_message_started, collect_stream_stats,",
+            "    )",
+            "    if source.platform.value.lower() in ('feishu', 'lark'):",
+            "        # 该续轮自己的 message_id。事件型续轮有 next_message_id；无事件续轮",
+            "        # （后台通知 / steer）没有 id，落到合成卡片（syn-*）。",
+            "        _lark_fu_id = next_message_id or getattr(pending_event, 'message_id', None)",
+            "        if not _lark_fu_id and turn_ctx.session_key:",
+            "            _lark_fu_id = on_message_started(",
+            "                message_id=None,",
+            "                chat_id=source.chat_id,",
+            "                chat_type=getattr(source, 'chat_type', ''),",
+            "                anchor_id=None,",
+            "                session_key=turn_ctx.session_key,",
+            "            )",
+            "        if _lark_fu_id:",
+            "            _lark_fu_sent = await on_queued_followup_completed(",
+            "                message_id=_lark_fu_id, result=followup_result,",
+            "                session_key=locals().get('next_session_key') or turn_ctx.session_key,",
+            "                stream_stats=collect_stream_stats(locals().get('self'), turn_ctx.session_key),",
+            "            )",
+            "            if _lark_fu_sent:",
+            "                followup_result['response_previewed'] = True",
+            "                followup_result['already_sent'] = True",
+            "                followup_result['final_response'] = ''",
+            "                followup_result['_hermes_lark_completion_id'] = _lark_fu_id",
+            *_hook_exception_lines("followup_done"),
         ],
     )
 
@@ -786,6 +827,7 @@ _HOOK_FNS = {
     "complete": _complete_hook,
     "followup_complete": _followup_complete_hook,
     "followup_result": _followup_result_hook,
+    "followup_done": _followup_done_hook,
     "abort": _abort_hook,
     "stop": _stop_hook,
     "interrupt": _interrupt_hook,
@@ -990,6 +1032,7 @@ class Patcher:
             (_find_handler_return(turn_tree, turn_lines), "complete"),
             (_find_followup_complete_site(turn_tree, turn_lines), "queued follow-up boundary"),
             (_find_followup_result_site(turn_tree, turn_lines), "queued follow-up return"),
+            (_find_followup_done_site(turn_tree, turn_lines), "queued follow-up completion"),
             (_find_handler_abort(turn_tree, turn_lines), "abort"),
             (_find_interrupt_site(turn_tree, turn_lines), "interrupt"),
             (_find_bg_deliver_site(turn_tree, turn_lines), "background deliver"),
@@ -1070,7 +1113,7 @@ class Patcher:
                 shutil.copy2(path, backup)
 
     def _inject_modular(self, contents: dict[str, str]) -> dict[str, str]:
-        specs: dict[str, list[tuple[str, str, object]]] = {
+        specs: dict[str, list[tuple[str, str, Callable[[ast.Module, list[str]], tuple[int, str] | None]]]] = {
             "inbound": [("normalize", "normalize", _find_handle_message_source_site)],
             "turn": [
                 (
@@ -1081,6 +1124,7 @@ class Patcher:
                 ("complete", "complete", _find_handler_return),
                 ("followup_complete", "followup_complete", _find_followup_complete_site),
                 ("followup_result", "followup_result", _find_followup_result_site),
+                ("followup_done", "queued follow-up completion", _find_followup_done_site),
                 ("abort", "abort", _find_handler_abort),
                 ("interrupt", "interrupt", _find_interrupt_site),
                 ("bg_deliver", "bg_deliver", _find_bg_deliver_site),
@@ -1107,7 +1151,9 @@ class Patcher:
         for name, content in contents.items():
             tree = ast.parse(content)
             lines = content.splitlines(keepends=True)
-            hook_defs = [(hook, label, finder(tree, lines)) for hook, label, finder in specs[name]]
+            hook_defs: list[tuple[str, str, tuple[int, str] | None]] = [
+                (hook, label, finder(tree, lines)) for hook, label, finder in specs[name]
+            ]
             if name == "runner":
                 hook_defs.extend(
                     ("answer", f"answer callback {index}", loc)
@@ -1138,6 +1184,7 @@ class Patcher:
             ("complete", "complete", _find_handler_return(tree, lines)),
             ("followup_complete", "followup_complete", _find_followup_complete_site(tree, lines)),
             ("followup_result", "followup_result", _find_followup_result_site(tree, lines)),
+            ("followup_done", "queued follow-up completion", _find_followup_done_site(tree, lines)),
             ("abort", "abort", _find_handler_abort(tree, lines)),
             ("stop", "stop", _find_stop_site(tree, lines)),
             ("interrupt", "interrupt", _find_interrupt_site(tree, lines)),
@@ -1179,6 +1226,7 @@ class Patcher:
             "background_review": _background_review_hook,
             "bg_deliver": _bg_deliver_hook,
             "clarify": _clarify_hook,
+            "followup_done": _followup_done_hook,
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
@@ -1366,6 +1414,20 @@ def _find_followup_result_site(tree: ast.Module, lines: list[str]) -> tuple[int,
         if stripped.endswith("= _preserve_queued_followup_history_offset(result, followup_result)") and not stripped.startswith("return"):
             return i, _safe_indent(lines, i)
     return None
+
+
+def _find_followup_done_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """Locate the queued follow-up's own completion site (#35).
+
+    Injected right BEFORE the ``_preserve_queued_followup_history_offset`` line, i.e. after
+    ``followup_result = await self._run_agent(...)`` has returned: the hook needs the finished
+    ``followup_result`` to seal that turn's card and suppress its plain-text delivery.
+
+    Same anchor as :func:`_find_followup_result_site` (both read the already-bound
+    ``followup_result``); kept separate so each marker stays independently removable and so a
+    ``verify`` failure names which of the two lost its anchor.
+    """
+    return _find_followup_result_site(tree, lines)
 
 
 def _find_reasoning_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:

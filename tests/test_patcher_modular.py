@@ -11,6 +11,7 @@ import pytest
 from hermes_fry_cards.patcher import (
     MARKERS,
     MK_CRON_DELIVER,
+    MK_FOLLOWUP_DONE,
     CronPatcher,
     Patcher,
 )
@@ -138,11 +139,42 @@ def test_modular_marker_distribution(modular_copy: dict[str, Path]) -> None:
     contents = {name: path.read_text(encoding="utf-8") for name, path in modular_copy.items()}
 
     assert "HERMES_LARK_NORMALIZE_BEGIN" in contents["inbound"]
-    for marker in ("START", "COMPLETE", "FOLLOWUP_COMPLETE", "FOLLOWUP_RESULT", "ABORT", "INTERRUPT", "BG_DELIVER"):
+    for marker in (
+        "START", "COMPLETE", "FOLLOWUP_COMPLETE", "FOLLOWUP_RESULT", "FOLLOWUP_DONE",
+        "ABORT", "INTERRUPT", "BG_DELIVER",
+    ):
         assert f"HERMES_LARK_{marker}_BEGIN" in contents["turn"]
     for marker in ("TOOL", "ANSWER", "THINKING", "REASONING", "BACKGROUND_REVIEW", "CLARIFY"):
         assert f"HERMES_LARK_{marker}_BEGIN" in contents["runner"]
     assert "HERMES_LARK_STOP_BEGIN" in contents["busy"]
+
+
+def test_modular_followup_done_seals_card_before_merge(modular_copy: dict[str, Path]) -> None:
+    """#35: the queued follow-up's own card is sealed before the chain merges its result.
+
+    The follow-up turn runs a recursive ``_run_agent`` that never re-enters
+    ``_handle_message_with_agent``, so the COMPLETE hook never fires for it. The new hook
+    therefore anchors on the ``_preserve_queued_followup_history_offset`` line and must land
+    BEFORE it: ``followup_result`` is already bound above, but the merged value handed back
+    to the outer handler is what carries ``already_sent`` and suppresses the plain text.
+    """
+    patcher = Patcher(modular_paths=modular_copy)
+    patcher.apply()
+    lines = modular_copy["turn"].read_text(encoding="utf-8").splitlines()
+
+    done = next(i for i, line in enumerate(lines) if MK_FOLLOWUP_DONE in line)
+    merge = next(
+        i for i, line in enumerate(lines)
+        if "_preserve_queued_followup_history_offset(result, followup_result)" in line
+        and not line.strip().startswith("# HERMES_LARK")
+    )
+    assert done < merge, "FOLLOWUP_DONE must be injected before the merge line"
+
+    body = "\n".join(lines[done:merge])
+    assert "on_queued_followup_completed" in body, "hook must seal the follow-up turn's card"
+    assert "already_sent" in body and "final_response" in body, "must suppress the plain-text send"
+    # An event-less follow-up carries no inbound id; it must fall back to a synthetic card.
+    assert "on_message_started" in body and "message_id=None" in body
 
 
 def test_modular_cron_apply_is_idempotent_and_reversible(tmp_path: Path) -> None:

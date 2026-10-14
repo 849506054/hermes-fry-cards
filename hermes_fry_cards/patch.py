@@ -167,20 +167,25 @@ def on_feishu_normalize(
 def on_message_started(
     *,
     ctrl: Any,
-    message_id: str,
+    message_id: str | None = None,
     chat_id: str,
     chat_type: str = "",
     anchor_id: str | None = None,
     session_key: str | None = None,
-) -> None:
-    """[注入点 1] 函数开头 — message.started."""
-    ctrl.on_message_started(
+) -> str | None:
+    """[注入点 1] 函数开头 — message.started.
+
+    返回实际创建的 message_id（无 id 的合成轮次为 ``syn-*``），供排队续轮把
+    卡片归属传给完成钩子（#35）；未建卡时返回 None。
+    """
+    started: str | None = ctrl.on_message_started(
         message_id=message_id,
         chat_id=chat_id,
         chat_type=chat_type,
         anchor_id=anchor_id,
         session_key=session_key,
     )
+    return started
 
 
 def collect_stream_stats(gateway: Any, session_key: str | None) -> dict[str, Any]:
@@ -324,6 +329,55 @@ def on_queued_followup_result(*, ctrl: Any, message_id: str, followup_result: di
     """Carry the deepest queued follow-up id back to the outer completion hook."""
     if isinstance(followup_result, dict) and message_id:
         followup_result.setdefault("_hermes_lark_completion_id", message_id)
+
+
+@_safe_hook(default_return=False)
+async def on_queued_followup_completed(
+    *,
+    ctrl: Any,
+    message_id: str,
+    result: dict[str, Any],
+    session_key: str | None = None,
+    stream_stats: dict[str, Any] | None = None,
+) -> bool:
+    """[注入点 1b] 排队续轮收尾 — 封该轮的卡并抑制纯文本投递（#35）。
+
+    续轮由 ``_run_agent_queued_followup`` 递归 ``_run_agent`` 执行，不经过
+    ``_handle_message_with_agent``，因此本轮的 COMPLETE 钩子不会触发：卡片既没被
+    封（用户看到「处理中」），回复又按 Hermes 默认路径发成纯文本。这里补上收尾。
+
+    与 ``on_queued_followup_boundary`` 的区别：boundary 封的是**上一轮**的卡（续轮
+    开始前），本钩子封的是**续轮自己**的卡（续轮结束后）。
+    """
+    if not isinstance(result, dict) or result.get("interrupted"):
+        return False
+
+    sent = bool(
+        await ctrl.on_completed_wait(
+            message_id=message_id,
+            answer=result.get("final_response") or "",
+            is_error=bool(result.get("failed")),
+            duration=0.0,
+            model=result.get("model", ""),
+            tokens={
+                "input_tokens": result.get("input_tokens", 0),
+                "output_tokens": result.get("output_tokens", 0),
+                **(stream_stats or {}),
+            },
+            context={
+                "used_tokens": result.get("last_prompt_tokens", 0),
+                "max_tokens": result.get("context_length", 0),
+            },
+            session_key=session_key,
+        )
+    )
+    if sent:
+        result["response_previewed"] = True
+        result["already_sent"] = True
+        result["final_response"] = ""
+    else:
+        ctrl.consume_text_fallback(message_id)
+    return sent
 
 
 @_safe_hook(default_return=False)

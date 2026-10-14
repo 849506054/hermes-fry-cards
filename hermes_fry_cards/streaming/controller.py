@@ -366,8 +366,12 @@ class StreamingController:
                 # 合并面板模式下，工具面板是同一个元素，元素估算按增量累计，
                 # 避免每次把「全部工具步骤」重复计入 element_count 导致虚高拆卡。
                 estimate = estimate_tool_elements(start, end, all_steps)
-                # 找到共享面板的 element_id（第一个 tool segment 的 el_id）
-                shared_el_id = tool_panel_element_id or seg.el_id
+                # 合并面板的 element_id 恒为建卡骨架预置的 TOOL_PANEL_ELEMENT_ID：
+                # 所有 tool segment 共享同一个底部面板，元素 id 与 segment 的 el_id
+                # 无关。本地补丁（2026-10-14）：原实现回落到 seg.el_id，会让批更新去
+                # 改一个卡片上不存在的 tools_N 元素 → 300313「not find elementID」→
+                # 回滚重建 → 下一轮再回落，形成反复失败/恢复的抖动。
+                shared_el_id = tool_panel_element_id or TOOL_PANEL_ELEMENT_ID
                 actions.append(
                     build_tool_update_action(element_id=shared_el_id, steps=all_steps[start:end])
                 )
