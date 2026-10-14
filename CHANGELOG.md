@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.3] - 2026-10-15
+
+修复 #34 拆卡后工具面板 300313 抖动；修复 #35 排队续轮回复回退纯文本。
+
+### 修复 / Fixed
+- **拆卡后工具面板批更新指向不存在的元素**（#34）：`split_tool_segment` 给拆出的新段分配
+  `tools_{c}`，与 `_new_tool` 的共享面板 `tool_panel` 不一致——卡片上不存在该元素，批更新
+  必报 `300313 not find elementID`，回滚重建后下一轮又回落，形成「失败 → 重建 → 再失败」
+  抖动。拆段改为沿用 `tool_panel`；dirty 分支兜底改用 `TOOL_PANEL_ELEMENT_ID`，避免将来
+  新路径再指向不存在的元素。既有 `test_issue3_tool_panel_stale.py` 的断言
+  （`"tool_panel" in str(a) or stale_el_id in str(a)`）允许回落到 `tools_N`，故未能拦住，
+  新增用例断言在真实 action payload 上并显式拒绝任何 `tools_*`。
+- **排队续轮的回复回退纯文本**（#35）：续轮由 `_run_agent_queued_followup` 递归
+  `_run_agent` 执行，不经过 `_handle_message_with_agent`，因而没有自己的 COMPLETE 钩子，
+  卡片停在「处理中」、回复按默认路径发成纯文本。
+  **修正诊断**：续轮并非「对插件完全不可见」——流式钩子挂在 `TurnRunner` 上，而
+  `_run_agent` 每次调用都重建 `TurnRunner`，递归续轮照样进钩子。新增
+  `on_queued_followup_completed` 封续轮自己的卡并写回 `already_sent` / `final_response`
+  抑制重复投递；**封卡失败则放行纯文本**，避免整轮静默；无 inbound id 的无事件续轮
+  （后台通知 / steer）落到合成卡 `syn-*`；中断轮不改写。
+  **升级注意**：新增 `FOLLOWUP_DONE` 注入 marker，必须重跑 `uninstall` + `install`。
+
+### 测试 / Tests
+- 新增 `test_patcher_real_v022.py`：对着真实 Hermes v0.22.0 源码跑完整 patcher 流程
+  （锚点齐全 / 产出合法 Python / 每个 marker 恰好一次 / 重复 apply 幂等 / remove 逐字节
+  还原），并钉住两个 follow-up 钩子共用锚点时的注入顺序。取源沿用既有约定：本地安装优先
+  → 否则下载钉死的 tag → 否则 skip。
+- 新增 `test_split_tool_segment_panel_id.py`（#34 回归）、`test_followup_completion.py`
+  （#35 四例：封卡 / 中断 / 失败放行 / 非 dict）。
+
+### 内部 / Internal
+- 修正 `patcher.py` 中 `specs` 的类型标注（`object` → `Callable`）：原标注使
+  `finder(tree, lines)` 不可调用，此前 mypy 未扫到该路径。
+
+---
+
 ## [0.5.2] - 2026-10-13
 
 修复 #32：收尾闸门打回重写时卡片正文保留旧稿。
