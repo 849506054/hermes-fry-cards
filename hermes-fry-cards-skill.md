@@ -146,6 +146,35 @@ $HERMES_PYTHON -m hermes_fry_cards uninstall
 5. `gh release create vX.Y.Z --notes-file release-notes.md INSTALL.md hermes-fry-cards-skill.md`
 6. Release 正文末尾补 Full Changelog 对比链接
 
+### 版式（以 v0.4.7 为基准）
+
+**标题**：`hermes-fry-cards vX.Y.Z` —— **不带** 🍟（0.3.0–0.5.3 全部如此）。
+
+**正文**结构，顺序固定：
+
+```
+## 🍟 hermes-fry-cards vX.Y.Z      ← 正文首行带 🍟（与标题不同，别搞混）
+
+> 一段 blockquote 摘要（可折行）
+
+### <emoji> 分节                  ← 按内容选取，如 🐛 修复 / ✨ 新增 / 🔧 变更 / ✅ 验证
+- 条目
+
+### 📦 升级                       ← 固定分节，PyPI + 源码两个 bash 代码块
+（若本版改变了注入钩子，补一条 > ⚠️ 提示必须 uninstall + install）
+
+---
+
+完整明细见 [CHANGELOG.md](...)。
+
+**Full Changelog**: [vX.Y.(Z-1)...vX.Y.Z](...)
+```
+
+易错点：
+- 标题不带 🍟、正文首行带 🍟——两者不一致是既有约定，别"统一"掉。
+- Release 的 `--notes-file` 用的就是仓库根 `release-notes.md`，**单一来源**，不要另建副本。
+- 打 tag 不可省：v0.5.3 曾漏打，`gh release create` 会自己补建 tag，但位置不一定对。
+
 ## 已知遗留问题（基线失败，非新引入）
 
 - `test_multiple_tool_segments_merged_into_single_bottom_panel`
