@@ -139,6 +139,19 @@ class StreamCardController(StreamingController):
                 return session
         return None
 
+    def resolve_session_id(
+        self,
+        message_id: str | None,
+        session_key: str | None = None,
+    ) -> str | None:
+        """已存在会话的 message_id（按 message_id，其次 session_key 兜底）；无则 None.
+
+        排队续轮的预建卡与收尾卡靠它对齐同一张卡：预建时按 session_key 注册，
+        收尾时无消息 id 也据此复用，而不是另开一张（#37 重复投递修法）。
+        """
+        session = self._resolve_session(message_id, session_key)
+        return session.message_id if session is not None else None
+
     def _fire_and_forget(
         self,
         coro: Coroutine[Any, Any, Any],

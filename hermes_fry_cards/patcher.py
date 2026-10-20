@@ -206,14 +206,24 @@ def _default_run_path() -> Path:
 
 
 def _default_modular_paths() -> dict[str, Path]:
-    """Hermes 0.21+ split the former gateway/run.py implementation into mixins."""
+    """Hermes 0.21+ split the former gateway/run.py implementation into mixins.
+
+    0.22 微模块重构进一步拆分出 ``run_turn_progress``（``progress_callback`` / tool 锚点）
+    与 ``run_turn_persistence``（``hooks.emit("agent:end")`` 锚点）。这两个模块按存在与否
+    动态注册，缺失时对应锚点回退到 ``runner`` / ``turn``，保持对老版本的向后兼容。
+    """
     roots = _code_roots()
-    return {
+    paths = {
         "inbound": _resolve_module_path("gateway.run_inbound", roots),
         "turn": _resolve_module_path("gateway.run_turn", roots),
         "runner": _resolve_module_path("gateway.run_turn_runner", roots),
         "busy": _resolve_module_path("gateway.run_busy", roots),
     }
+    for optional in ("progress", "persistence"):
+        resolved = _resolve_module_path(f"gateway.run_turn_{optional}", roots)
+        if resolved.exists():
+            paths[optional] = resolved
+    return paths
 
 
 def _default_cron_path() -> Path:
@@ -376,6 +386,31 @@ def _followup_complete_hook(indent: str) -> str:
             "        result['response_previewed'] = True",
             "        result['already_sent'] = True",
             "        result['final_response'] = ''",
+            # 续轮开始前先把这一轮的卡建好：没有卡时 Hermes 会把续轮的回复按纯文本
+            # 流式投出去，等续轮结束再补卡就重复了（#37）。预建失败只降级为原行为。
+            # session_key 用与核心 next_session_key 同源的表达式，流式与收尾落在同一张卡。
+            "    try:",
+            "        from hermes_fry_cards.patch import on_queued_followup_card_ready",
+            "        _lark_next_source = getattr(pending_event, 'source', None) or source",
+            "        _lark_next_platform = str(",
+            "            getattr(getattr(_lark_next_source, 'platform', None), 'value', '') or ''",
+            "        ).lower()",
+            "        if _lark_next_platform in ('feishu', 'lark'):",
+            "            _lark_next_sk = locals().get('session_key')",
+            "            try:",
+            "                _lark_next_sk = self._session_key_for_source(_lark_next_source) or _lark_next_sk",
+            "            except Exception:",
+            "                pass",
+            "            on_queued_followup_card_ready(",
+            "                message_id=getattr(pending_event, 'message_id', None),",
+            "                chat_id=getattr(_lark_next_source, 'chat_id', '') or '',",
+            "                chat_type=getattr(_lark_next_source, 'chat_type', ''),",
+            "                session_key=_lark_next_sk,",
+            "            )",
+            "    except Exception:",
+            "        import logging as _lark_logging",
+            "        _lark_logging.getLogger('hermes_fry_cards').debug(",
+            "            'followup card pre-create skipped', exc_info=True)",
             *_hook_exception_lines("followup_complete"),
         ],
     )
@@ -408,19 +443,18 @@ def _followup_done_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_fry_cards.patch import (",
-            "        on_queued_followup_completed, on_message_started, collect_stream_stats,",
+            "        on_queued_followup_completed, on_queued_followup_card_ready, collect_stream_stats,",
             "    )",
             "    if source.platform.value.lower() in ('feishu', 'lark'):",
             "        # 该续轮自己的 message_id。事件型续轮有 next_message_id；无事件续轮",
-            "        # （后台通知 / steer）没有 id，落到合成卡片（syn-*）。",
+            "        # （后台通知 / steer）没有 id，按 session_key 复用边界处预建的卡（#37）。",
             "        _lark_fu_id = next_message_id or getattr(pending_event, 'message_id', None)",
             "        if not _lark_fu_id and turn_ctx.session_key:",
-            "            _lark_fu_id = on_message_started(",
+            "            _lark_fu_id = on_queued_followup_card_ready(",
             "                message_id=None,",
             "                chat_id=source.chat_id,",
             "                chat_type=getattr(source, 'chat_type', ''),",
-            "                anchor_id=None,",
-            "                session_key=turn_ctx.session_key,",
+            "                session_key=locals().get('next_session_key') or turn_ctx.session_key,",
             "            )",
             "        if _lark_fu_id:",
             "            _lark_fu_sent = await on_queued_followup_completed(",
@@ -905,9 +939,16 @@ class Patcher:
         self._modular_paths: dict[str, Path] | None = modular_paths
         if modular_paths is not None:
             required = {"inbound", "turn", "runner", "busy"}
-            if set(modular_paths) != required:
+            if not required.issubset(modular_paths):
                 raise PatcherError(
-                    "modular_paths must contain exactly: " + ", ".join(sorted(required))
+                    "modular_paths must contain at least: " + ", ".join(sorted(required))
+                )
+            # 可选模块（0.22+ 的 progress / persistence）只接受已知名字，
+            # 防止拼写错误让锚点静默回退到旧模块。
+            unknown = set(modular_paths) - required - {"progress", "persistence"}
+            if unknown:
+                raise PatcherError(
+                    "modular_paths contains unknown modules: " + ", ".join(sorted(unknown))
                 )
             self.run_path = modular_paths["turn"]
         else:
@@ -1023,9 +1064,12 @@ class Patcher:
             parsed[name] = (content, ast.parse(content), content.splitlines(keepends=True))
 
         _, inbound_tree, inbound_lines = parsed["inbound"]
-        turn_content, turn_tree, turn_lines = parsed["turn"]
+        _, turn_tree, turn_lines = parsed["turn"]
         _, runner_tree, runner_lines = parsed["runner"]
         _, busy_tree, busy_lines = parsed["busy"]
+        # 0.22+ 微模块重构：progress_callback 可能在独立 progress 模块（优先），
+        # 否则回退 runner；两侧与 _inject_modular 的解析顺序保持一致。
+        tool_tree, tool_lines = self._tool_anchor_source(parsed)
         checks = [
             (_find_handle_message_source_site(inbound_tree, inbound_lines), "normalize"),
             (_find_func_body(turn_tree, turn_lines, "_handle_message_with_agent"), "start"),
@@ -1037,7 +1081,7 @@ class Patcher:
             (_find_interrupt_site(turn_tree, turn_lines), "interrupt"),
             (_find_bg_deliver_site(turn_tree, turn_lines), "background deliver"),
             (_find_stop_site(busy_tree, busy_lines), "stop"),
-            (_find_func_body(runner_tree, runner_lines, "progress_callback"), "tool"),
+            (_find_func_body(tool_tree, tool_lines, "progress_callback"), "tool"),
             (_find_func_body(runner_tree, runner_lines, "interim_assistant_cb"), "thinking"),
             (_find_reasoning_site(runner_tree, runner_lines), "reasoning"),
             (_find_background_review_site(runner_tree, runner_lines), "background review"),
@@ -1052,8 +1096,26 @@ class Patcher:
             raise PatcherError(
                 "Missing modular Hermes injection targets: " + ", ".join(missing)
             )
-        if 'hooks.emit("agent:end"' not in turn_content:
-            raise PatcherError("Cannot find hooks.emit('agent:end', ...) in gateway/run_turn.py")
+        # agent:end 在 0.22+ 迁移至独立 persistence 模块；turn 与 persistence 任一命中即可。
+        agent_end_hosts = [name for name in ("turn", "persistence") if name in parsed]
+        if not any('hooks.emit("agent:end"' in parsed[name][0] for name in agent_end_hosts):
+            searched = " / ".join(f"gateway/run_turn_{n}.py" if n != "turn" else "gateway/run_turn.py"
+                                  for n in agent_end_hosts)
+            raise PatcherError(f"Cannot find hooks.emit('agent:end', ...) in {searched}")
+
+    @staticmethod
+    def _tool_anchor_source(
+        parsed: dict[str, tuple[str, ast.Module, list[str]]],
+    ) -> tuple[ast.Module, list[str]]:
+        """tool 钩子的宿主模块：独立 progress 模块含 progress_callback 时优先，否则 runner."""
+        for name in ("progress", "runner"):
+            if name not in parsed:
+                continue
+            _, tree, lines = parsed[name]
+            if _find_func_body(tree, lines, "progress_callback") is not None:
+                return tree, lines
+        # 两处都没有：交给 verify 的 tool 检查统一报缺失。
+        return parsed["runner"][1], parsed["runner"][2]
 
     def apply(self) -> None:
         if self.is_fully_patched():
@@ -1131,11 +1193,6 @@ class Patcher:
             ],
             "runner": [
                 (
-                    "tool",
-                    "tool",
-                    lambda tree, lines: _find_func_body(tree, lines, "progress_callback"),
-                ),
-                (
                     "thinking",
                     "thinking",
                     lambda tree, lines: _find_func_body(tree, lines, "interim_assistant_cb"),
@@ -1146,13 +1203,35 @@ class Patcher:
                 ("group_boundary", "group_boundary", _find_ephemeral_prompt_return),
             ],
             "busy": [("stop", "stop", _find_stop_site)],
+            # 0.22+ 独立 progress 模块的宿主（tool 注入点按 progress_callback 归属动态挂载）。
+            "progress": [],
+            # persistence 只承载 agent:end 的 verify 探测，无注入点；留在 specs 里防 KeyError。
+            "persistence": [],
         }
+        # tool 锚点宿主：与 _verify_modular_target 的解析顺序一致（progress 优先，回退 runner）。
+        tool_host = "runner"
+        if "progress" in contents:
+            progress_lines = contents["progress"].splitlines(keepends=True)
+            if _find_func_body(ast.parse(contents["progress"]), progress_lines, "progress_callback"):
+                tool_host = "progress"
+        specs[tool_host] = [
+            (
+                "tool",
+                "tool",
+                lambda tree, lines: _find_func_body(tree, lines, "progress_callback"),
+            ),
+            *specs[tool_host],
+        ]
         result: dict[str, str] = {}
         for name, content in contents.items():
+            module_specs = specs.get(name)
+            if not module_specs:
+                # 无注入点的可选模块（persistence）原样跳过，不写回。
+                continue
             tree = ast.parse(content)
             lines = content.splitlines(keepends=True)
             hook_defs: list[tuple[str, str, tuple[int, str] | None]] = [
-                (hook, label, finder(tree, lines)) for hook, label, finder in specs[name]
+                (hook, label, finder(tree, lines)) for hook, label, finder in module_specs
             ]
             if name == "runner":
                 hook_defs.extend(
