@@ -17,7 +17,7 @@ import hermes_fry_cards.controller as controller_module
 from hermes_fry_cards.controller import StreamCardController, get_controller
 from hermes_fry_cards.feishu import FeishuAPIError, FeishuClient
 from hermes_fry_cards.streaming.segment_helper import estimate_segment_elements
-from hermes_fry_cards.streaming.segments import Segment, SegmentState
+from hermes_fry_cards.streaming.segments import Segment, SegmentState, SegmentType
 from hermes_fry_cards.streaming.session import CardSession, SessionState
 
 
@@ -306,6 +306,53 @@ def test_dispose_session_spares_successor_on_same_key() -> None:
         # 新 session 清理后，指向它的重定向随之移除，不留悬挂映射
         ctrl._dispose_session(new_session)
         assert ctrl._interrupt_map == {}
+    finally:
+        loop.close()
+
+
+def test_redirect_completion_opens_its_own_card() -> None:
+    """A redirected turn's completion is anchored to the new message: give it a card below."""
+    ctrl = StreamCardController()
+    _enable(ctrl)
+    loop = asyncio.new_event_loop()
+    try:
+        old = CardSession("old", "chat", loop)
+        old.state = SessionState.STREAMING
+        old.set_card(card_id="card-old", card_msg_id="msg-old")
+        ctrl._register_session(old, session_key="key")
+        ctrl.on_turn_redirected(session_key="key", message_id="new")
+
+        with (
+            patch.object(ctrl, "_do_create_card", return_value=None),
+            patch.object(ctrl, "_complete_session") as complete_old,
+            patch.object(ctrl, "_fire_and_forget", return_value=None),
+        ):
+            new = ctrl._completion_session("new", "key")
+
+        assert new is not None and new is not old
+        assert new.message_id == "new"
+        notices = [s for s in new.segment_state.segments if s.type == SegmentType.NOTICE]
+        assert notices and "重定向" in notices[0].text
+        assert ctrl._session_keys["key"] is new
+        complete_old.assert_called_once_with(old)
+    finally:
+        loop.close()
+
+
+def test_message_id_difference_alone_does_not_open_a_card() -> None:
+    """Reply anchors differ in ordinary turns; only the gateway's redirect signal opens a card."""
+    ctrl = StreamCardController()
+    _enable(ctrl)
+    loop = asyncio.new_event_loop()
+    try:
+        old = CardSession("old", "chat", loop)
+        old.state = SessionState.STREAMING
+        old.set_card(card_id="card-old", card_msg_id="msg-old")
+        ctrl._register_session(old, session_key="key")
+
+        assert ctrl._resolve_session("new", "key") is old
+        assert ctrl._completion_session("new", "key") is old
+        assert "new" not in ctrl._sessions
     finally:
         loop.close()
 
@@ -2500,6 +2547,54 @@ class TestBackgroundDeliver:
         body = args[1]["body"]["elements"][0]["content"]
         assert "think" not in body
         assert "Here" in body
+
+    def test_busy_ack_merges_into_live_card(self) -> None:
+        ctrl = StreamCardController()
+        _enable(ctrl)
+        loop = asyncio.new_event_loop()
+        try:
+            session = CardSession("m1", "c1", loop)
+            session.state = SessionState.STREAMING
+            session.set_card(card_id="card1", card_msg_id="msg1")
+            ctrl._register_session(session, session_key="key")
+
+            with patch.object(ctrl, "_schedule_flush") as flush:
+                handled = ctrl.on_busy_ack(session_key="key", text="⚡ 正在中断当前任务")
+
+            assert handled is True
+            assert session.segment_state.segments[-1].type == SegmentType.NOTICE
+            flush.assert_called_once_with(session)
+        finally:
+            loop.close()
+
+    def test_busy_ack_without_card_falls_back_to_text(self) -> None:
+        ctrl = StreamCardController()
+        _enable(ctrl)
+        assert ctrl.on_busy_ack(session_key="missing", text="x") is False
+
+    @pytest.mark.asyncio
+    async def test_appends_notice_to_active_card(self) -> None:
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        session = CardSession("m1", "c1", asyncio.get_running_loop())
+        session.state = SessionState.STREAMING
+        session.set_card(card_id="card1", card_msg_id="msg1")
+        session.segment_state = SegmentState()
+        ctrl._sessions["m1"] = session
+
+        with (
+            patch.object(ctrl, "_schedule_flush") as flush,
+            patch.object(ctrl, "_do_background_deliver", new_callable=AsyncMock) as static,
+        ):
+            result = await ctrl.on_background_deliver(
+                chat_id="c1", preview="prompt", content="✅ 后台任务已完成 — x"
+            )
+
+        assert result is True
+        assert any(seg.type == SegmentType.NOTICE for seg in session.segment_state.segments)
+        flush.assert_called_once_with(session)
+        static.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_returns_false_on_empty_cleaned_text(self) -> None:

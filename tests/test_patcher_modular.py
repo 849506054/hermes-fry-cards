@@ -118,7 +118,7 @@ def test_modular_apply_is_complete_idempotent_and_reversible(modular_copy: dict[
     assert patcher.is_fully_patched()
 
     combined = "\n".join(path.read_text(encoding="utf-8") for path in modular_copy.values())
-    for begin, end in MARKERS:
+    for begin, end in patcher.MARKERS:
         assert combined.count(begin) == 1
         assert combined.count(end) == 1
     for path in modular_copy.values():
@@ -173,8 +173,9 @@ def test_modular_followup_done_seals_card_before_merge(modular_copy: dict[str, P
     body = "\n".join(lines[done:merge])
     assert "on_queued_followup_completed" in body, "hook must seal the follow-up turn's card"
     assert "already_sent" in body and "final_response" in body, "must suppress the plain-text send"
-    # An event-less follow-up carries no inbound id; it must fall back to a synthetic card.
-    assert "on_message_started" in body and "message_id=None" in body
+    # An event-less follow-up carries no inbound id; it must reuse the card the boundary
+    # pre-created for this turn (falling back to creating one when there is none).
+    assert "on_queued_followup_card_ready" in body and "message_id=None" in body
 
 
 def test_modular_cron_apply_is_idempotent_and_reversible(tmp_path: Path) -> None:

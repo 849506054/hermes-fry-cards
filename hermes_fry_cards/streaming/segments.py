@@ -10,6 +10,7 @@ class SegmentType(StrEnum):
     REASONING = "reasoning"
     ANSWER = "answer"
     TOOL = "tool"
+    NOTICE = "notice"
 
 
 # 判定「流式段尾与完成文本开头重叠」所需的最小重叠长度：低于此值多为偶然同字，
@@ -93,6 +94,27 @@ class SegmentState:
         self._counter += 1
         seg = Segment(SegmentType.ANSWER, f"answer_{c}")
         seg.text = text
+        seg.start_time = time.time()
+        self._finalize_prev_reasoning(seg.start_time)
+        self.segments.append(seg)
+        return seg
+
+    def add_notice(self, text: str) -> Segment:
+        """Show *text* in the card's single notice slot; the latest notice wins."""
+        text = text.strip()
+        for seg in self.segments:
+            if seg.type == SegmentType.NOTICE:
+                if seg.text != text:
+                    seg.text = text
+                    # A notice already on the card must be rewritten in place; a notice
+                    # created in this same flush carries its text from creation.
+                    seg.dirty = seg.created
+                return seg
+        c = self._counter
+        self._counter += 1
+        seg = Segment(SegmentType.NOTICE, f"notice_{c}")
+        seg.text = text
+        seg.dirty = False  # created with its full text; no streaming update needed
         seg.start_time = time.time()
         self._finalize_prev_reasoning(seg.start_time)
         self.segments.append(seg)

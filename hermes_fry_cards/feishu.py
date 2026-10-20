@@ -32,6 +32,8 @@ from lark_oapi.api.im.v1 import (
     CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -317,6 +319,20 @@ class FeishuClient:
         if resp.data and resp.data.message_id:
             return str(resp.data.message_id)
         raise FeishuAPIError("reply_card_by_id: response missing message_id")
+
+    async def patch_card_message(self, message_id: str, card: dict[str, Any]) -> None:
+        """Replace an existing card message's content (schema 2.0 card JSON)."""
+        body = PatchMessageRequestBody.builder().content(self._dumps(card)).build()
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(body)
+            .build()
+        )
+        await self._checked_call(
+            "patch_card_message",
+            lambda: asyncio.to_thread(self._client.im.v1.message.patch, request),
+        )
 
     async def cardkit_create(self, card: dict[str, Any]) -> str:
         """创建 CardKit 实体，返回 card_id."""

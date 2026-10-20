@@ -38,6 +38,7 @@ _HOOK_NAMES = [
     "INTERRUPT",
     "BG_DELIVER",
     "CLARIFY",
+    "WATCHER_NOTICE",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -57,6 +58,7 @@ MK_STOP, MK_STOP_END = MARKERS[12]
 MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[13]
 MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[14]
 MK_CLARIFY, MK_CLARIFY_END = MARKERS[15]
+MK_WATCHER_NOTICE, MK_WATCHER_NOTICE_END = MARKERS[16]
 
 # Group-security boundary is MODULAR-ONLY (targets ``_combined_ephemeral_prompt`` in
 # gateway/run_turn_runner.py, which exists only in the Hermes 0.21+ modular layout). Kept out of
@@ -213,6 +215,7 @@ def _default_modular_paths() -> dict[str, Path]:
         "turn": _resolve_module_path("gateway.run_turn", roots),
         "runner": _resolve_module_path("gateway.run_turn_runner", roots),
         "busy": _resolve_module_path("gateway.run_busy", roots),
+        "notifications": _resolve_module_path("gateway.run_notifications", roots),
     }
 
 
@@ -376,6 +379,26 @@ def _followup_complete_hook(indent: str) -> str:
             "        result['response_previewed'] = True",
             "        result['already_sent'] = True",
             "        result['final_response'] = ''",
+            "    # 续轮开始前先把这一轮的卡建好：没有卡时 Hermes 会把续轮的回复按纯文本",
+            "    # 流式投出去，等续轮结束再补卡就重复了（#35）。预建失败只降级为原行为。",
+            "    try:",
+            "        from hermes_fry_cards.patch import on_queued_followup_card_ready",
+            "        _lark_next_source = getattr(pending_event, 'source', None) or source",
+            "        _lark_next_sk = locals().get('session_key')",
+            "        try:",
+            "            _lark_next_sk = self._session_key_for_source(_lark_next_source) or _lark_next_sk",
+            "        except Exception:",
+            "            pass",
+            "        on_queued_followup_card_ready(",
+            "            message_id=getattr(pending_event, 'message_id', None),",
+            "            chat_id=getattr(_lark_next_source, 'chat_id', '') or '',",
+            "            chat_type=getattr(_lark_next_source, 'chat_type', ''),",
+            "            session_key=_lark_next_sk,",
+            "        )",
+            "    except Exception:",
+            "        import logging as _lark_logging",
+            "        _lark_logging.getLogger('hermes_fry_cards').debug(",
+            "            'followup card pre-create skipped', exc_info=True)",
             *_hook_exception_lines("followup_complete"),
         ],
     )
@@ -408,19 +431,18 @@ def _followup_done_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_fry_cards.patch import (",
-            "        on_queued_followup_completed, on_message_started, collect_stream_stats,",
+            "        on_queued_followup_completed, on_queued_followup_card_ready, collect_stream_stats,",
             "    )",
             "    if source.platform.value.lower() in ('feishu', 'lark'):",
             "        # 该续轮自己的 message_id。事件型续轮有 next_message_id；无事件续轮",
-            "        # （后台通知 / steer）没有 id，落到合成卡片（syn-*）。",
+            "        # （后台通知 / steer）没有 id，按 session_key 复用边界处预建的卡（#35）。",
             "        _lark_fu_id = next_message_id or getattr(pending_event, 'message_id', None)",
-            "        if not _lark_fu_id and turn_ctx.session_key:",
-            "            _lark_fu_id = on_message_started(",
+            "        if not _lark_fu_id:",
+            "            _lark_fu_id = on_queued_followup_card_ready(",
             "                message_id=None,",
             "                chat_id=source.chat_id,",
             "                chat_type=getattr(source, 'chat_type', ''),",
-            "                anchor_id=None,",
-            "                session_key=turn_ctx.session_key,",
+            "                session_key=locals().get('next_session_key') or turn_ctx.session_key,",
             "            )",
             "        if _lark_fu_id:",
             "            _lark_fu_sent = await on_queued_followup_completed(",
@@ -821,6 +843,28 @@ def _group_boundary_hook(indent: str) -> str:
     )
 
 
+def _watcher_notice_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_WATCHER_NOTICE,
+        MK_WATCHER_NOTICE_END,
+        [
+            "try:",
+            "    if platform_name.lower() in ('feishu', 'lark') and message_text:",
+            "        from hermes_fry_cards.patch import on_background_deliver",
+            "        _wn_finished = message_text.startswith(t('gateway.background.task_finished')) or message_text.startswith(t('gateway.background.task_failed'))",
+            "        if _wn_finished and await on_background_deliver(",
+            "            chat_id=chat_id,",
+            "            preview=message_text[:60] + ('...' if len(message_text) > 60 else ''),",
+            "            content=message_text,",
+            "            reply_to_message_id=(watcher.get('message_id') or None),",
+            "        ):",
+            "            return",
+            *_hook_exception_lines("watcher_notice"),
+        ],
+    )
+
+
 _HOOK_FNS = {
     "normalize": _feishu_normalize_hook,
     "start": _start_hook,
@@ -839,6 +883,7 @@ _HOOK_FNS = {
     "bg_deliver": _bg_deliver_hook,
     "clarify": _clarify_hook,
     "group_boundary": _group_boundary_hook,
+    "watcher_notice": _watcher_notice_hook,
 }
 
 
@@ -903,11 +948,13 @@ class Patcher:
         modular_paths: dict[str, Path] | None = None,
     ) -> None:
         self._modular_paths: dict[str, Path] | None = modular_paths
+        self._has_notifications = bool(modular_paths and "notifications" in modular_paths)
         if modular_paths is not None:
             required = {"inbound", "turn", "runner", "busy"}
-            if set(modular_paths) != required:
+            extra = set(modular_paths) - required
+            if not required.issubset(modular_paths) or extra - {"notifications"}:
                 raise PatcherError(
-                    "modular_paths must contain exactly: " + ", ".join(sorted(required))
+                    "modular_paths must contain at least: " + ", ".join(sorted(required))
                 )
             self.run_path = modular_paths["turn"]
         else:
@@ -926,10 +973,13 @@ class Patcher:
                 f"(tried: {tried}). "
                 f"Set HERMES_HOME to the dir containing hermes-agent/ and rerun."
             )
-        # Modular layout additionally hosts the group-security-boundary hook (in
-        # gateway/run_turn_runner.py), so removal / status must know its markers.
+        # The watcher-notice hook exists only where gateway/run_notifications.py does;
+        # the group-boundary hook only in the modular layout.  Both are optional markers.
+        self.MARKERS = [pair for pair in MARKERS if pair[0] != MK_WATCHER_NOTICE]
         if self._modular_paths is not None:
-            self.MARKERS = list(MARKERS) + [(MK_GROUP_BOUNDARY, MK_GROUP_BOUNDARY_END)]
+            self.MARKERS.append((MK_GROUP_BOUNDARY, MK_GROUP_BOUNDARY_END))
+            if self._has_notifications:
+                self.MARKERS.append((MK_WATCHER_NOTICE, MK_WATCHER_NOTICE_END))
 
     def _source_paths(self) -> list[Path]:
         if self._modular_paths is not None:
@@ -1052,6 +1102,10 @@ class Patcher:
             raise PatcherError(
                 "Missing modular Hermes injection targets: " + ", ".join(missing)
             )
+        if self._has_notifications:
+            _, notif_tree, notif_lines = parsed["notifications"]
+            if _find_func_body(notif_tree, notif_lines, "_send_watcher_message") is None:
+                raise PatcherError("Missing modular Hermes injection target: watcher notice")
         if 'hooks.emit("agent:end"' not in turn_content:
             raise PatcherError("Cannot find hooks.emit('agent:end', ...) in gateway/run_turn.py")
 
@@ -1147,6 +1201,14 @@ class Patcher:
             ],
             "busy": [("stop", "stop", _find_stop_site)],
         }
+        if self._has_notifications:
+            specs["notifications"] = [
+                (
+                    "watcher_notice",
+                    "watcher notice",
+                    lambda tree, lines: _find_func_body(tree, lines, "_send_watcher_message"),
+                )
+            ]
         result: dict[str, str] = {}
         for name, content in contents.items():
             tree = ast.parse(content)

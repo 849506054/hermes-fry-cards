@@ -67,6 +67,7 @@ class CardSession:
         "split_disabled",
         "split_index",
         "state",
+        "status_text",
         "synthetic",
         "tool_panel_created",
         "tool_panel_estimate",
@@ -88,6 +89,7 @@ class CardSession:
         self.session_key: str | None = None
         self.create_task: asyncio.Future[Any] | ConcurrentFuture | None = None
         self.state = SessionState.IDLE
+        self.status_text: str | None = None
         self.card_msg_id: str | None = None
         self.card_id: str | None = None
         self.tool_use = ToolUseTracker()

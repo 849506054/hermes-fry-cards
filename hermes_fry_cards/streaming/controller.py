@@ -141,6 +141,7 @@ class StreamingController:
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
+                status_text=session.status_text,
             )
             card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -170,6 +171,7 @@ class StreamingController:
                             card={"type": "card", "data": {"card_id": card_id}},
                         )
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
+            self._track_live_card(session)
             session.element_count = 1  # loading element
             session.flush.set_throttle(CARDKIT_MS)
 
@@ -422,6 +424,22 @@ class StreamingController:
                     session.sequence += 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=answer len=%d",
+                        session.message_id[:12],
+                        session.sequence,
+                        len(content),
+                    )
+                    await self._client.cardkit_stream_element(
+                        session.card_id,
+                        seg.el_id,
+                        content,
+                        sequence=session.sequence,
+                    )
+                    seg.dirty = False
+                elif seg.type == SegmentType.NOTICE:
+                    content = prepare_streaming_markdown(seg.text) or " "
+                    session.sequence += 1
+                    _logger.info(
+                        "CardKit stream element: msg=%s seq=%d type=notice len=%d",
                         session.message_id[:12],
                         session.sequence,
                         len(content),
@@ -767,6 +785,7 @@ class StreamingController:
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
+                status_text=session.status_text,
             )
             new_card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -924,6 +943,7 @@ class StreamingController:
             return await self._do_complete_card_inner(session)
         finally:
             self._flush_deferred_background_reviews(session)
+            self._untrack_live_card(session)
             self._cleanup_session(session)
 
     def _complete_header_enabled(self, session: "CardSession", all_tool_steps: list) -> bool:

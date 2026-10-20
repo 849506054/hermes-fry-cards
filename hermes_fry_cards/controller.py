@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterator
@@ -35,7 +37,10 @@ class StreamCardController(StreamingController):
         self._sessions: dict[str, CardSession] = {}
         self._session_keys: dict[str, CardSession] = {}
         self._interrupt_map: dict[str, str] = {}
+        # session_key -> message id the gateway re-anchored a redirected turn to
+        self._redirect_targets: dict[str, str] = {}
         self._initialized = False
+        self._swept_stale_cards = False
         self._init_lock = threading.Lock()
         self._session_ttl = self._cfg.card_duration_sec
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -103,6 +108,85 @@ class StreamCardController(StreamingController):
                     )
                 )
             self._initialized = True
+        if not self._swept_stale_cards:
+            self._swept_stale_cards = True
+            try:
+                await self._sweep_stale_cards()
+            except Exception:
+                _logger.warning("stale card sweep failed", exc_info=True)
+
+    def _live_cards_path(self) -> Path:
+        return self._profile_home / "state" / "fry-cards-live.json"
+
+    def _read_live_cards(self) -> dict[str, dict[str, Any]]:
+        path = self._live_cards_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_live_cards(self, data: dict[str, dict[str, Any]]) -> None:
+        path = self._live_cards_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            _logger.debug("live card registry write failed", exc_info=True)
+
+    def _track_live_card(self, session: CardSession) -> None:
+        """Remember a card that has no completion yet, so a restart can close it."""
+        if not session.card_msg_id:
+            return
+        data = self._read_live_cards()
+        data[session.card_msg_id] = {
+            "card_id": session.card_id,
+            "chat_id": session.chat_id,
+            "at": time.time(),
+        }
+        self._write_live_cards(data)
+
+    def _untrack_live_card(self, session: CardSession) -> None:
+        if not session.card_msg_id:
+            return
+        data = self._read_live_cards()
+        if data.pop(session.card_msg_id, None) is not None:
+            self._write_live_cards(data)
+
+    async def _sweep_stale_cards(self) -> None:
+        """Close cards left streaming by a process that stopped before completing them."""
+        data = self._read_live_cards()
+        if not data:
+            return
+        assert self._client is not None
+        card = {
+            "schema": "2.0",
+            "config": {"update_multi": True},
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": "⚠️ 本轮因网关重启中断，卡片已停止更新。",
+                    }
+                ]
+            },
+        }
+        for message_id in list(data):
+            try:
+                await self._client.patch_card_message(message_id, card)
+                _logger.info("stale card closed: msg=%s", str(message_id)[:12])
+            except Exception as error:
+                _logger.warning(
+                    "stale card close failed: msg=%s err=%s",
+                    str(message_id)[:12],
+                    error,
+                )
+        try:
+            self._live_cards_path().unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _get_loop(self) -> asyncio.AbstractEventLoop | None:
         """获取事件循环，缓存以便跨线程复用."""
@@ -115,6 +199,20 @@ class StreamCardController(StreamingController):
         if self._loop is not None and not self._loop.is_closed():
             return self._loop
         return None
+
+    def _active_session_for_chat(self, chat_id: str) -> CardSession | None:
+        """Latest live, card-bearing session for a chat; used to append notices in place."""
+        best = None
+        seen = set()
+        for session in self._sessions.values():
+            if id(session) in seen or session.chat_id != chat_id:
+                continue
+            seen.add(id(session))
+            if session.state.is_terminal or not session.has_card:
+                continue
+            if best is None or session.created_at > best.created_at:
+                best = session
+        return best
 
     def _get_active_session(self, message_id: str) -> CardSession | None:
         """获取非终态的活跃 session，不存在或已终态返回 None."""
@@ -138,6 +236,19 @@ class StreamCardController(StreamingController):
             if session is not None and not session.state.is_terminal:
                 return session
         return None
+
+    def resolve_session_id(
+        self,
+        message_id: str | None,
+        session_key: str | None = None,
+    ) -> str | None:
+        """已存在会话的 message_id（按 message_id，其次 session_key 兜底）；无则 None.
+
+        排队续轮的预建卡与收尾卡靠它对齐同一张卡：预建时按 session_key 注册，
+        收尾时无消息 id 也据此复用，而不是另开一张。
+        """
+        session = self._resolve_session(message_id, session_key)
+        return session.message_id if session is not None else None
 
     def _fire_and_forget(
         self,
@@ -656,6 +767,18 @@ class StreamCardController(StreamingController):
         """Background 任务完成推送 — 包装为静态卡片发送，成功返回 True."""
         if not self.enabled or not content or not chat_id:
             return False
+        session = self._active_session_for_chat(chat_id)
+        if session is not None and session.has_card:
+            # A card is already on screen for this chat: put the notice inside it,
+            # below the answer, instead of opening a second card.
+            session.segment_state.add_notice(content)
+            self._schedule_flush(session)
+            _logger.info(
+                "background notice appended: chat=%s msg=%s",
+                chat_id[:12],
+                session.message_id[:12],
+            )
+            return True
         try:
             await self._do_background_deliver(
                 chat_id,
@@ -768,8 +891,54 @@ class StreamCardController(StreamingController):
             if fallback is not None and fallback.state not in (
                 SessionState.COMPLETED, SessionState.ABORTED
             ):
+                # The gateway tells us when it re-anchored a redirected turn; only that
+                # explicit signal opens a second card.  Message-id differences alone are not
+                # enough (reply anchors differ in ordinary turns too).
+                if message_id and self._redirect_targets.get(session_key) == message_id:
+                    self._redirect_targets.pop(session_key, None)
+                    return self._open_redirect_card(message_id, fallback, session_key)
                 return fallback
         return None
+
+    def on_busy_ack(self, *, session_key: str, text: str) -> bool:
+        """Merge a busy/interrupt notice into the card still streaming for this session."""
+        if not self.enabled or not session_key or not text.strip():
+            return False
+        session = self._session_keys.get(session_key)
+        if session is None or session.state.is_terminal or not session.has_card:
+            return False
+        session.segment_state.add_notice(text)
+        self._schedule_flush(session)
+        return True
+
+    def on_turn_redirected(self, *, session_key: str, message_id: str) -> None:
+        """The gateway re-anchored a running turn to *message_id*; remember it for completion."""
+        if not self.enabled or not session_key or not message_id:
+            return
+        self._redirect_targets[session_key] = message_id
+        _logger.info("turn_redirected: key=%s msg=%s", session_key[:12], message_id[:12])
+
+    def _open_redirect_card(
+        self, message_id: str, old: CardSession, session_key: str
+    ) -> CardSession:
+        """Open the card a redirected turn's answer lands in; close the card it left behind."""
+        loop = old._loop or self._get_loop()
+        if loop is None:
+            return old
+        session = CardSession(message_id, old.chat_id, loop)
+        self._register_session(session, session_key=session_key)
+        # Same notice slot as background notices: whichever arrives latest replaces it.
+        session.segment_state.add_notice("↪ 已重定向当前运行 · 正在按你的修正调整…")
+        session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
+        # The old card keeps what it streamed; close it so it stops looking live.
+        self._complete_session(old)
+        _logger.info(
+            "redirect_card: new=%s old=%s key=%s",
+            message_id[:12],
+            old.message_id[:12],
+            (session_key or "")[:12],
+        )
+        return session
 
     async def _wait_for_card_creation(self, session: CardSession) -> bool:
         task = session.create_task
@@ -834,6 +1003,7 @@ class StreamCardController(StreamingController):
 
     def _complete_session(self, session: CardSession) -> None:
         """异步完成当前流式卡片."""
+        self._untrack_live_card(session)
         session.flush.mark_completed()
         self._fire_and_forget(self._complete_session_after_creation(session), session._loop)
 

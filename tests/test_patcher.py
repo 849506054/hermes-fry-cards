@@ -536,13 +536,13 @@ class TestApplyRemove:
         patcher = _patcher(run_copy)
         patcher.apply()
         content = run_copy.read_text(encoding="utf-8")
-        for begin, end in MARKERS:
+        for begin, end in patcher.MARKERS:
             assert begin in content, f"Missing marker: {begin}"
             assert end in content, f"Missing marker: {end}"
         assert content.count("# HERMES_LARK_ANSWER_BEGIN") == expected_answer_hooks
         assert content.count("# HERMES_LARK_ANSWER_END") == expected_answer_hooks
 
-        for begin, end in MARKERS:
+        for begin, end in patcher.MARKERS:
             search_from = 0
             while (block_start := content.find(begin, search_from)) != -1:
                 block_end = content.index(end, block_start)

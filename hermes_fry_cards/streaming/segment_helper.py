@@ -81,6 +81,8 @@ def estimate_segment_elements(seg: Segment, all_steps: list[ToolDisplayStep]) ->
             tool_segment_end(seg, all_steps),
             all_steps,
         )
+    if seg.type == SegmentType.NOTICE:
+        return 1
     return 0
 
 
@@ -137,6 +139,8 @@ def build_add_segment_action(
         start = seg.tool_offset
         end = seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
         element = _build_tool_panel(all_steps[start:end], element_id=seg.el_id, running=True)
+    elif seg.type == SegmentType.NOTICE:
+        element = {"tag": "markdown", "content": seg.text, "element_id": seg.el_id}
     else:
         raise ValueError(f"unsupported segment type: {seg.type}")
 

@@ -394,3 +394,14 @@ class TestCompletionAnswerReplaced:
         state.on_completion_answer("最终结果: 已完成。")
         assert self._answer_texts(state) == ["此前文本。最终结果: 已完成。"]
 
+def test_add_notice_replaces_instead_of_stacking() -> None:
+    state = SegmentState()
+    first = state.add_notice("✅ 后台任务已完成 — a")
+    first.created = True
+    second = state.add_notice("✅ 后台任务已完成 — b")
+
+    notices = [seg for seg in state.segments if seg.type == SegmentType.NOTICE]
+    assert notices == [first]
+    assert first.text == "✅ 后台任务已完成 — b"
+    assert first.dirty is True
+    assert second is first

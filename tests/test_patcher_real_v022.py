@@ -25,6 +25,8 @@ import pytest
 
 from hermes_fry_cards.patcher import (
     MARKERS,
+    MK_FOLLOWUP_COMPLETE,
+    MK_FOLLOWUP_COMPLETE_END,
     MK_FOLLOWUP_DONE,
     MK_FOLLOWUP_RESULT,
     Patcher,
@@ -103,7 +105,7 @@ def test_apply_is_valid_python_and_installs_each_marker_once(real_v022: dict[str
         ast.parse(path.read_text(encoding="utf-8"))
 
     combined = "\n".join(p.read_text(encoding="utf-8") for p in real_v022.values())
-    for begin, end in MARKERS:
+    for begin, end in patcher.MARKERS:
         assert combined.count(begin) == 1, f"{begin} installed {combined.count(begin)}x"
         assert combined.count(end) == 1, f"{end} installed {combined.count(end)}x"
 
@@ -133,8 +135,32 @@ def test_followup_done_seals_card_before_merge(real_v022: dict[str, Path]) -> No
     body = "\n".join(lines[done:merge])
     assert "on_queued_followup_completed" in body, "must seal the follow-up turn's card"
     assert "already_sent" in body and "final_response" in body, "must suppress the plain-text send"
-    # An event-less follow-up carries no inbound id; it must fall back to a synthetic card.
-    assert "on_message_started" in body and "message_id=None" in body
+    # An event-less follow-up carries no inbound id; it must reuse the card the boundary
+    # pre-created for this turn (falling back to creating one when there is none).
+    assert "on_queued_followup_card_ready" in body and "message_id=None" in body
+
+
+def test_followup_card_precreated_before_recursion(real_v022: dict[str, Path]) -> None:
+    """#35 重复投递: the follow-up turn's card exists BEFORE it starts running.
+
+    Without a card at stream time Hermes streams that turn's reply as plain text, and the
+    completion hook then adds a card carrying the same text — the reply lands twice.
+    """
+    Patcher(modular_paths=real_v022).apply()
+    lines = real_v022["turn"].read_text(encoding="utf-8").splitlines()
+
+    complete = next(i for i, line in enumerate(lines) if MK_FOLLOWUP_COMPLETE in line)
+    complete_end = next(i for i, line in enumerate(lines) if MK_FOLLOWUP_COMPLETE_END in line)
+    bound = next(i for i, line in enumerate(lines) if "followup_result = await self._run_agent(" in line)
+
+    body = "\n".join(lines[complete:complete_end])
+    assert "on_queued_followup_card_ready" in body, "boundary must pre-create the follow-up card"
+    assert "on_queued_followup_boundary" in body, "boundary must still seal the previous card"
+    assert body.index("on_queued_followup_boundary") < body.index("on_queued_followup_card_ready"), (
+        "seal the previous card first, then pre-create this turn's"
+    )
+    assert complete < bound, "pre-create must land before the recursive _run_agent call"
+    assert "self._session_key_for_source" in body, "pre-create must key the card by the follow-up's session"
 
 
 def test_apply_is_idempotent_and_remove_restores(real_v022: dict[str, Path]) -> None:

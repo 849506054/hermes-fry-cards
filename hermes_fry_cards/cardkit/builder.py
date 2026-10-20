@@ -132,10 +132,10 @@ def _build_header(status: str) -> dict[str, Any]:
     }
 
 
-def _loading_element() -> dict:
+def _loading_element(text: str | None = None) -> dict:
     return {
         "tag": "markdown",
-        "content": " ",
+        "content": text or " ",
         "icon": {
             "tag": "custom_icon",
             "img_key": _LOADING_IMG_KEY,
@@ -712,6 +712,7 @@ def build_streaming_card_v2(
     header_enabled: bool = False,
     text_size: str = "normal_v2",
     width_mode: str = "default",
+    status_text: str | None = None,
 ) -> dict[str, Any]:
     """CardKit 2.0 流式占位卡片 — 工具面板合并到底部."""
     elements: list[dict] = []
@@ -731,7 +732,7 @@ def build_streaming_card_v2(
         else:
             elements.append(build_streaming_tool_use_pending_panel())
 
-    elements.append(_loading_element())
+    elements.append(_loading_element(status_text))
 
     card = {
         "schema": "2.0",
@@ -815,6 +816,8 @@ def build_complete_card(
                 })
         elif seg.type == SegmentType.ANSWER and seg.text:
             has_answer = True
+            _append_content_elements(elements, seg.text, text_size=body_text_size)
+        elif seg.type == SegmentType.NOTICE and seg.text:
             _append_content_elements(elements, seg.text, text_size=body_text_size)
 
     # 推理+工具合并成底部一个统一面板（在答案之后、footer 之前）
@@ -989,9 +992,6 @@ def build_background_card(preview: str, content: str) -> dict[str, Any]:
     card: dict[str, Any] = {
         "schema": "2.0",
         "config": {"wide_screen_mode": True, "locales": _LOCALES},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"✅ Background: \"{preview}\""},
-        },
         "body": {"elements": []},
     }
     body = content if content.strip() else "(No response generated)"

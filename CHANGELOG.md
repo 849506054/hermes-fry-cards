@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.12] - 2026-10-20
+
+- Fix the busy-ack hook signature: `_safe_hook` requires `message_id`, and the gateway's ack call did not pass it, so every busy ack (including "⏳ 已排队至下一回合") hit a swallowed `TypeError` and fell back to plain text. The hook now receives `message_id` and merges queue/interrupt/steer acks into the live card's notice slot.
+
+## [0.5.11] - 2026-10-20
+
+- Live-card entries are removed in `_do_complete_card`'s `finally`, the single completion choke point. Previously the removal only ran on one completion path, so finished cards accumulated in the registry and a restart would have marked them all as interrupted.
+
+## [0.5.10] - 2026-10-20
+
+- Busy/interrupt acknowledgements ("⚡ 正在中断当前任务…") go into the live card's notice slot when a card is streaming, instead of a separate plain-text message. Without a live card the gateway's text ack is kept as the fallback.
+
+## [0.5.9] - 2026-10-20
+
+- One notice slot per card: a new notice replaces the previous one in place (the element is re-streamed), so notices no longer stack until the answer arrives. The redirect notice uses the same slot as background notices.
+- Live cards are recorded in `state/fry-cards-live.json` when created and removed on completion. On the first turn after a restart, leftovers are patched to "本轮因网关重启中断，卡片已停止更新" so no card is left spinning forever.
+
+## [0.5.8] - 2026-10-20
+
+- Redirect cards open on an explicit gateway signal (`on_turn_redirected`, injected at the end of `run_busy._redirect_active_turn`) instead of inferring a redirect from a changed message id. Ordinary reply anchors also change the id, and the old heuristic opened a second card mid-turn, duplicating the body. Without the signal the turn keeps its original card.
+
+## [0.5.7] - 2026-10-20
+
+- Background task notices append into the card already streaming for that chat as a `notice` segment (one element, merged across notices) instead of opening a second card; with no live card they still go out as the standalone static card.
+- The watcher-notice injection is optional in the patcher: a tree without `gateway/run_notifications.py` installs the other markers and reports the hook as absent instead of failing.
+
+## [0.5.6] - 2026-10-20
+
+- Background task cards no longer repeat the status line in a header; the body carries the whole notice.
+- The redirect acknowledgement is silent: gateway `run_busy.py` now applies the `busy_steer_ack_enabled` gate to redirect mode as well as steer mode (core patch, applied in the running container).
+
+## [0.5.5] - 2026-10-20
+
+- Background process completion notices (`✅ 后台任务已完成 — …`) are delivered as Feishu cards through the existing static-card path instead of plain text. The new `watcher_notice` injection point sits at the top of `gateway/run_notifications.py::_send_watcher_message` and only converts the final completion/failure line; running-update lines stay as text.
+
+## [0.5.4] - 2026-10-20
+
+- Redirected turns get their own card: when the gateway re-anchors a running turn to the message that redirected it, the first event carrying the new message id opens a new card and closes the old one, so the answer lands at the bottom instead of inside the card opened by the original message. A completion-time fallback covers redirects that produce no intermediate event.
+- The new card's loading line shows `↪ 已重定向当前运行 · 正在按你的修正调整…` while it works; the final card is built without that line, so the finalized body carries only the answer.
+- Feishu busy-steer/redirect acknowledgements are suppressed by config (`display.platforms.feishu.busy_steer_ack_enabled: false`); the card is the acknowledgement.
+
 ## [0.5.3] - 2026-10-15
 
 修复 #34 拆卡后工具面板 300313 抖动；修复 #35 排队续轮回复回退纯文本。
