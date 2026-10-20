@@ -1,40 +1,35 @@
-## 🍟 hermes-fry-cards v0.5.3
+## 🍟 hermes-fry-cards v0.5.4
 
-> 拆卡后工具面板不再反复报 300313 抖动；排队续轮的回复也走卡片了。**两个真实环境暴露的
-> 问题，一次修掉**——都出在长回复 / 高频排队这类压力场景。
+> 无事件续轮（后台通知 / steer）的回复不再「纯文本 + 合成卡」各发一遍；新版 Hermes 的
+> 微模块重构（`run_turn_progress` / `run_turn_persistence`）也能正常 `verify` / `install` 了。
+> **0.5.3 续轮修复的收尾补漏 + 一次上游布局适配。**
 
-### 🐛 拆卡抖动（#34）
+### 🐛 无事件续轮投递两次（#37）
 
-长回复触发拆卡后，工具面板在后续每次 flush 里反复报 `300313 not find elementID : tools_N`，
-随后回滚重建、几秒后再失败，形成「失败 → 重建 → 再失败」的循环。本机实测该报错 10-13 起
-51 次、10-14 57 次，全部出现在拆卡之后。
+0.5.3 给排队续轮补上了自己的收尾钩子，但无事件续轮在**流式阶段**没有 inbound id、插件里也
+没有会话——`on_answer_delta` 返回 False，Hermes 便按纯文本流式投了出去；等续轮结束再建合成卡，
+同一段文字就有了两条投递路径。
 
-根因：拆段给新段分配的 `tools_N` 与共享面板 `tool_panel` 不一致——卡片上根本没有这个元素。
+- 新增注入点 1c `on_queued_followup_card_ready`：在续轮递归 `_run_agent` **之前**把卡建好，
+  流式直接进卡，核心那条纯文本路径不再触发
+- 已存在则复用；无消息 id 落合成卡，按与核心 `next_session_key` 同源的 session_key 注册
+- `FOLLOWUP_DONE` 收尾时按同一 session_key 复用这张卡，不再另开一张
+- 预建失败只降级为原行为（debug 日志），封卡与纯文本放行不受影响
 
-- `split_tool_segment` 拆出的段沿用共享面板 `tool_panel`，与 `_new_tool` 对齐
-- dirty 分支兜底改用 `TOOL_PANEL_ELEMENT_ID`，避免将来新路径再指向不存在的元素
+### 🐛 适配 Hermes 微模块重构（#38）
 
-### 🐛 排队续轮回退纯文本（#35）
+新版 Hermes 把 `progress_callback` 拆到 `gateway/run_turn_progress.py`、`agent:end` 拆到
+`gateway/run_turn_persistence.py`，`verify` 报 `Missing modular Hermes injection targets: tool`。
 
-后台通知等以「排队续轮」形态进来的轮次，回复不走卡片、只能回退纯文本。
-
-**修正了 issue 里的诊断。** 原判据说续轮「对插件完全不可见」、按轮次钩子全在
-`_handle_message_with_agent`——这不成立：流式钩子挂在 `TurnRunner` 上，而 `_run_agent`
-每次调用都会重建 `TurnRunner`，递归续轮照样进钩子。真正缺的是**续轮那一轮没有自己的
-COMPLETE 钩子**（那个注入在续轮绕过的 `_handle_message_with_agent` 里），于是卡片停在
-「处理中」，回复又按默认路径发成纯文本。
-
-- 新增 `on_queued_followup_completed`：封续轮自己的卡，并写回 `already_sent` / `final_response` 抑制重复投递
-- **封卡失败则放行纯文本**，避免整轮静默
-- 无 inbound id 的无事件续轮（后台通知 / steer）落到合成卡 `syn-*`
+- `progress` / `persistence` 两个模块**按存在与否动态注册**，旧版 Hermes 布局不受影响
+- tool 锚点优先 `progress`、回退 `runner`，verify 与注入共用同一解析顺序
+- `agent:end` 在 `turn` 与 `persistence` 任一命中即可；`persistence` 无注入点，原样不写回
 
 ### ✅ 验证
 
-- **对着真实 Hermes v0.22.0 源码**跑完整 patcher 流程：锚点齐全、产出合法 Python、
-  每个 marker 恰好一次、重复 apply 幂等、`remove` 逐字节还原
-- 新增 `test_patcher_real_v022.py` 锁住注入锚点，并验证它**真的会失败**：改掉锚点模拟上游
-  漂移后 4 条全 failed
-- 全量 **830 passed**（基线 816 + 14 条新测试），新测试 revert 后 RED 确认
+- 预建顺序（封上一张卡之后、递归 `_run_agent` 之前）由**真实 Hermes v0.22.0 源码** + 手写夹具双覆盖
+- 微模块新布局：verify 通过、TOOL 钩子落 progress、marker 恰好一次、apply 幂等、`remove` 逐字节还原
+- 全量 **839 passed**（基线 830 + 9 条新测试），lint / mypy 与基线持平
 
 ### 📦 升级
 
@@ -59,20 +54,20 @@ $HERMES_PYTHON -m hermes_fry_cards install
 hermes gateway restart
 ```
 
-> ⚠️ 本版**新增了一个注入 marker**（`FOLLOWUP_DONE`）：老的注入块不会自动迁移，所以
-> `uninstall` + `install` 这一步**必须执行**，不能只更新包。
+> ⚠️ 本版 `FOLLOWUP_COMPLETE` 与 `FOLLOWUP_DONE` 两个**注入块内容都变了**：老的注入块不会
+> 自动刷新，所以 `uninstall` + `install` 这一步**必须执行**，不能只更新包。
 
 ### 🔍 升级后自查
 
 | 现象 | 含义 |
 | --- | --- |
-| `injected hook failed: followup_done` | 新钩子抛异常，日志里有完整栈 |
-| 排队续轮出现 `card_created`（`synthetic=1`） | 无事件续轮正确落到合成卡 |
-| 不再有 `final text delivery not confirmed` | 纯文本重复投递已抑制 |
-| 不再有 `300313 not find elementID : tools_N` | 拆卡抖动已消除 |
+| `verify` 不再报 `Missing modular Hermes injection targets: tool` | 微模块布局已识别 |
+| `injected hook failed: followup_complete` | 预建 / 封卡钩子抛异常，日志里有完整栈 |
+| `followup card pre-create skipped`（debug） | 预建降级为原行为，回复仍会送达 |
+| 无事件续轮只出现一张卡、没有前置纯文本 | 重复投递已消除 |
 
 ---
 
 完整明细见 [CHANGELOG.md](https://github.com/techysy/hermes-fry-cards/blob/main/CHANGELOG.md)。
 
-**Full Changelog**: [v0.5.2...v0.5.3](https://github.com/techysy/hermes-fry-cards/compare/v0.5.2...v0.5.3)
+**Full Changelog**: [v0.5.3...v0.5.4](https://github.com/techysy/hermes-fry-cards/compare/v0.5.3...v0.5.4)

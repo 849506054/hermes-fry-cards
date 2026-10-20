@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.4] - 2026-10-20
+
+修复 #37 无事件续轮回复投递两次；修复 #38 适配 Hermes 微模块重构（run_turn_progress / run_turn_persistence）。
+
+### 修复 / Fixed
+- **无事件续轮的回复投递两次（纯文本 + 合成卡）**（#37）：0.5.3 的 `FOLLOWUP_DONE` 只在续轮
+  结束后补卡，而无事件续轮（后台通知 / steer）在流式阶段没有 inbound id、插件没有会话 →
+  `on_answer_delta` 返回 False → Hermes 走自己的纯文本流式投递，收尾再建合成卡就重复了。
+  改为在续轮递归 `_run_agent` 之前预建卡片（新增注入点 1c `on_queued_followup_card_ready`）：
+  已存在则复用，无消息 id 落合成卡并按 session_key 注册（与核心 `next_session_key` 同源表达式）；
+  `FOLLOWUP_DONE` 的无 id 分支改为按同一 session_key 复用该卡。预建失败只降级为原行为
+  （debug 日志），不影响封卡与纯文本放行。
+- **适配 Hermes 微模块重构**（#38）：新版 Hermes 把 `progress_callback` 拆到
+  `gateway/run_turn_progress.py`、`hooks.emit("agent:end")` 拆到 `gateway/run_turn_persistence.py`，
+  `verify` 报 `Missing modular Hermes injection targets: tool` 且 agent:end 断言失败。
+  `_default_modular_paths()` 按存在与否动态注册 `progress` / `persistence`（旧版布局不受影响）；
+  tool 锚点优先 `progress`、回退 `runner`，verify 与注入共用同一解析顺序；agent:end 在 `turn`
+  与 `persistence` 任一命中即可；无注入点的 `persistence` 原样跳过不写回。
+  **升级注意**：`FOLLOWUP_COMPLETE` 与 `FOLLOWUP_DONE` 注入块内容均有变化，必须重跑
+  `uninstall` + `install`。
+
+### 测试 / Tests
+- 预建复用 / 预建建卡 / 禁用控制器返回 None（`test_followup_completion.py`）。
+- 注入顺序：预建必须落在封上一张卡之后、递归 `_run_agent` 之前——真实 v0.22.0 源码 + 手写夹具双覆盖。
+- 微模块 progress / persistence 布局：verify 通过、TOOL 钩子落 progress 不落 runner、persistence
+  不被写回、marker 恰好一次、apply 幂等、remove 逐字节还原（`test_patcher_modular.py`）。
+- 全量 839 passed（基线 830 + 9 条新测试）。
+
+### 内部 / Internal
+- 新增 `StreamCardController.resolve_session_id(message_id, session_key)`。
+- `Patcher(modular_paths=...)` 校验放宽为必需模块 ⊆ 传入，并拒绝未知模块名（防拼写错误让锚点
+  静默回退到旧模块）。
+
+---
+
 ## [0.5.3] - 2026-10-15
 
 修复 #34 拆卡后工具面板 300313 抖动；修复 #35 排队续轮回复回退纯文本。
