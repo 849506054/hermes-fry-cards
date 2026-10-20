@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import hermes_fry_cards.patch as patch_module
-from hermes_fry_cards.patch import on_queued_followup_completed
+from hermes_fry_cards.patch import on_queued_followup_card_ready, on_queued_followup_completed
 
 
 def _ctrl(sent: bool = True) -> MagicMock:
@@ -84,3 +84,41 @@ async def test_non_dict_result_is_ignored() -> None:
     ctrl = _ctrl()
     with patch.object(patch_module, "get_controller", return_value=ctrl):
         assert await on_queued_followup_completed(message_id="syn-abc", result=None) is False
+
+
+def _precreate_ctrl(existing: str | None, created: str | None = "syn-new") -> MagicMock:
+    ctrl = MagicMock()
+    ctrl.enabled = True
+    ctrl.resolve_session_id = MagicMock(return_value=existing)
+    ctrl.on_message_started = MagicMock(return_value=created)
+    return ctrl
+
+
+def test_precreate_reuses_card_when_the_turn_already_has_one() -> None:
+    """预建卡是幂等的：事件型续轮在消息到达时就可能已有卡，不能另开一张。"""
+    ctrl = _precreate_ctrl(existing="om_queued")
+    with patch.object(patch_module, "get_controller", return_value=ctrl):
+        assert on_queued_followup_card_ready(message_id="om_queued", chat_id="c") == "om_queued"
+    ctrl.on_message_started.assert_not_called()
+
+
+def test_precreate_creates_card_when_none_exists() -> None:
+    """无事件续轮：按 session_key 建合成卡，让流式直接进卡（#37）。"""
+    ctrl = _precreate_ctrl(existing=None, created="syn-new")
+    with patch.object(patch_module, "get_controller", return_value=ctrl):
+        assert on_queued_followup_card_ready(
+            message_id=None, chat_id="oc_1", chat_type="p2p", session_key="agent:main:f",
+        ) == "syn-new"
+    ctrl.on_message_started.assert_called_once_with(
+        message_id=None, chat_id="oc_1", chat_type="p2p", anchor_id=None, session_key="agent:main:f",
+    )
+
+
+def test_precreate_disabled_controller_returns_none() -> None:
+    """插件禁用时 _safe_hook 吞掉调用，返回 None → 调用方回落原路径。"""
+    ctrl = MagicMock()
+    ctrl.enabled = False
+    with patch.object(patch_module, "get_controller", return_value=ctrl):
+        assert on_queued_followup_card_ready(message_id=None, chat_id="oc_1") is None
+    ctrl.on_message_started.assert_not_called()
+    ctrl.resolve_session_id.assert_not_called()

@@ -188,6 +188,37 @@ def on_message_started(
     return started
 
 
+@_safe_hook()
+def on_queued_followup_card_ready(
+    *,
+    ctrl: Any,
+    message_id: str | None = None,
+    chat_id: str,
+    chat_type: str = "",
+    session_key: str | None = None,
+) -> str | None:
+    """[注入点 1c] 续轮开始前先把该轮的卡建好，收尾钩子复用同一张（#37 重复投递修法）.
+
+    续轮在流式阶段没有卡片时，Hermes 会把回复按纯文本流式投出去；等续轮结束再补卡
+    就成了同一段文字两条投递。这里在续轮递归开始前建卡（无消息 id 落合成卡，按
+    session_key 注册），流式直接进卡，核心那条纯文本路径不再触发。
+
+    已存在则复用（事件型续轮在消息到达时就可能已有卡），无卡可建时返回 None，
+    调用方据此回落原有路径。
+    """
+    existing: str | None = ctrl.resolve_session_id(message_id, session_key)
+    if existing:
+        return existing
+    started: str | None = on_message_started(
+        message_id=message_id,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        anchor_id=None,
+        session_key=session_key,
+    )
+    return started
+
+
 def collect_stream_stats(gateway: Any, session_key: str | None) -> dict[str, Any]:
     """Best-effort 采集会话级缓存命中与生成速度指标，供完成卡片 footer 展示.
 
