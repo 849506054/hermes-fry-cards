@@ -324,6 +324,34 @@ async def on_queued_followup_boundary(
     return sent
 
 
+@_safe_hook(default_return=None)
+def on_queued_followup_card_ready(
+    *,
+    ctrl: Any,
+    message_id: str | None = None,
+    chat_id: str,
+    chat_type: str = "",
+    session_key: str | None = None,
+) -> str | None:
+    """[注入点 1c] 续轮开始前先建好本轮的卡，收尾钩子复用同一张（#37）.
+
+    续轮在流式阶段没有卡片时，Hermes 会把回复按纯文本流式投出去；等续轮结束
+    再补卡就形成「纯文本 + 合成卡」两条投递。这里在续轮递归开始前建卡：
+    有消息 id 的按 id 建，无事件续轮落合成卡（``syn-*``），都按 session_key 注册。
+    已存在则复用；建不出来返回 None，调用方回落原有路径。
+    """
+    existing = ctrl.resolve_session_id(message_id, session_key)
+    if existing:
+        return existing
+    return ctrl.on_message_started(
+        message_id=message_id,
+        chat_id=chat_id,
+        chat_type=chat_type,
+        anchor_id=None,
+        session_key=session_key,
+    )
+
+
 @_safe_hook()
 def on_queued_followup_result(*, ctrl: Any, message_id: str, followup_result: dict[str, Any]) -> None:
     """Carry the deepest queued follow-up id back to the outer completion hook."""

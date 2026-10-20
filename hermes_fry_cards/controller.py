@@ -139,6 +139,15 @@ class StreamCardController(StreamingController):
                 return session
         return None
 
+    def resolve_session_id(
+        self,
+        message_id: str | None,
+        session_key: str | None = None,
+    ) -> str | None:
+        """已存在会话的 message_id（按 message_id，其次 session_key 兜底）；无则 None."""
+        session = self._resolve_session(message_id, session_key)
+        return session.message_id if session is not None else None
+
     def _fire_and_forget(
         self,
         coro: Coroutine[Any, Any, Any],
