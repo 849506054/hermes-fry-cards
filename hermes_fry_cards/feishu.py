@@ -93,6 +93,7 @@ CARDKIT_ELEMENT_LIMIT = 11310  # 子码: 卡片元素数量超限
 CARDKIT_ELEMENT_LIMIT_TOTAL = 300305  # 独立码: 卡片元素总数超限（总元素数 > 硬上限）
 CARDKIT_STREAMING_CLOSED = 300309  # 卡片流式模式已关闭
 MSG_NOT_FOUND = 1000023  # 消息不存在/已删除
+MSG_ID_INVALID = 99992354  # open_message_id 无效/已失效（回复目标消息不存在）
 
 
 @dataclass(frozen=True)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import threading
 import time
@@ -1402,6 +1403,53 @@ class TestDoCreateCard:
         assert ctrl.consume_text_fallback(session.message_id) is False
 
     @pytest.mark.asyncio
+    async def test_target_message_gone_logs_one_warning_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """99992354（open_message_id 失效）属预期路径：单行 warning，不打堆栈."""
+        ctrl = _setup_ctrl()
+        ctrl._client.reply_card_by_id = AsyncMock(
+            side_effect=FeishuAPIError(
+                "reply_card_by_id: code=99992354, msg=not a valid open_message_id",
+                code=99992354,
+            )
+        )
+        session = _make_session("msg_gone")
+        ctrl._sessions["msg_gone"] = session
+
+        with caplog.at_level(logging.WARNING, logger="hermes_fry_cards"):
+            await ctrl._do_create_card(session)
+
+        records = [r for r in caplog.records if "card_reply_failed" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+        assert "target_message_gone" in records[0].getMessage()
+        assert "\n" not in records[0].getMessage()
+        # 功能行为不变：降级纯文本 + 标记失败
+        assert session.state == SessionState.FAILED
+        assert ctrl.consume_text_fallback("msg_gone") is True
+
+    @pytest.mark.asyncio
+    async def test_real_api_error_still_logs_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """非"目标不存在"类错误维持原样：warning + 完整堆栈."""
+        ctrl = _setup_ctrl()
+        ctrl._client.reply_card_by_id = AsyncMock(
+            side_effect=FeishuAPIError("reply_card_by_id: code=230020, msg=rate limited", code=230020)
+        )
+        session = _make_session("msg_real_err")
+        ctrl._sessions["msg_real_err"] = session
+
+        with caplog.at_level(logging.WARNING, logger="hermes_fry_cards"):
+            await ctrl._do_create_card(session)
+
+        records = [r for r in caplog.records if "card_reply_failed" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
+        assert "target_message_gone" not in records[0].getMessage()
+
+    @pytest.mark.asyncio
     async def test_cardkit_failure_yields_to_gateway(self) -> None:
         ctrl = _setup_ctrl()
         client = ctrl._client
@@ -2521,6 +2569,37 @@ class TestBackgroundDeliver:
         assert result is False
         mock_client.upload_image.assert_not_called()
         mock_client.send_card_to_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_target_message_gone_skips_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """completion/后台通知回复已失效消息：单行 warning，不打堆栈，仍返回 False."""
+        ctrl = StreamCardController()
+        ctrl._cfg = MagicMock()
+        ctrl._cfg.enabled = True
+        ctrl._client = AsyncMock()
+        ctrl._initialized = True
+        ctrl._do_background_deliver = AsyncMock(
+            side_effect=FeishuAPIError(
+                "send_card_to_chat: code=99992354, msg=not a valid open_message_id",
+                code=99992354,
+            )
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_fry_cards"):
+            result = await ctrl.on_background_deliver(
+                chat_id="c1",
+                preview="prompt",
+                content="done",
+                reply_to_message_id="om_expired",
+            )
+
+        assert result is False
+        records = [r for r in caplog.records if "background card delivery" in r.getMessage()]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+        assert "skipped" in records[0].getMessage()
 
 
 # ── _complete_header_enabled: 快回复去 header 阈值 ──────────────────────────

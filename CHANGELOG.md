@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.5] - 2026-10-22
+
+日志降噪：回复目标消息已失效（99992354 / 1000023 / 231003 / 230011）不再打完整堆栈。
+
+### 修复 / Fixed
+- **目标消息失效时日志被 traceback 刷屏**：后台任务完成通知（completion，`proc_xxx`）往原消息
+  回卡片时，若原消息已删除/撤回/`open_message_id` 失效，飞书返回
+  `99992354 not a valid open_message_id`。异常本已捕获并降级纯文本、功能无损，但
+  `card_reply_failed` 与 `background card delivery failed` 两处都用 `exc_info=True`
+  打了完整堆栈（warning + traceback 各一条，实测一天数次）。
+  新增 `MSG_ID_INVALID = 99992354` 并纳入 `_TERMINAL_MESSAGE_CODES`（与既有
+  1000023 消息不存在、231003 已删除、230011 已撤回同组）；命中终端码时只留一行
+  warning（`target_message_gone` / `skipped`），不再带堆栈。真正的 API/凭据/限流错误
+  维持 `exc_info=True` 不变，避免降噪掩盖真问题。功能行为（纯文本兜底 + `mark_failed`）不变。
+
+### 测试 / Tests
+- 新增 3 条用例：99992354 只产生一条无堆栈 warning 且仍降级纯文本；非终端码（如 230020）
+  仍带堆栈；`on_background_deliver` 遇到目标失效时单行 warning 且返回 False。
+- 修复 `test_clarify_buttons.py::test_patch_application_does_not_import_optional_toast`：
+  其引用的 `clarify._TOAST_MODULE` 在重构中丢失，导致整轮 pytest INTERNALERROR；
+  补回常量并改为经 `__import__(_TOAST_MODULE, ...)` 懒加载 toast 类（保持惰性导入语义）。
+
 ## [0.5.4] - 2026-10-20
 
 修复 #37 无事件续轮回复投递两次；修复 #38 适配 Hermes 微模块重构（run_turn_progress / run_turn_persistence）。

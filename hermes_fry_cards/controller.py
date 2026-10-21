@@ -20,6 +20,7 @@ from .feishu import (
 from .streaming.controller import StreamingController
 from .streaming.session import CardSession, SessionState
 from .streaming.text import strip_reasoning_tags
+from .streaming.unavailable_guard import extract_api_code, is_terminal_api_code
 
 _logger = logging.getLogger("hermes_fry_cards")
 _CARD_CREATION_WAIT_SEC = 10.0
@@ -678,8 +679,18 @@ class StreamCardController(StreamingController):
             )
             _logger.info("background card delivered: chat=%s len=%d", chat_id[:12], len(content))
             return True
-        except Exception:
-            _logger.warning("background card delivery failed", exc_info=True)
+        except Exception as exc:
+            code = extract_api_code(exc)
+            if is_terminal_api_code(code):
+                # 目标消息已失效（删除/撤回/open_message_id 过期）—— 通知无处可投，属预期路径，
+                # 只留一行 warning，不打堆栈（completion 通知一天可复现多次）。
+                _logger.warning(
+                    "background card delivery skipped: target message gone code=%s chat=%s",
+                    code,
+                    chat_id[:12],
+                )
+            else:
+                _logger.warning("background card delivery failed", exc_info=True)
             return False
 
     def defer_background_review(

@@ -34,6 +34,7 @@ _CLARIFY_STATE: Dict[str, Dict[str, Any]] = {}
 _CLARIFY_SELECTIONS: Dict[str, List[int]] = {}
 _STATE_CAP = 100
 _TOAST_UNLOADED = object()
+_TOAST_MODULE = "lark_oapi.event.callback.model.p2_card_action_trigger"
 
 
 def _get_callback_toast(self: Any) -> Any:
@@ -41,8 +42,8 @@ def _get_callback_toast(self: Any) -> Any:
     toast_cls = getattr(self, "_hl_CallBackToast", _TOAST_UNLOADED)
     if toast_cls is _TOAST_UNLOADED:
         try:
-            from lark_oapi.event.callback.model.p2_card_action_trigger import (
-                CallBackToast as toast_cls,
+            toast_cls = getattr(
+                __import__(_TOAST_MODULE, fromlist=["CallBackToast"]), "CallBackToast"
             )
         except Exception:
             toast_cls = None

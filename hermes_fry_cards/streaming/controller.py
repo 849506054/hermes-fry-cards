@@ -48,6 +48,7 @@ from .segments import Segment, SegmentState, SegmentType
 from .session import SessionState
 from .text import split_reasoning_text, strip_reasoning_tags
 from .tooluse import ToolUseTracker
+from .unavailable_guard import is_terminal_api_code
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -191,13 +192,23 @@ class StreamingController:
                 reply_to_message_id[:12],
             )
         except FeishuAPIError as e:
-            _logger.warning(
-                "card_reply_failed: msg=%s stage=create/reply code=%s err=%s",
-                session.message_id[:12],
-                e.code,
-                e,
-                exc_info=True,
-            )
+            if is_terminal_api_code(e.code):
+                # 目标消息已删除/撤回/open_message_id 失效：卡片无处可投，属预期路径。
+                # 该场景可一天复现多次，只留一行 warning，不打堆栈（避免 traceback 刷屏）。
+                _logger.warning(
+                    "card_reply_failed: msg=%s stage=create/reply code=%s target_message_gone err=%s",
+                    session.message_id[:12],
+                    e.code,
+                    e,
+                )
+            else:
+                _logger.warning(
+                    "card_reply_failed: msg=%s stage=create/reply code=%s err=%s",
+                    session.message_id[:12],
+                    e.code,
+                    e,
+                    exc_info=True,
+                )
             if hasattr(self, "_mark_text_fallback_needed"):
                 self._mark_text_fallback_needed(session)
             session.mark_failed(reason="cardkit_create_api_error")

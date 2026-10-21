@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from ..feishu import MSG_NOT_FOUND
+from ..feishu import MSG_ID_INVALID, MSG_NOT_FOUND
 
 _logger = logging.getLogger("hermes_fry_cards")
 
@@ -17,6 +17,7 @@ _TERMINAL_MESSAGE_CODES = {
     231003,  # message deleted
     MSG_NOT_FOUND,
     230011,  # message recalled
+    MSG_ID_INVALID,  # open_message_id 无效/已失效 — 回复目标消息不存在
 }
 
 
