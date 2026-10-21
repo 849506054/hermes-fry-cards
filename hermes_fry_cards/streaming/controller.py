@@ -314,19 +314,20 @@ class StreamingController:
                         session.tool_panel_created = True
                         tool_panel_element_id = TOOL_PANEL_ELEMENT_ID
                         seg.created = True
-                        # 用所有工具步骤更新面板
+                        # 本卡面板从本卡首个工具段开始（拆卡后不重发旧卡步骤）
+                        panel_start = seg.tool_offset
+                        panel_end = seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
                         actions.append(
                             build_tool_update_action(
                                 element_id=TOOL_PANEL_ELEMENT_ID,
-                                steps=all_steps[
-                                    seg.tool_offset : seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
-                                ],
+                                steps=all_steps[panel_start:panel_end],
                             )
                         )
                         updated_tool_segs.append(seg)
-                        # 初始化工具面板总估算（首次创建，与 dirty 分支统一用全部步骤）
-                        estimate = estimate_tool_elements(0, len(all_steps), all_steps)
-                        session.tool_panel_estimate = estimate
+                        # 面板子元素计入卡片元素总数。这里只记录「新面板估算」，
+                        # session.tool_panel_estimate 由 _do_batch_update 成功后再推进 ——
+                        # 提前赋值会让它算出的增量恒为 0（实测见 tests/test_element_budget.py）。
+                        estimate = estimate_tool_elements(panel_start, panel_end, all_steps)
                         new_el_estimates[TOOL_PANEL_ELEMENT_ID] = estimate
                         new_el_total += estimate
                     else:
@@ -375,8 +376,13 @@ class StreamingController:
                 )
                 actions.append(build_reasoning_finalized_action(seg))
             elif seg.type == SegmentType.TOOL and seg.dirty:
-                # 合并面板：用所有工具步骤更新（不只是当前 segment）
-                start, end = 0, len(all_steps)
+                # 合并面板：本卡所有工具段共用一个面板，渲染区间取本卡最小 offset 起，
+                # 拆卡后不把旧卡的步骤重发到新卡（否则新卡立刻再撞元素上限）。
+                start = min(
+                    (s.tool_offset for s in segments[session.split_index :] if s.type == SegmentType.TOOL),
+                    default=seg.tool_offset,
+                )
+                end = len(all_steps)
                 rollover = await self._maybe_rollover_tool_segment(
                     session=session,
                     segment_state=segment_state,
@@ -409,10 +415,10 @@ class StreamingController:
                 shared_el_id = tool_panel_element_id or TOOL_PANEL_ELEMENT_ID
                 actions.append(build_tool_update_action(element_id=shared_el_id, steps=all_steps[start:end]))
                 updated_tool_segs.append(seg)
-                # 工具面板元素增量 = 当前总估算 - 上次记录的总估算（非当前段差值）
+                # 工具面板元素增量 = 当前总估算 - 上次记录的总估算（非当前段差值）。
+                # session.tool_panel_estimate 只在批更新成功后推进（见 _do_batch_update）。
                 if shared_el_id not in new_el_estimates:
                     delta = estimate - session.tool_panel_estimate
-                    session.tool_panel_estimate = estimate
                     new_el_estimates[shared_el_id] = estimate
                     new_el_total += delta
                 else:
@@ -651,17 +657,24 @@ class StreamingController:
         session.tool_panel_created = False
         session.tool_panel_estimate = 0
         session.split_disabled = False
+        # 已创建的 segment 留在封印后的旧卡上；新卡只承接未创建的那些。
+        # split_index 必须前移：完成态按 active_segments()（segments[split_index:]）重建，
+        # 不前移会把旧卡内容再渲染一遍，元素数再次超限（2026-10-20 22:58 实测）。
+        split_at = next(
+            (i for i in range(seal_start_idx, len(segments)) if not segments[i].created),
+            len(segments),
+        )
+        session.split_index = split_at
         # 未创建 segment 迁移到新卡，标记 dirty 以便下一轮 flush 重新 add。
-        # 已创建 segment 保留在封印后的旧卡上，无需重置。
-        for seg in segments[seal_start_idx:]:
-            if not seg.created:
-                seg.created = False
-                seg.dirty = True
+        for seg in segments[split_at:]:
+            seg.created = False
+            seg.dirty = True
         _logger.info(
-            "CardKit force-split on element limit: msg=%s old_card=%s sealed=%d new_card=%s",
+            "CardKit force-split on element limit: msg=%s old_card=%s sealed=%d split_idx=%d new_card=%s",
             session.message_id[:12],
             old_card_id[:12],
             len(seal_segments),
+            split_at,
             new_card_id[:12],
         )
 

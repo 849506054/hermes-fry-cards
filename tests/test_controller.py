@@ -16,7 +16,7 @@ import pytest
 import hermes_fry_cards.controller as controller_module
 from hermes_fry_cards.controller import StreamCardController, get_controller
 from hermes_fry_cards.feishu import FeishuAPIError, FeishuClient
-from hermes_fry_cards.streaming.segment_helper import estimate_segment_elements
+from hermes_fry_cards.streaming.segment_helper import estimate_segment_elements, estimate_tool_elements
 from hermes_fry_cards.streaming.segments import Segment, SegmentState
 from hermes_fry_cards.streaming.session import CardSession, SessionState
 
@@ -1578,9 +1578,10 @@ class TestDoFlush:
         assert session.card_msg_id == "msg_next"
         assert session.split_index == 2
         assert session.split_disabled is False
-        # 新卡 element_count 重置为 loading 基线(1)。合并面板模式下工具面板是建卡骨架内
-        # 的共享元素，走 update 而非 add，不累计进 element_count（见 controller 注释）。
-        assert session.element_count == 1
+        # 新卡从 loading 基线(1) 起算，并把新卡上重建的工具面板子元素计入 —— 面板子元素
+        # 占飞书元素配额，漏计会让阈值拆卡永远不触发（见 tests/test_element_budget.py）。
+        panel_estimate = estimate_tool_elements(0, len(session.tool_use.build_display_steps()), session.tool_use.build_display_steps())
+        assert session.element_count == 1 + panel_estimate
         assert [s.created for s in session.segment_state.segments] == [True, True, True]
 
     @pytest.mark.asyncio
@@ -1868,7 +1869,11 @@ class TestDoFlush:
 
         assert tool_seg.created is True
         assert tool_seg.dirty is False
-        assert session.element_count == 0  # 工具面板不计入 element_count（骨架内元素）
+        # 面板重建成功后面板子元素计入 element_count —— 只计一次（无重复累加），
+        # 数值 = 面板估算值（见 tests/test_element_budget.py 的追踪回归）。
+        assert session.element_count == estimate_tool_elements(
+            0, len(session.tool_use.build_display_steps()), session.tool_use.build_display_steps()
+        )
         # 两次 batch_update 调用：第一次失败，第二次成功（非死循环重试 N 次）
         assert client.cardkit_batch_update.await_count == 2
 
