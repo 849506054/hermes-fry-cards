@@ -8,6 +8,7 @@ build/
 dist/
 .pytest_cache/
 tests/samples/
+uv.lock
 
 # IDE
 .vscode/
