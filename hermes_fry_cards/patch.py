@@ -470,6 +470,18 @@ def on_message_aborted(*, ctrl: Any, message_id: str) -> None:
     ctrl.on_aborted(message_id=message_id)
 
 
+@_safe_hook(default_return=False)
+def on_busy_ack(*, ctrl: Any, message_id: str, session_key: str, text: str) -> bool:
+    """Route a busy receipt to its current message owner."""
+    return bool(ctrl.on_busy_ack(message_id=message_id, session_key=session_key, text=text))
+
+
+@_safe_hook()
+def on_turn_redirected(*, ctrl: Any, session_key: str, message_id: str) -> None:
+    """Notify the controller after the core re-anchors a running turn."""
+    ctrl.on_turn_redirected(session_key=session_key, message_id=message_id)
+
+
 async def on_session_aborted(*, session_key: str) -> bool:
     """Terminate the active card after Hermes handles a busy-session /stop."""
     try:

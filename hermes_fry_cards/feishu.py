@@ -32,6 +32,8 @@ from lark_oapi.api.im.v1 import (
     CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -117,12 +119,7 @@ class FeishuClient:
     def __init__(self, config: FeishuClientConfig) -> None:
         self.config = config
         domain = config.base_url.strip().rstrip("/").removesuffix(_OPEN_APIS_SUFFIX) or DEFAULT_DOMAIN
-        builder = (
-            lark.Client.builder()
-            .app_id(config.app_id)
-            .app_secret(config.app_secret)
-            .domain(domain)
-        )
+        builder = lark.Client.builder().app_id(config.app_id).app_secret(config.app_secret).domain(domain)
         self._client = builder.build()
 
     @staticmethod
@@ -317,6 +314,19 @@ class FeishuClient:
         if resp.data and resp.data.message_id:
             return str(resp.data.message_id)
         raise FeishuAPIError("reply_card_by_id: response missing message_id")
+
+    async def patch_card_message(self, message_id: str, card: dict[str, Any]) -> None:
+        """通过卡片消息标识恢复静态终态内容。"""
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(PatchMessageRequestBody.builder().content(self._dumps(card)).build())
+            .build()
+        )
+        await self._checked_call(
+            "patch_card_message",
+            lambda: asyncio.to_thread(self._client.im.v1.message.patch, request),
+        )
 
     async def cardkit_create(self, card: dict[str, Any]) -> str:
         """创建 CardKit 实体，返回 card_id."""

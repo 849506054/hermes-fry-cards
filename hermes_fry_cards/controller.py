@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterator
@@ -13,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import Config, hermes_home
+from .delivery import DeliveryKind, DeliveryResolution
 from .feishu import (
     FeishuClient,
     FeishuClientConfig,
@@ -34,7 +37,11 @@ class StreamCardController(StreamingController):
         self._client: FeishuClient | None = None
         self._sessions: dict[str, CardSession] = {}
         self._session_keys: dict[str, CardSession] = {}
-        self._interrupt_map: dict[str, str] = {}
+        self._delivery_lock = threading.RLock()
+        self._closed_ids: dict[str, tuple[DeliveryKind, float]] = {}
+        self._live_cards_lock = threading.RLock()
+        self._swept_stale_cards = False
+        self._stale_sweep_lock = threading.Lock()
         self._initialized = False
         self._init_lock = threading.Lock()
         self._session_ttl = self._cfg.card_duration_sec
@@ -85,24 +92,130 @@ class StreamCardController(StreamingController):
             reset_secret_scope(token)
 
     async def _ensure_init(self) -> None:
-        if self._initialized:
+        if not self._initialized:
+            with self._init_lock:
+                if not self._initialized:
+                    with self._credential_scope():
+                        app_id = self._cfg.feishu_app_id or self._cfg.env_app_id
+                        app_secret = self._cfg.feishu_app_secret or self._cfg.env_app_secret
+                        if not app_id or not app_secret:
+                            raise RuntimeError("feishu credentials not configured")
+                        self._client = FeishuClient(
+                            FeishuClientConfig(
+                                app_id=app_id,
+                                app_secret=app_secret,
+                                base_url=self._cfg.feishu_base_url,
+                            )
+                        )
+                    self._initialized = True
+        if not self._swept_stale_cards and self._stale_sweep_lock.acquire(blocking=False):
+            try:
+                if not self._swept_stale_cards:
+                    self._swept_stale_cards = await self._sweep_stale_cards()
+            finally:
+                self._stale_sweep_lock.release()
+
+    def _live_cards_path(self) -> Path:
+        return self._profile_home / "state" / "fry-cards-live.json"
+
+    def _read_live_cards(self) -> dict[str, Any]:
+        path = self._live_cards_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        if not isinstance(data, dict):
+            raise ValueError("live card registry must be an object")
+        return data
+
+    def _write_live_cards(self, data: dict[str, Any]) -> None:
+        path = self._live_cards_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not data:
+            path.unlink(missing_ok=True)
             return
-        with self._init_lock:
-            if self._initialized:
-                return
-            with self._credential_scope():
-                app_id = self._cfg.feishu_app_id or self._cfg.env_app_id
-                app_secret = self._cfg.feishu_app_secret or self._cfg.env_app_secret
-                if not app_id or not app_secret:
-                    raise RuntimeError("feishu credentials not configured")
-                self._client = FeishuClient(
-                    FeishuClientConfig(
-                        app_id=app_id,
-                        app_secret=app_secret,
-                        base_url=self._cfg.feishu_base_url,
-                    )
-                )
-            self._initialized = True
+        import uuid
+
+        temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+        try:
+            temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _track_live_card(self, session: CardSession, *, old_message_id: str | None = None) -> None:
+        if not session.card_msg_id:
+            return
+        try:
+            with self._live_cards_lock:
+                data = self._read_live_cards()
+                if old_message_id:
+                    data.pop(old_message_id, None)
+                data[session.card_msg_id] = {
+                    "card_id": session.card_id,
+                    "chat_id": session.chat_id,
+                    "at": time.time(),
+                }
+                self._write_live_cards(data)
+        except (OSError, ValueError):
+            _logger.warning("live card registry update failed", exc_info=True)
+
+    def _untrack_live_card(self, session: CardSession) -> None:
+        if not session.card_msg_id:
+            return
+        try:
+            with self._live_cards_lock:
+                data = self._read_live_cards()
+                if session.card_msg_id in data:
+                    data.pop(session.card_msg_id)
+                    self._write_live_cards(data)
+        except (OSError, ValueError):
+            _logger.warning("live card registry close failed", exc_info=True)
+
+    async def _sweep_stale_cards(self) -> bool:
+        """只恢复启动快照中仍登记、且不属当前进程的遗留投递。"""
+        try:
+            with self._live_cards_lock:
+                snapshot = self._read_live_cards()
+        except (OSError, ValueError):
+            _logger.warning("live card registry read failed", exc_info=True)
+            return False
+        if not snapshot:
+            return True
+        recovered = True
+        assert self._client is not None
+        card = {
+            "schema": "2.0",
+            "config": {"update_multi": True},
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": "⚠️ 本轮因网关重启中断，卡片已停止更新。",  # noqa: RUF001
+                    }
+                ]
+            },
+        }
+        for message_id, record in snapshot.items():
+            with self._live_cards_lock:
+                data = self._read_live_cards()
+                if data.get(message_id) != record or message_id not in data:
+                    continue
+                if any(s.card_msg_id == message_id for s in self._sessions.values()):
+                    continue
+            try:
+                await self._client.patch_card_message(message_id, card)
+            except Exception:
+                _logger.warning("stale card close failed: id=%s", message_id, exc_info=True)
+                recovered = False
+                continue
+            with self._live_cards_lock:
+                data = self._read_live_cards()
+                if data.get(message_id) == record:
+                    data.pop(message_id, None)
+                    self._write_live_cards(data)
+            _logger.info("delivery_closed: id=%s reason=gateway_restart", message_id)
+        return recovered
 
     def _get_loop(self) -> asyncio.AbstractEventLoop | None:
         """获取事件循环，缓存以便跨线程复用."""
@@ -116,41 +229,62 @@ class StreamCardController(StreamingController):
             return self._loop
         return None
 
+    def _resolve_delivery(
+        self,
+        message_id: str | None,
+        session_key: str | None = None,
+    ) -> DeliveryResolution:
+        """所有入口共享精确别名解析；仅无标识事件取会话当前投递。"""
+        with self._delivery_lock:
+            now = time.time()
+            expired = {key for key, value in self._closed_ids.items() if value[1] <= now}
+            for key in expired:
+                self._closed_ids.pop(key, None)
+                self._text_fallback_needed.discard(key)
+            session = self._sessions.get(message_id) if message_id else self._session_keys.get(session_key or "")
+            if session is None:
+                kind = self._closed_ids.get(message_id or "", (DeliveryKind.UNKNOWN, 0))[0]
+            elif session.state == SessionState.FAILED:
+                kind = DeliveryKind.FAILED
+            elif not session.writable:
+                kind = DeliveryKind.CLOSED
+            else:
+                kind = DeliveryKind.WRITABLE
+            _logger.info(
+                "delivery_resolved: id=%s key=%s owner=%s decision=%s",
+                message_id or "",
+                session_key or "",
+                session.message_id if session else "",
+                kind,
+            )
+            return DeliveryResolution(kind, session)
+
     def _get_active_session(self, message_id: str) -> CardSession | None:
-        """获取非终态的活跃 session，不存在或已终态返回 None."""
-        session = self._sessions.get(message_id)
-        if session is None or session.state.is_terminal:
-            return None
-        return session
+        return self._resolve_session(message_id)
 
     def _resolve_session(
         self,
         message_id: str | None,
         session_key: str | None = None,
     ) -> CardSession | None:
-        """按 message_id 解析会话；无 ID（合成轮次）时按 session_key 兜底."""
-        if message_id:
-            session = self._sessions.get(message_id)
-            if session is not None and not session.state.is_terminal:
-                return session
-        if session_key:
-            session = self._session_keys.get(session_key)
-            if session is not None and not session.state.is_terminal:
-                return session
-        return None
+        result = self._resolve_delivery(message_id, session_key)
+        return result.session if result.kind == DeliveryKind.WRITABLE else None
 
     def resolve_session_id(
         self,
         message_id: str | None,
         session_key: str | None = None,
     ) -> str | None:
-        """已存在会话的 message_id（按 message_id，其次 session_key 兜底）；无则 None.
-
-        排队续轮的预建卡与收尾卡靠它对齐同一张卡：预建时按 session_key 注册，
-        收尾时无消息 id 也据此复用，而不是另开一张（#37 重复投递修法）。
-        """
         session = self._resolve_session(message_id, session_key)
-        return session.message_id if session is not None else None
+        return session.message_id if session else None
+
+    def _close_delivery(self, session: CardSession, *, reason: str) -> None:
+        if not session.writable:
+            return
+        session.state = SessionState.ABORTED
+        session.flush.mark_completed()
+        _logger.info("delivery_closed: id=%s key=%s reason=%s", session.message_id, session.session_key, reason)
+        self._complete_session(session)
 
     def _fire_and_forget(
         self,
@@ -178,13 +312,17 @@ class StreamCardController(StreamingController):
         session_key: str | None = None,
     ) -> None:
         """统一 session 注册入口：维护 _sessions（message_id + anchor 别名）与 _session_keys."""
-        self._sessions[session.message_id] = session
-        if anchor_id and anchor_id != session.message_id:
-            session.anchor_id = anchor_id
-            self._sessions[anchor_id] = session
-        if session_key:
-            session.session_key = session_key
-            self._session_keys[session_key] = session
+        with self._delivery_lock:
+            if session_key:
+                previous = self._session_keys.get(session_key)
+                if previous is not None and previous is not session:
+                    self._close_delivery(previous, reason="target_switched")
+                session.session_key = session_key
+                self._session_keys[session_key] = session
+            self._sessions[session.message_id] = session
+            if anchor_id and anchor_id != session.message_id:
+                session.anchor_id = anchor_id
+                self._sessions[anchor_id] = session
 
     def _chat_type_allowed(self, chat_type: str) -> bool:
         """聊天类型是否允许发流式卡片.
@@ -210,61 +348,74 @@ class StreamCardController(StreamingController):
         anchor_id: str | None = None,
         session_key: str | None = None,
     ) -> str | None:
-        """消息处理开始 — 创建会话 + 发占位卡片.
-
-        message_id 缺失时（后台通知/clarify 恢复等合成轮次）降级为 synthetic
-        会话：卡片直接 send_card_to_chat，不再放弃卡片回退纯文本。
-
-        返回实际创建的 message_id（合成轮次为 ``syn-*``），失败返回 None。
-        排队续轮的收尾钩子需要它把卡片归属传给完成钩子（#35）。
-        """
-        if not self.enabled:
-            return None
-        synthetic = False
-        if not message_id:
-            if not chat_id or not session_key:
-                _logger.warning("on_message_started: missing message_id, chat=%s", chat_id[:12])
-                return None
-            import uuid as _uuid
-
-            message_id = "syn-" + _uuid.uuid4().hex[:16]
-            synthetic = True
-            anchor_id = None
-        if not self._chat_type_allowed(chat_type):
-            _logger.info(
-                "chat_type filtered: no card for chat_type=%r chat=%s msg=%s",
-                chat_type,
-                chat_id[:12],
-                message_id[:12],
-            )
-            return None
-        existing = self._sessions.get(message_id)
-        if existing is not None and not existing.state.is_terminal:
-            return message_id
-
-        self._prune_stale_sessions()
-
-        loop = self._get_loop()
-        if loop is None:
-            _logger.warning("no event loop available, skipping: msg=%s", message_id[:12])
-            return None
-        session = CardSession(message_id, chat_id, loop)
-        session.synthetic = synthetic
-        self._register_session(session, anchor_id=anchor_id, session_key=session_key)
-        _logger.info(
-            "session_created: msg=%s chat=%s anchor=%s key=%s%s",
-            message_id[:12],
-            chat_id[:12],
-            (anchor_id or "")[:12],
-            (session_key or "")[:12],
-            " synthetic=1" if synthetic else "",
+        return self._start_delivery(
+            message_id=message_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            anchor_id=anchor_id,
+            session_key=session_key,
         )
 
-        session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
-        return message_id
+    def _start_delivery(
+        self,
+        *,
+        message_id: str | None,
+        chat_id: str,
+        chat_type: str = "",
+        anchor_id: str | None = None,
+        session_key: str | None = None,
+        sticky: str = "",
+    ) -> str | None:
+        """注册、转移和创建共享入口，创建前就完成所有权转移。"""
+        if not self.enabled or not self._chat_type_allowed(chat_type):
+            return None
+        with self._delivery_lock:
+            result = self._resolve_delivery(message_id, session_key)
+            if result.kind == DeliveryKind.UNKNOWN and anchor_id:
+                result = self._resolve_delivery(anchor_id)
+            if result.kind == DeliveryKind.WRITABLE and result.session is not None:
+                existing = result.session
+                if existing.chat_id != chat_id:
+                    return None
+                if message_id:
+                    self._sessions[message_id] = existing
+                self._register_session(existing, anchor_id=anchor_id, session_key=session_key)
+                return existing.message_id
+            if message_id and result.kind != DeliveryKind.UNKNOWN:
+                if result.session is None or result.session.chat_id == chat_id:
+                    self._closed_ids[message_id] = (result.kind, time.time() + self._session_ttl)
+                return None
+            synthetic = not message_id
+            if synthetic:
+                if not chat_id or not session_key:
+                    return None
+                import uuid
+
+                message_id = "syn-" + uuid.uuid4().hex[:16]
+                anchor_id = None
+            loop = self._get_loop()
+            if loop is None:
+                return None
+            self._prune_stale_sessions()
+            session = CardSession(message_id, chat_id, loop)
+            session.synthetic = synthetic
+            self._register_session(session, anchor_id=anchor_id, session_key=session_key)
+            if sticky:
+                session.segment_state.add_notice(sticky, sticky=True)
+            _logger.info(
+                "session_created: msg=%s chat=%s anchor=%s key=%s synthetic=%s",
+                message_id,
+                chat_id,
+                anchor_id or "",
+                session_key or "",
+                int(synthetic),
+            )
+            session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
+            return message_id
 
     def _mark_text_fallback_needed(self, session: CardSession) -> None:
-        keys = {session.message_id}
+        keys = {key for key, owner in self._sessions.items() if owner is session}
+        keys.add(session.message_id)
         if session.anchor_id:
             keys.add(session.anchor_id)
         self._text_fallback_needed.update(keys)
@@ -285,7 +436,10 @@ class StreamCardController(StreamingController):
         """思考内容增量."""
         if not self.enabled:
             return False
-        session = self._resolve_session(message_id, session_key)
+        result = self._resolve_delivery(message_id, session_key)
+        if result.kind != DeliveryKind.WRITABLE:
+            return result.consumed
+        session = result.session
         if session is None or session.guard.should_skip("on_thinking"):
             return False
 
@@ -297,7 +451,10 @@ class StreamCardController(StreamingController):
         """Native model reasoning delta (incremental append)."""
         if not self.enabled:
             return False
-        session = self._resolve_session(message_id, session_key)
+        result = self._resolve_delivery(message_id, session_key)
+        if result.kind != DeliveryKind.WRITABLE:
+            return result.consumed
+        session = result.session
         if session is None or session.guard.should_skip("on_reasoning"):
             return False
         if not self._cfg.show_reasoning:
@@ -322,7 +479,10 @@ class StreamCardController(StreamingController):
         """工具调用事件."""
         if not self.enabled:
             return False
-        session = self._resolve_session(message_id, session_key)
+        result = self._resolve_delivery(message_id, session_key)
+        if result.kind != DeliveryKind.WRITABLE:
+            return result.consumed
+        session = result.session
         if session is None or session.guard.should_skip("on_tool_update"):
             return False
         if session.segment_state is None:
@@ -363,7 +523,8 @@ class StreamCardController(StreamingController):
         future: ConcurrentFuture | None = None
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._do_clarify_split(session), loop,
+                self._do_clarify_split(session),
+                loop,
             )
             # 预算 = 卡片创建等待 + seal/建卡余量
             future.result(timeout=_CARD_CREATION_WAIT_SEC * 2 + 30)
@@ -381,7 +542,10 @@ class StreamCardController(StreamingController):
         """答案文本增量（流式）."""
         if not self.enabled:
             return False
-        session = self._resolve_session(message_id, session_key)
+        result = self._resolve_delivery(message_id, session_key)
+        if result.kind != DeliveryKind.WRITABLE:
+            return result.consumed
+        session = result.session
         if session is None or session.guard.should_skip("on_answer"):
             return False
         if session.segment_state is None:
@@ -410,6 +574,7 @@ class StreamCardController(StreamingController):
         # 确保 abort 时 footer 有时间 + 模型显示
         if not session.footer.get("duration") and hasattr(session, "created_at"):
             import time as _t
+
             session.footer["duration"] = _t.time() - session.created_at
         if not session.footer.get("model"):
             session.footer["model"] = ""
@@ -431,6 +596,7 @@ class StreamCardController(StreamingController):
         # 确保 abort 时 footer 有时间显示
         if not session.footer.get("duration") and hasattr(session, "created_at"):
             import time as _t
+
             session.footer["duration"] = _t.time() - session.created_at
         if not session.footer.get("model"):
             session.footer["model"] = ""
@@ -451,48 +617,51 @@ class StreamCardController(StreamingController):
         if not self.enabled:
             return
 
-        old_session = self._get_active_session(old_message_id)
-        session_key = session_key or (old_session.session_key if old_session is not None else None)
-        if old_session is not None:
-            old_session.state = SessionState.ABORTED
-            old_session.flush.mark_completed()
-            _logger.info(
-                "interrupt_abort_old: msg=%s -> msg=%s",
-                old_message_id[:12],
-                new_message_id[:12],
+        old_session = self._sessions.get(old_message_id)
+        session_key = session_key or (old_session.session_key if old_session else None)
+        with self._delivery_lock:
+            if (
+                old_session
+                and new_message_id not in {old_session.message_id, old_session.anchor_id}
+                and not (anchor_id and anchor_id in {old_session.message_id, old_session.anchor_id})
+            ):
+                self._close_delivery(old_session, reason="interrupted")
+            self._start_delivery(
+                message_id=new_message_id,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                anchor_id=anchor_id,
+                session_key=session_key,
             )
-            self._complete_session(old_session)
 
-        # 若该聊天类型被过滤（如群聊不发卡片），新消息 B 不创建卡片会话，
-        # 但中断映射仍记录，保证旧会话完成/回落逻辑一致。
-        new_card_allowed = self._chat_type_allowed(chat_type)
-        existing = self._sessions.get(new_message_id)
-        if existing is None or existing.state.is_terminal:
-            loop = self._get_loop()
-            if loop is not None and new_card_allowed:
-                reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
-                session = CardSession(new_message_id, chat_id, loop)
-                self._register_session(session, anchor_id=reply_anchor_id, session_key=session_key)
-                _logger.info(
-                    "session_created: msg=%s chat=%s anchor=%s key=%s (interrupt redirect)",
-                    new_message_id[:12],
-                    chat_id[:12],
-                    (reply_anchor_id or "")[:12],
-                    (session_key or "")[:12],
-                )
-                session.create_task = self._fire_and_forget(self._do_create_card(session), loop)
-            elif not new_card_allowed:
-                _logger.info(
-                    "chat_type filtered: interrupt no card for chat_type=%r chat=%s msg=%s",
-                    chat_type,
-                    chat_id[:12],
-                    new_message_id[:12],
-                )
+    def on_turn_redirected(self, *, session_key: str, message_id: str) -> None:
+        if not self.enabled or not session_key or not message_id:
+            return
+        with self._delivery_lock:
+            old = self._session_keys.get(session_key)
+            if old is None:
+                return
+            new_id = self._start_delivery(
+                message_id=message_id,
+                chat_id=old.chat_id,
+                session_key=session_key,
+                sticky="↪ 已重定向当前运行 · 正在按你的修正调整…",
+            )
+            _logger.info("delivery_switched: old=%s new=%s key=%s", old.message_id, new_id, session_key)
 
-        self._interrupt_map[old_message_id] = new_message_id
-        for key, val in list(self._interrupt_map.items()):
-            if val == old_message_id and key != old_message_id:
-                self._interrupt_map[key] = new_message_id
+    def on_busy_ack(self, *, session_key: str, text: str, message_id: str | None = None) -> bool:
+        """Busy input names the new message; its notice belongs to the running delivery."""
+        if not self.enabled or not text.strip():
+            return False
+        session = self._resolve_session(None, session_key)
+        if session is None or session.segment_state is None:
+            return False
+        session.segment_state.add_notice(text)
+        self._schedule_flush(session)
+        _logger.info(
+            "busy_receipt_merged: incoming=%s owner=%s key=%s", message_id or "", session.message_id, session_key
+        )
+        return True
 
     def on_clarify_enter(
         self,
@@ -527,7 +696,7 @@ class StreamCardController(StreamingController):
 
     def _yield_to_gateway(self, session: CardSession, *, reason: str) -> None:
         """统一 fallback 决策：卡片无法收尾时标记文本回退（无卡时）+ 清理，交还网关默认回复."""
-        if not session.has_card:
+        if not session.has_card or session.state == SessionState.FAILED:
             self._mark_text_fallback_needed(session)
         _logger.info(
             "fallback_to_text: msg=%s state=%s has_card=%s reason=%s",
@@ -554,9 +723,13 @@ class StreamCardController(StreamingController):
         """消息处理完成，并等待卡片真正收尾后返回是否已发送."""
         if not self.enabled:
             return False
-        session = self._completion_session(message_id, session_key)
+        result = self._resolve_delivery(message_id, session_key)
+        if result.kind not in (DeliveryKind.WRITABLE, DeliveryKind.FAILED):
+            return result.consumed
+        session = result.session
         if session is None:
             return False
+        session.flush.mark_completed()
         message_id = session.message_id
 
         if not await self._wait_for_card_creation(session):
@@ -634,9 +807,7 @@ class StreamCardController(StreamingController):
         """Cron 推送 — 包装为静态卡片发送，成功返回 True."""
         if not self.enabled or not content or not chat_id:
             return False
-        coroutine = self._do_cron_deliver(
-            chat_id, content, task_name=task_name, run_time=run_time
-        )
+        coroutine = self._do_cron_deliver(chat_id, content, task_name=task_name, run_time=run_time)
         try:
             if loop is not None and loop.is_running() and not loop.is_closed():
                 try:
@@ -669,6 +840,14 @@ class StreamCardController(StreamingController):
         """Background 任务完成推送 — 包装为静态卡片发送，成功返回 True."""
         if not self.enabled or not content or not chat_id:
             return False
+        session = self._resolve_session(reply_to_message_id) if reply_to_message_id else None
+        if session is not None and session.chat_id == chat_id and session.segment_state is not None:
+            from .streaming.controller import _clean_delivered_text
+
+            session.segment_state.add_notice(_clean_delivered_text(content))
+            self._schedule_flush(session)
+            _logger.info("background_receipt_merged: id=%s chat=%s", session.message_id, chat_id)
+            return True
         try:
             await self._do_background_deliver(
                 chat_id,
@@ -719,9 +898,8 @@ class StreamCardController(StreamingController):
     def _dispose_session(self, session: CardSession) -> None:
         """统一 session 清理入口（幂等）：只清理仍指向该 session 的索引."""
         removed_any = False
-        keys = [session.message_id]
-        if session.anchor_id:
-            keys.append(session.anchor_id)
+        keys = [key for key, owner in self._sessions.items() if owner is session]
+        keys.extend(key for key in (session.message_id, session.anchor_id) if key and key not in keys)
         for key in keys:
             if self._sessions.get(key) is session:
                 del self._sessions[key]
@@ -730,10 +908,10 @@ class StreamCardController(StreamingController):
         if session_key and self._session_keys.get(session_key) is session:
             del self._session_keys[session_key]
             removed_any = True
-        stale_keys = [key for key, value in self._interrupt_map.items() if value == session.message_id]
-        for key in stale_keys:
-            del self._interrupt_map[key]
-            removed_any = True
+        kind = DeliveryKind.FAILED if getattr(session, "state", None) == SessionState.FAILED else DeliveryKind.CLOSED
+        for key in keys:
+            if key:
+                self._closed_ids[key] = (kind, time.time() + self._session_ttl)
         session.flush.mark_completed()
         if session.image_resolver:
             session.image_resolver.cancel_pending()
@@ -758,31 +936,9 @@ class StreamCardController(StreamingController):
     def _cleanup_session(self, session: CardSession) -> None:
         self._dispose_session(session)
 
-    def _completion_session(
-        self, message_id: str | None, session_key: str | None = None
-    ) -> CardSession | None:
-        session = self._sessions.get(message_id) if message_id else None
-        # 允许 FAILED session 重新获取以便完成收尾，排除已 COMPLETED/ABORTED 的
-        if session is not None and session.state != SessionState.COMPLETED and session.state != SessionState.ABORTED:
-            return session
-
-        redirected_id = self._interrupt_map.pop(message_id, None) if message_id else None
-        if redirected_id is not None:
-            _logger.info(
-                "on_completed: redirect msg=%s -> msg=%s",
-                (message_id or "")[:12],
-                redirected_id[:12],
-            )
-            redirected = self._sessions.get(redirected_id)
-            if redirected is not None and not redirected.state.is_terminal:
-                return redirected
-        if session_key:
-            fallback = self._session_keys.get(session_key)
-            if fallback is not None and fallback.state not in (
-                SessionState.COMPLETED, SessionState.ABORTED
-            ):
-                return fallback
-        return None
+    def _completion_session(self, message_id: str | None, session_key: str | None = None) -> CardSession | None:
+        result = self._resolve_delivery(message_id, session_key)
+        return result.session if result.kind in (DeliveryKind.WRITABLE, DeliveryKind.FAILED) else None
 
     async def _wait_for_card_creation(self, session: CardSession) -> bool:
         task = session.create_task
@@ -830,6 +986,7 @@ class StreamCardController(StreamingController):
         _duration = duration
         if not _duration and hasattr(session, "created_at"):
             import time as _t
+
             _duration = _t.time() - session.created_at
         prev_model = session.footer.get("model") or ""
         _cache_read = (tokens or {}).get("cache_read_tokens") or 0
@@ -848,6 +1005,9 @@ class StreamCardController(StreamingController):
     def _complete_session(self, session: CardSession) -> None:
         """异步完成当前流式卡片."""
         session.flush.mark_completed()
+        if not session.has_card and session.create_task is None:
+            self._cleanup_session(session)
+            return
         self._fire_and_forget(self._complete_session_after_creation(session), session._loop)
 
     async def _complete_session_after_creation(self, session: CardSession) -> bool:

@@ -149,9 +149,7 @@ _TABLE_PAGE_SIZE = 10
 _TABLE_ROW_MAX_HEIGHT = "999px"
 
 
-def _append_content_elements(
-    elements: list[dict], content: str, *, text_size: str | None = None
-) -> None:
+def _append_content_elements(elements: list[dict], content: str, *, text_size: str | None = None) -> None:
     """正文 → 元素列表：文本片段出 markdown 元素，表格片段出原生 table 元素.
 
     仅传字符串/纯文本组件的卡片（完成态、cron、后台推送）共用此入口，
@@ -190,13 +188,7 @@ def _build_table_element(header: list[str], rows: list[list[str]]) -> dict[str, 
         }
         for index, name in enumerate(header)
     ]
-    table_rows = [
-        {
-            f"c{index}": row[index] if index < len(row) else ""
-            for index in range(len(header))
-        }
-        for row in rows
-    ]
+    table_rows = [{f"c{index}": row[index] if index < len(row) else "" for index in range(len(header))} for row in rows]
     return {
         "tag": "table",
         "page_size": _TABLE_PAGE_SIZE,
@@ -356,7 +348,11 @@ def _escape_md(value: str) -> str:
 
 
 def _build_reasoning_panel(
-    text: str, elapsed_ms: float = 0, *, expanded: bool = False, element_id: str | None = None,
+    text: str,
+    elapsed_ms: float = 0,
+    *,
+    expanded: bool = False,
+    element_id: str | None = None,
     text_element_id: str | None = REASONING_TEXT_ELEMENT_ID,
 ) -> dict:
     if elapsed_ms > 0:
@@ -375,12 +371,14 @@ def _build_reasoning_panel(
             "text_color": "grey",
             "text_size": "notation",
         },
-        elements=[{
-            "tag": "markdown",
-            "content": text,
-            "text_size": "notation",
-            **({"element_id": text_element_id} if text_element_id else {}),
-        }],
+        elements=[
+            {
+                "tag": "markdown",
+                "content": text,
+                "text_size": "notation",
+                **({"element_id": text_element_id} if text_element_id else {}),
+            }
+        ],
         vertical_spacing="8px",
     )
     if element_id:
@@ -650,10 +648,7 @@ def _context_text(used: int, total: int) -> str:
     if total >= 1_000_000:
         # total 用 m，used 根据大小用 k 或 m
         total_str = f"{total / 1_000_000:.1f}m"
-        if used < 1_000_000:
-            used_str = f"{used / 1_000:.1f}k"
-        else:
-            used_str = f"{used / 1_000_000:.1f}m"
+        used_str = f"{used / 1_000:.1f}k" if used < 1_000_000 else f"{used / 1_000_000:.1f}m"
         return f"{used_str}/{total_str} ({pct:.0f}%)"
     if total >= 1_000:
         return f"{used / 1_000:.1f}k/{total / 1_000:.1f}k ({pct:.0f}%)"
@@ -676,10 +671,7 @@ def _context_progress_with_text(used: int, total: int, width: int = 8) -> str:
     bar = _context_progress_bar(used, total, width)
     if total >= 1_000_000:
         total_str = f"{total / 1_000_000:.1f}m"
-        if used < 1_000_000:
-            used_str = f"{used / 1_000:.1f}k"
-        else:
-            used_str = f"{used / 1_000_000:.1f}m"
+        used_str = f"{used / 1_000:.1f}k" if used < 1_000_000 else f"{used / 1_000_000:.1f}m"
         return f"{used_str}/{total_str} [{bar}] {pct:.0f}%"
     if total >= 1_000:
         return f"{used / 1_000:.1f}k/{total / 1_000:.1f}k [{bar}] {pct:.0f}%"
@@ -717,9 +709,7 @@ def build_streaming_card_v2(
     elements: list[dict] = []
 
     if show_reasoning:
-        elements.append(
-            _build_reasoning_panel(" ", expanded=True, element_id=REASONING_ELEMENT_ID)
-        )
+        elements.append(_build_reasoning_panel(" ", expanded=True, element_id=REASONING_ELEMENT_ID))
 
     if show_streaming_element:
         elements.append(_streaming_element(text_size=text_size))
@@ -790,7 +780,9 @@ def build_complete_card(
     timeline: list[dict] = []
 
     for seg in segments:
-        if seg.type == SegmentType.REASONING:
+        if seg.type == SegmentType.NOTICE and seg.text:
+            _append_content_elements(elements, seg.text, text_size=body_text_size)
+        elif seg.type == SegmentType.REASONING:
             if seg.text:
                 round_entry = {
                     "text": seg.text,
@@ -808,11 +800,13 @@ def build_complete_card(
             if steps:
                 tool_steps_total.extend(steps)
                 tool_elapsed_ms += seg.elapsed_ms or 0
-                timeline.append({
-                    "kind": "tools",
-                    "steps": steps,
-                    "elapsed_ms": seg.elapsed_ms or 0,
-                })
+                timeline.append(
+                    {
+                        "kind": "tools",
+                        "steps": steps,
+                        "elapsed_ms": seg.elapsed_ms or 0,
+                    }
+                )
         elif seg.type == SegmentType.ANSWER and seg.text:
             has_answer = True
             _append_content_elements(elements, seg.text, text_size=body_text_size)
@@ -827,6 +821,7 @@ def build_complete_card(
     _min_duration_ms = 0
     try:
         from ..config import Config
+
         _min_duration_ms = float(Config().unified_panel_min_duration) * 1000
     except Exception:
         _min_duration_ms = 5000
@@ -857,12 +852,14 @@ def build_complete_card(
                 # 绝不回落到固定 REASONING_TEXT_ELEMENT_ID，防止单轮 reasoning 在 merge 更新下重复。
                 text_el_id = rnd.get("text_el_id") or f"reasoning_text_{_reasoning_seq}"
                 _reasoning_seq += 1
-                unified_children.append(_build_reasoning_panel(
-                    text=rnd["text"],
-                    elapsed_ms=rnd["elapsed_ms"],
-                    expanded=panel_expanded,
-                    text_element_id=text_el_id,
-                ))
+                unified_children.append(
+                    _build_reasoning_panel(
+                        text=rnd["text"],
+                        elapsed_ms=rnd["elapsed_ms"],
+                        expanded=panel_expanded,
+                        text_element_id=text_el_id,
+                    )
+                )
             elif entry["kind"] == "tools":
                 # 每个工具组独立成一个嵌套 🔧 面板（保留 fry 现有工具面板样式），
                 # 交错在思考轮次之间，而非全部堆到末尾。
@@ -877,6 +874,7 @@ def build_complete_card(
         # header: 字段化组合（默认 🍟 model · 💭n · 🔧n · context · ⏱️ elapsed），
         # 与 footer 共用字段池，可经 display.platforms.feishu.panel_fields 自由组合
         from ..config import Config
+
         _panel_cfg = Config()
         # 优先用 tool_elapsed_ms，否则用 footer_data 的 duration，否则用 session 总耗时
         panel_elapsed_ms = tool_elapsed_ms
@@ -902,7 +900,8 @@ def build_complete_card(
                     "content": header_en,
                     "i18n_content": _i18n(header_en, header_zh),
                 },
-                "text_color": "grey", "text_size": "notation",
+                "text_color": "grey",
+                "text_size": "notation",
             },
             "border": {"color": border_color, "corner_radius": "5px"},
             "elements": unified_children,
@@ -960,9 +959,7 @@ def _format_run_time(run_time: str) -> str:
         return run_time
 
 
-def build_cron_card(
-    content: str, *, task_name: str = "", run_time: str = ""
-) -> dict[str, Any]:
+def build_cron_card(content: str, *, task_name: str = "", run_time: str = "") -> dict[str, Any]:
     """Cron 推送用的极简静态卡片 — schema 2.0，可选 header + markdown 内容."""
     card: dict[str, Any] = {
         "schema": "2.0",
@@ -985,19 +982,15 @@ def build_cron_card(
 
 
 def build_background_card(preview: str, content: str) -> dict[str, Any]:
-    """Background 任务完成推送卡片 — schema 2.0，header + markdown."""
+    """后台独立回执：正文与列表摘要分别渲染。"""
     card: dict[str, Any] = {
         "schema": "2.0",
         "config": {"wide_screen_mode": True, "locales": _LOCALES},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"✅ Background: \"{preview}\""},
-        },
         "body": {"elements": []},
     }
     body = content if content.strip() else "(No response generated)"
-    summary = body[:120].replace("\n", " ").replace("```", "").strip()
-    if summary:
-        card["config"]["summary"] = {"content": summary}
+    if preview:
+        card["config"]["summary"] = {"content": preview}
     _append_content_elements(card["body"]["elements"], body)
     return card
 

@@ -24,7 +24,6 @@ from pathlib import Path
 import pytest
 
 from hermes_fry_cards.patcher import (
-    MARKERS,
     MK_FOLLOWUP_COMPLETE,
     MK_FOLLOWUP_COMPLETE_END,
     MK_FOLLOWUP_DONE,
@@ -86,6 +85,11 @@ def real_v022(tmp_path: Path) -> dict[str, Path]:
         "    )\n",
         encoding="utf-8",
     )
+    import textwrap
+
+    from test_patcher_modular import MODULAR_SOURCES
+
+    paths["busy"].write_text(textwrap.dedent(MODULAR_SOURCES["busy"]), encoding="utf-8")
     shutil.copy2(turn_src, paths["turn"])
     shutil.copy2(runner_src, paths["runner"])
     return paths
@@ -105,7 +109,7 @@ def test_apply_is_valid_python_and_installs_each_marker_once(real_v022: dict[str
         ast.parse(path.read_text(encoding="utf-8"))
 
     combined = "\n".join(p.read_text(encoding="utf-8") for p in real_v022.values())
-    for begin, end in MARKERS:
+    for begin, end in patcher.MARKERS:
         assert combined.count(begin) == 1, f"{begin} installed {combined.count(begin)}x"
         assert combined.count(end) == 1, f"{end} installed {combined.count(end)}x"
 

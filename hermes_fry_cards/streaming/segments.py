@@ -10,6 +10,8 @@ class SegmentType(StrEnum):
     REASONING = "reasoning"
     ANSWER = "answer"
     TOOL = "tool"
+    NOTICE = "notice"
+    STICKY = "sticky"
 
 
 # 判定「流式段尾与完成文本开头重叠」所需的最小重叠长度：低于此值多为偶然同字，
@@ -60,9 +62,9 @@ class SegmentState:
     __slots__ = (
         "_completion_answers",
         "_counter",
-        "segments",
-        "max_reasoning_panels",
         "max_answer_segments",
+        "max_reasoning_panels",
+        "segments",
     )
 
     def __init__(self, max_reasoning_panels: int = 3, max_answer_segments: int = 8) -> None:
@@ -77,6 +79,20 @@ class SegmentState:
         # 同一个 tool_panel element_id 只占一个面板——不设上限的只有 answer，
         # 20 轮工具调用就能产生 20 个 answer 段把卡片元素推向飞书 200 硬上限。
         self.max_answer_segments = max_answer_segments
+
+    def add_notice(self, text: str, *, sticky: bool = False) -> Segment:
+        """提示与正文分别保存；顶部提示和普通通知各占一个槽位。"""
+        kind = SegmentType.STICKY if sticky else SegmentType.NOTICE
+        for segment in self.segments:
+            if segment.type == kind:
+                segment.text = text
+                segment.dirty = True
+                return segment
+        segment = Segment(kind, "sticky_notice" if sticky else "notice")
+        segment.text = text
+        index = 0 if sticky else sum(s.type == SegmentType.STICKY for s in self.segments)
+        self.segments.insert(index, segment)
+        return segment
 
     def _new_reasoning(self, text: str) -> Segment:
         c = self._counter
@@ -99,8 +115,7 @@ class SegmentState:
         return seg
 
     def _new_tool(self, tool_offset: int) -> Segment:
-        # 所有 TOOL segment 共享同一个 element_id，合并成一个底部面板
-        c = self._counter
+        # 工具段共用底部面板标识。
         self._counter += 1
         seg = Segment(SegmentType.TOOL, "tool_panel")
         seg.tool_offset = tool_offset
@@ -134,8 +149,26 @@ class SegmentState:
                     return
         self._new_reasoning(text)
 
+    def _take_redirect_placeholder(self, text: str) -> bool:
+        """首段正文原地替换提示，沿用已经发送的元素标识。"""
+        if not text:
+            return False
+        for segment in self.segments:
+            if segment.type == SegmentType.STICKY:
+                segment.type = SegmentType.ANSWER
+                segment.text = text
+                segment.start_time = time.time()
+                segment.dirty = True
+                self._finalize_prev_reasoning(segment.start_time)
+                self.segments.remove(segment)
+                self.segments.append(segment)
+                return True
+        return False
+
     def on_answer_delta(self, text: str) -> None:
         """处理 answer 增量，同类型追加否则新建 segment."""
+        if not text or self._take_redirect_placeholder(text):
+            return
         if self.segments and self.segments[-1].type == SegmentType.ANSWER:
             self.segments[-1].text += text
             self.segments[-1].dirty = True
@@ -165,6 +198,9 @@ class SegmentState:
         """
         if not text or text in self._completion_answers:
             return
+        if self._take_redirect_placeholder(text):
+            self._completion_answers.add(text)
+            return
         if replaced:
             for segment in reversed(self.segments):
                 if segment.type != SegmentType.ANSWER:
@@ -173,10 +209,7 @@ class SegmentState:
                 segment.text = text
                 segment.dirty = True
                 return
-        elif any(
-            segment.type == SegmentType.ANSWER and segment.text.endswith(text)
-            for segment in self.segments
-        ):
+        elif any(segment.type == SegmentType.ANSWER and segment.text.endswith(text) for segment in self.segments):
             self._completion_answers.add(text)
             return
 

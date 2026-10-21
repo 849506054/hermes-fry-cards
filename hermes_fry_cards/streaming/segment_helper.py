@@ -43,6 +43,7 @@ def estimate_answer_elements(text: str) -> int:
         parse_table_block,
         split_markdown_tables,
     )
+
     # 必须与 _append_content_elements 的渲染链完全一致：
     #   optimize_markdown_style → _downgrade_tables → clamp_utf8 → split_markdown_tables
     content = _downgrade_tables(optimize_markdown_style(text))
@@ -73,7 +74,7 @@ def estimate_segment_elements(seg: Segment, all_steps: list[ToolDisplayStep]) ->
     """估算单个 segment 新增的卡片元素数."""
     if seg.type == SegmentType.REASONING:
         return 4  # collapsible_panel + plain_text + standard_icon + markdown
-    if seg.type == SegmentType.ANSWER:
+    if seg.type in (SegmentType.ANSWER, SegmentType.NOTICE, SegmentType.STICKY):
         return estimate_answer_elements(seg.text)
     if seg.type == SegmentType.TOOL:
         return estimate_tool_elements(
@@ -120,7 +121,10 @@ def find_tool_split_offset(
 
 
 def build_add_segment_action(
-    seg: Segment, all_steps: list[ToolDisplayStep], *, text_size: str = "normal_v2",
+    seg: Segment,
+    all_steps: list[ToolDisplayStep],
+    *,
+    text_size: str = "normal_v2",
 ) -> dict[str, Any]:
     """构造新增 segment 元素的 batch action."""
     if seg.type == SegmentType.REASONING:
@@ -131,7 +135,7 @@ def build_add_segment_action(
             element_id=seg.el_id,
             text_element_id=seg.text_el_id,
         )
-    elif seg.type == SegmentType.ANSWER:
+    elif seg.type in (SegmentType.ANSWER, SegmentType.NOTICE, SegmentType.STICKY):
         element = _streaming_element(element_id=seg.el_id, text_size=text_size)
     elif seg.type == SegmentType.TOOL:
         start = seg.tool_offset

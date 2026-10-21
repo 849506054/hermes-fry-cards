@@ -588,8 +588,8 @@ class TestApplyRemove:
         assert "message_id=_lark_completion_id" in content
         assert "_lark_message_id = ctx.event_message_id" in content
         assert "_lark_run_current = ctx._run_still_current" in content
-        assert "on_answer_delta(message_id=_lark_message_id" in content
-        assert "on_thinking_delta(message_id=_lark_message_id" in content
+        assert "on_answer_delta(" in content
+        assert "on_thinking_delta(" in content
         assert "on_reasoning_delta(message_id=_lark_message_id" in content
         assert "on_background_deliver(" in content
         assert "_bg_preview = prompt[:60] + ('...' if len(prompt) > 60 else '')" in content
@@ -1086,8 +1086,12 @@ class TestGroupSecurityBoundary:
     """apply_group_security_boundary — 群聊安全边界的纯逻辑 (独立于 AST 注入)."""
 
     def _apply(self, combined, *, enabled=True, allow=None, chat_type="group", chat_id="oc_g", text=None):
-        from hermes_fry_cards.patch import apply_group_security_boundary, _GROUP_SECURITY_BOUNDARY_DEFAULT
-        cfg = {"gateway": {"group_security_boundary": {"enabled": enabled, **({"allow_chats": allow} if allow is not None else {}), **({"text": text} if text else {})}}}
+        from hermes_fry_cards.patch import _GROUP_SECURITY_BOUNDARY_DEFAULT, apply_group_security_boundary
+        cfg = {"gateway": {"group_security_boundary": {
+            "enabled": enabled,
+            **({"allow_chats": allow} if allow is not None else {}),
+            **({"text": text} if text else {}),
+        }}}
         source = SimpleNamespace(chat_type=chat_type, chat_id=chat_id)
         out = apply_group_security_boundary(combined, cfg, source)
         return out, _GROUP_SECURITY_BOUNDARY_DEFAULT
@@ -1101,11 +1105,11 @@ class TestGroupSecurityBoundary:
         assert out == "hi\n\n" + default
 
     def test_dm_not_affected(self):
-        out, default = self._apply("hi", chat_type="dm")
+        out, _default = self._apply("hi", chat_type="dm")
         assert out == "hi"
 
     def test_exempt_chat_not_affected(self):
-        out, default = self._apply("hi", allow=["oc_g"])
+        out, _default = self._apply("hi", allow=["oc_g"])
         assert out == "hi"
 
     def test_non_exempt_group_still_guarded_with_allowlist(self):

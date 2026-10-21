@@ -96,7 +96,7 @@ class StreamingController:
     _wait_for_card_creation: Callable[[CardSession], Coroutine[Any, Any, bool]]
 
     def _schedule_flush(self, session: CardSession) -> None:
-        if session.state == SessionState.IDLE or session.state.is_terminal:
+        if session.state == SessionState.IDLE or not session.writable:
             return
         if session.state == SessionState.CLARIFY_PAUSED:
             return
@@ -142,6 +142,11 @@ class StreamingController:
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
             )
+            notices = [s for s in session.active_segments() if s.type in (SegmentType.STICKY, SegmentType.NOTICE)]
+            card["body"]["elements"][:0] = [
+                {"tag": "markdown", "element_id": s.el_id, "content": s.text, "text_size": self._cfg.body_text_size}
+                for s in notices
+            ]
             card_id = await self._client.cardkit_create(card)
             if session.synthetic:
                 # 合成轮次（后台通知/clarify 恢复）无真实消息可回复，卡片直接投递到聊天
@@ -170,7 +175,11 @@ class StreamingController:
                             card={"type": "card", "data": {"card_id": card_id}},
                         )
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
-            session.element_count = 1  # loading element
+            self._track_live_card(session)
+            for notice in notices:
+                notice.created = True
+                notice.element_estimate = 1
+            session.element_count = 1 + len(notices)
             session.flush.set_throttle(CARDKIT_MS)
 
             if session.image_resolver is None and self._client:
@@ -211,7 +220,7 @@ class StreamingController:
 
     async def _do_flush(self, session: CardSession) -> None:
         """幂等 flush：按 segment 顺序处理结构性变更，超阈值时拆卡."""
-        if session.state.is_terminal or not session.card_id:
+        if not session.writable or not session.card_id:
             return
         segment_state = session.segment_state
         if segment_state is None:
@@ -226,7 +235,7 @@ class StreamingController:
         # 创建时的一次性估算追不上文本增长。每次 flush 按当前文本重算，
         # 差值同步进 element_count，让阈值判断反映卡片真实元素数，
         # 主动在超阈值前拆卡，而不是撞 300305 后被动拆。
-        for seg in segments[session.split_index:]:
+        for seg in segments[session.split_index :]:
             if seg.type == SegmentType.ANSWER and seg.created:
                 new_est = estimate_answer_elements(seg.text)
                 delta = new_est - seg.element_estimate
@@ -276,7 +285,12 @@ class StreamingController:
                     and not session.split_disabled
                 ):
                     split_ok = await self._do_split_card(
-                        session, i, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+                        session,
+                        i,
+                        actions,
+                        new_el_ids,
+                        new_el_estimates,
+                        updated_tool_segs,
                     )
                     if not split_ok:
                         return
@@ -294,10 +308,14 @@ class StreamingController:
                         tool_panel_element_id = TOOL_PANEL_ELEMENT_ID
                         seg.created = True
                         # 用所有工具步骤更新面板
-                        actions.append(build_tool_update_action(
-                            element_id=TOOL_PANEL_ELEMENT_ID,
-                            steps=all_steps[seg.tool_offset:seg.tool_end_offset if seg.tool_end_offset else len(all_steps)],
-                        ))
+                        actions.append(
+                            build_tool_update_action(
+                                element_id=TOOL_PANEL_ELEMENT_ID,
+                                steps=all_steps[
+                                    seg.tool_offset : seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
+                                ],
+                            )
+                        )
                         updated_tool_segs.append(seg)
                         # 初始化工具面板总估算（首次创建，与 dirty 分支统一用全部步骤）
                         estimate = estimate_tool_elements(0, len(all_steps), all_steps)
@@ -312,7 +330,12 @@ class StreamingController:
                     new_el_ids.add(seg.el_id)
                     new_el_estimates[seg.el_id] = estimated
                     new_el_total += estimated
-                    actions.append(build_add_segment_action(seg, all_steps, text_size=self._cfg.body_text_size))
+                    action = build_add_segment_action(seg, all_steps, text_size=self._cfg.body_text_size)
+                    if seg.type in (SegmentType.STICKY, SegmentType.NOTICE):
+                        next_created = next((s for s in segments[i + 1 :] if s.created), None)
+                        if next_created:
+                            action["params"]["target_element_id"] = next_created.el_id
+                    actions.append(action)
                 if (
                     seg.type == SegmentType.TOOL
                     and i + 1 < len(segments)
@@ -321,7 +344,12 @@ class StreamingController:
                     and not session.split_disabled
                 ):
                     split_ok = await self._do_split_card(
-                        session, i + 1, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+                        session,
+                        i + 1,
+                        actions,
+                        new_el_ids,
+                        new_el_estimates,
+                        updated_tool_segs,
                     )
                     if not split_ok:
                         return
@@ -372,9 +400,7 @@ class StreamingController:
                 # 改一个卡片上不存在的 tools_N 元素 → 300313「not find elementID」→
                 # 回滚重建 → 下一轮再回落，形成反复失败/恢复的抖动。
                 shared_el_id = tool_panel_element_id or TOOL_PANEL_ELEMENT_ID
-                actions.append(
-                    build_tool_update_action(element_id=shared_el_id, steps=all_steps[start:end])
-                )
+                actions.append(build_tool_update_action(element_id=shared_el_id, steps=all_steps[start:end]))
                 updated_tool_segs.append(seg)
                 # 工具面板元素增量 = 当前总估算 - 上次记录的总估算（非当前段差值）
                 if shared_el_id not in new_el_estimates:
@@ -388,12 +414,17 @@ class StreamingController:
                     seg.dirty = False
 
         if actions and not await self._do_batch_update(
-            session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+            session,
+            segments,
+            actions,
+            new_el_ids,
+            new_el_estimates,
+            updated_tool_segs,
         ):
             return
 
         # ── 步骤 2: stream_element 刷脏文本 ──
-        for seg in segments[session.split_index:]:
+        for seg in segments[session.split_index :]:
             if not seg.created or not seg.dirty:
                 continue
             try:
@@ -413,7 +444,7 @@ class StreamingController:
                         sequence=session.sequence,
                     )
                     seg.dirty = False
-                elif seg.type == SegmentType.ANSWER:
+                elif seg.type in (SegmentType.ANSWER, SegmentType.STICKY, SegmentType.NOTICE):
                     content = seg.text
                     if session.image_resolver:
                         content = session.image_resolver.resolve_images(content)
@@ -461,12 +492,10 @@ class StreamingController:
         pre_flush_reasoning_elapsed = {
             seg.el_id: seg.elapsed_ms for seg in segments if seg.type == SegmentType.REASONING
         }
-        pre_flush_tool_offsets = {
-            seg.el_id: seg.tool_end_offset for seg in updated_tool_segs
-        }
+        pre_flush_tool_offsets = {seg.el_id: seg.tool_end_offset for seg in updated_tool_segs}
         pre_flush_tool_steps = session.tool_use.build_display_steps()
         pre_flush_tool_slices = {
-            seg.el_id: pre_flush_tool_steps[seg.tool_offset:tool_segment_end(seg, pre_flush_tool_steps)]
+            seg.el_id: pre_flush_tool_steps[seg.tool_offset : tool_segment_end(seg, pre_flush_tool_steps)]
             for seg in updated_tool_segs
         }
         pre_flush_tool_panel_estimate = session.tool_panel_estimate
@@ -500,9 +529,7 @@ class StreamingController:
                 session.tool_panel_estimate = new_panel_estimate
             for seg in updated_tool_segs:
                 offset_ok = pre_flush_tool_offsets.get(seg.el_id, -1) == seg.tool_end_offset
-                current_tool_slice = current_tool_steps[
-                    seg.tool_offset:tool_segment_end(seg, current_tool_steps)
-                ]
+                current_tool_slice = current_tool_steps[seg.tool_offset : tool_segment_end(seg, current_tool_steps)]
                 tool_slice_ok = pre_flush_tool_slices.get(seg.el_id) == current_tool_slice
                 if seg.el_id in new_el_estimates and seg.el_id != TOOL_PANEL_ELEMENT_ID:
                     estimate = new_el_estimates[seg.el_id]
@@ -533,7 +560,7 @@ class StreamingController:
             # 缺失元素（300313）时回滚 stale segment：本地 created=True 但卡片上不存在，
             # 下一轮 flush 会用 add_elements 重建该元素，避免反复 partial_update 死循环。
             if missing_el_id:
-                for seg in segments[session.split_index:]:
+                for seg in segments[session.split_index :]:
                     if seg.el_id == missing_el_id and seg.created:
                         seg.created = False
                         seg.dirty = True
@@ -603,11 +630,15 @@ class StreamingController:
         old_card_id = session.card_id
         assert old_card_id is not None
         await self._seal_current_card(
-            session, seal_segments, card_id=old_card_id,
+            session,
+            seal_segments,
+            card_id=old_card_id,
         )
 
         new_card_id, new_msg_id = new_card
+        old_message_id = session.card_msg_id
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
+        self._track_live_card(session, old_message_id=old_message_id)
         session.element_count = 1  # loading element
         session.sequence = 1  # 新卡从 1 重新计数
         session.tool_panel_created = False
@@ -665,14 +696,19 @@ class StreamingController:
         actions.append(
             build_tool_update_action(
                 element_id=seg.el_id,
-                steps=all_steps[seg.tool_offset:split_offset],
+                steps=all_steps[seg.tool_offset : split_offset],
             )
         )
         updated_tool_segs.append(seg)
         new_el_estimates[seg.el_id] = old_estimate
         segment_state.split_tool_segment(index, split_offset)
         split_ok = await self._do_split_card(
-            session, index + 1, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+            session,
+            index + 1,
+            actions,
+            new_el_ids,
+            new_el_estimates,
+            updated_tool_segs,
         )
         if not split_ok:
             return "failed"
@@ -758,7 +794,8 @@ class StreamingController:
             # 拆卡后重建需要 show_tool_use=True 以包含 tool_panel 元素，
             # 否则后续 flush 会因找不到 element_id 而报 300313。
             need_tool_panel = session.tool_panel_created or any(
-                s.type == SegmentType.TOOL for s in (session.segment_state.segments[session.split_index:] if session.segment_state else [])
+                s.type == SegmentType.TOOL
+                for s in (session.segment_state.segments[session.split_index :] if session.segment_state else [])
             )
             card = build_streaming_card_v2(
                 show_tool_use=need_tool_panel,
@@ -777,7 +814,8 @@ class StreamingController:
                 )
             else:
                 new_msg_id = await self._client.reply_card_by_id(
-                    session.anchor_id or session.message_id, new_card_id,
+                    session.anchor_id or session.message_id,
+                    new_card_id,
                 )
         except Exception:
             _logger.warning(
@@ -807,7 +845,12 @@ class StreamingController:
         seal_start_idx = session.split_index
 
         if actions and not await self._do_batch_update(
-            session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+            session,
+            segments,
+            actions,
+            new_el_ids,
+            new_el_estimates,
+            updated_tool_segs,
         ):
             return False
 
@@ -822,7 +865,9 @@ class StreamingController:
         await self._seal_current_card(session, seal_segments)
 
         new_card_id, new_msg_id = new_card
+        old_message_id = session.card_msg_id
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
+        self._track_live_card(session, old_message_id=old_message_id)
         session.element_count = 1  # loading element
         session.sequence = 1  # 新卡从 1 重新计数
         session.tool_panel_created = False  # 新卡需要重建 tool_panel
@@ -850,7 +895,8 @@ class StreamingController:
         if not session.has_card or session.state == SessionState.FAILED:
             _logger.info(
                 "clarify_split: no card to seal, msg=%s state=%s",
-                session.message_id[:12], session.state,
+                session.message_id[:12],
+                session.state,
             )
             return False
 
@@ -879,7 +925,9 @@ class StreamingController:
             old_card_id = session.card_id
             old_seq = session.sequence
             new_card_id, new_msg_id = new_card
+            old_message_id = session.card_msg_id
             session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
+            self._track_live_card(session, old_message_id=old_message_id)
             session.sequence = 1  # 新卡从 1 重新计数
 
             await self._seal_current_card(
@@ -899,7 +947,8 @@ class StreamingController:
 
             _logger.info(
                 "clarify_split: sealed old + new card msg=%s card=%s",
-                session.message_id[:12], new_card_id[:12],
+                session.message_id[:12],
+                new_card_id[:12],
             )
             return True
         finally:
@@ -920,13 +969,29 @@ class StreamingController:
 
     async def _do_complete_card(self, session: CardSession) -> bool:
         """完成流式卡片：close streaming + 全量重建卡片（保持 segments 顺序）."""
+        closed_state = session.state
+        completed = False
         try:
-            return await self._do_complete_card_inner(session)
+            completed = await self._do_complete_card_inner(session)
+            return completed
         finally:
+            if closed_state == SessionState.ABORTED and session.state != SessionState.FAILED:
+                session.state = SessionState.ABORTED
+            _logger.info(
+                "delivery_closed: id=%s key=%s state=%s",
+                session.message_id,
+                session.session_key,
+                session.state,
+            )
+            if completed:
+                self._untrack_live_card(session)
+            else:
+                session.mark_failed(reason="completion_not_delivered")
+                self._mark_text_fallback_needed(session)
             self._flush_deferred_background_reviews(session)
             self._cleanup_session(session)
 
-    def _complete_header_enabled(self, session: "CardSession", all_tool_steps: list) -> bool:
+    def _complete_header_enabled(self, session: CardSession, all_tool_steps: list) -> bool:
         """完成态卡片是否显示顶部 header. 快回复(耗时 < header_min_duration 且无工具调用)时隐藏."""
         if not self._cfg.header_enabled:
             return False
@@ -1008,8 +1073,7 @@ class StreamingController:
                 return True
             except FeishuAPIError as e:
                 _logger.warning(
-                    "CardKit complete attempt %d failed: code=%s msg=%s card_id=%s seq=%d "
-                    "card_elements=%d tracked=%d",
+                    "CardKit complete attempt %d failed: code=%s msg=%s card_id=%s seq=%d card_elements=%d tracked=%d",
                     attempt,
                     e.code,
                     e,
@@ -1026,8 +1090,7 @@ class StreamingController:
                 continue
             except Exception as e:
                 _logger.warning(
-                    "CardKit complete attempt %d failed: %s: %s card_id=%s seq=%d "
-                    "card_elements=%d tracked=%d",
+                    "CardKit complete attempt %d failed: %s: %s card_id=%s seq=%d card_elements=%d tracked=%d",
                     attempt,
                     type(e).__name__,
                     e,
@@ -1053,7 +1116,8 @@ class StreamingController:
             try:
                 session.sequence += 1
                 await self._client.cardkit_close_streaming(
-                    session.card_id, sequence=session.sequence,
+                    session.card_id,
+                    sequence=session.sequence,
                 )
             except Exception:
                 _logger.warning(
@@ -1080,9 +1144,7 @@ class StreamingController:
         session.mark_failed(reason="complete_failed_after_retries")
         return False
 
-    async def _do_cron_deliver(
-        self, chat_id: str, content: str, *, task_name: str = "", run_time: str = ""
-    ) -> None:
+    async def _do_cron_deliver(self, chat_id: str, content: str, *, task_name: str = "", run_time: str = "") -> None:
         await self._ensure_init()
         assert self._client is not None
         card = build_cron_card(_clean_delivered_text(content), task_name=task_name, run_time=run_time)

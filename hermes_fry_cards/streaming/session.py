@@ -116,6 +116,10 @@ class CardSession:
         self.tool_panel_created: bool = False
 
     @property
+    def writable(self) -> bool:
+        return not self.state.is_terminal and not self.flush.completed
+
+    @property
     def has_card(self) -> bool:
         return bool(self.card_id or self.card_msg_id)
 
@@ -137,4 +141,4 @@ class CardSession:
     def active_segments(self) -> list[Segment]:
         if self.segment_state is None:
             return []
-        return self.segment_state.segments[self.split_index:]
+        return self.segment_state.segments[self.split_index :]

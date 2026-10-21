@@ -34,6 +34,10 @@ class FlushController:
         self._loop = loop if loop is not None else asyncio.get_running_loop()
 
     @property
+    def completed(self) -> bool:
+        return self._completed
+
+    @property
     def throttle_ms(self) -> float:
         return self._throttle_ms
 
@@ -81,20 +85,19 @@ class FlushController:
 
     async def wait_for_flush(self) -> None:
         """等待进行中的 flush 完成."""
-        if not self._flush_in_progress and not self._pending_flush_tasks:
-            return
-        future: asyncio.Future[None] = self._loop.create_future()
-        self._flush_resolvers.append(future)
-        await future
+        pending = tuple(self._pending_flush_tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if self._flush_in_progress:
+            future: asyncio.Future[None] = self._loop.create_future()
+            self._flush_resolvers.append(future)
+            await future
 
     def mark_completed(self) -> None:
         """标记完成，不再接受新更新."""
         self._completed = True
         self._cancel_timer()
-        for r in self._flush_resolvers:
-            if not r.done():
-                r.set_result(None)
-        self._flush_resolvers.clear()
+        # 等待者由正在执行的 flush 唤醒，封卡先等它真正结束。
 
     def set_throttle(self, ms: float) -> None:
         self._throttle_ms = ms

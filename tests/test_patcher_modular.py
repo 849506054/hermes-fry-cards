@@ -9,13 +9,10 @@ from pathlib import Path
 import pytest
 
 from hermes_fry_cards.patcher import (
-    MARKERS,
     MK_CRON_DELIVER,
     MK_FOLLOWUP_COMPLETE,
     MK_FOLLOWUP_COMPLETE_END,
     MK_FOLLOWUP_DONE,
-    MK_GROUP_BOUNDARY,
-    MK_GROUP_BOUNDARY_END,
     CronPatcher,
     Patcher,
     PatcherError,
@@ -86,6 +83,27 @@ MODULAR_SOURCES = {
                 session_key,
                 invalidation_reason="stop_command",
             )
+
+        def _redirect_active_turn(self, running_agent, text, session_key, event):
+            if not self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
+                return False
+            turn = self._fold_into_running_turn(running_agent, session_key, event)
+            if turn is None:
+                return True
+            anchor = self._reply_anchor_for_event(event)
+            if turn.ctx is not None:
+                turn.ctx.event_message_id = anchor
+            return True
+
+        async def _handle_active_session_busy_message(self, event, session_key):
+            is_steer_mode = False
+            is_redirect_mode = True
+            if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
+                return True
+            adapter = self._delivery_adapter_for(event.source)
+            message = "busy"
+            await self._send_busy_ack_reply(event, adapter, message)
+            return True
     """,
 }
 
@@ -201,7 +219,7 @@ def test_modular_022_apply_installs_tool_hook_in_progress_module(modular_022_cop
     assert "HERMES_LARK_TOOL_BEGIN" not in contents["runner"]
     assert "HERMES_LARK_NORMALIZE_BEGIN" in contents["inbound"]
     assert "HERMES_LARK_STOP_BEGIN" in contents["busy"]
-    for begin, _end in [*MARKERS, (MK_GROUP_BOUNDARY, MK_GROUP_BOUNDARY_END)]:
+    for begin, _end in patcher.MARKERS:
         total = sum(content.count(begin) for content in contents.values())
         assert total == 1, f"{begin} installed {total}x"
     for path in modular_022_copy.values():
@@ -268,7 +286,7 @@ def test_modular_apply_is_complete_idempotent_and_reversible(modular_copy: dict[
     assert patcher.is_fully_patched()
 
     combined = "\n".join(path.read_text(encoding="utf-8") for path in modular_copy.values())
-    for begin, end in MARKERS:
+    for begin, end in patcher.MARKERS:
         assert combined.count(begin) == 1
         assert combined.count(end) == 1
     for path in modular_copy.values():

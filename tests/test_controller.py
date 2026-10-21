@@ -21,6 +21,24 @@ from hermes_fry_cards.streaming.segments import Segment, SegmentState
 from hermes_fry_cards.streaming.session import CardSession, SessionState
 
 
+@pytest.fixture(autouse=True)
+def isolated_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(controller_module, "hermes_home", lambda: tmp_path)
+    loops = []
+    original = StreamCardController._fire_and_forget
+
+    def schedule(self, coro, loop):
+        if loop not in loops:
+            loops.append(loop)
+        return original(self, coro, loop)
+
+    monkeypatch.setattr(StreamCardController, "_fire_and_forget", schedule)
+    yield
+    for loop in loops:
+        if not loop.is_closed() and not loop.is_running():
+            loop.run_until_complete(asyncio.sleep(0.02))
+
+
 def _enable(ctrl: StreamCardController) -> None:
     ctrl._cfg._raw = {
         "streaming": {"enabled": True},
@@ -35,9 +53,12 @@ def test_get_controller_returns_one_instance_per_profile_home(tmp_path) -> None:
     home_a.mkdir()
     home_b.mkdir()
 
-    with patch.object(controller_module, "_controllers", {}), patch(
-        "hermes_fry_cards.controller.hermes_home",
-        side_effect=[home_a, home_b, home_a],
+    with (
+        patch.object(controller_module, "_controllers", {}),
+        patch(
+            "hermes_fry_cards.controller.hermes_home",
+            side_effect=[home_a, home_b, home_a],
+        ),
     ):
         controller_a = get_controller()
         controller_b = get_controller()
@@ -55,9 +76,10 @@ def test_enabled_caches_unscoped_fallback_result() -> None:
     ctrl._cfg.enabled = True
     ctrl._cfg.feishu_app_id = "app-id"
 
-    with patch.object(ctrl, "_needs_fallback_scope", return_value=True), patch.object(
-        ctrl, "_credential_scope", side_effect=lambda: nullcontext()
-    ) as credential_scope:
+    with (
+        patch.object(ctrl, "_needs_fallback_scope", return_value=True),
+        patch.object(ctrl, "_credential_scope", side_effect=lambda: nullcontext()) as credential_scope,
+    ):
         assert ctrl.enabled is True
         assert ctrl.enabled is True
 
@@ -71,9 +93,10 @@ def test_enabled_retries_unsuccessful_unscoped_fallback() -> None:
     ctrl._cfg.feishu_app_id = ""
     ctrl._cfg.env_app_id = ""
 
-    with patch.object(ctrl, "_needs_fallback_scope", return_value=True), patch.object(
-        ctrl, "_credential_scope", side_effect=lambda: nullcontext()
-    ) as credential_scope:
+    with (
+        patch.object(ctrl, "_needs_fallback_scope", return_value=True),
+        patch.object(ctrl, "_credential_scope", side_effect=lambda: nullcontext()) as credential_scope,
+    ):
         assert ctrl.enabled is False
         ctrl._cfg.feishu_app_id = "app-id"
         assert ctrl.enabled is True
@@ -161,7 +184,7 @@ def test_on_message_started_registers_anchor_alias_and_cleanup() -> None:
 
 
 def test_on_message_started_default_allows_all_chat_types() -> None:
-    """streaming.chat_types 缺省 → 群聊/私聊都发卡片（向后兼容）. """
+    """streaming.chat_types 缺省 → 群聊/私聊都发卡片（向后兼容）."""
     ctrl = StreamCardController()
     _enable(ctrl)  # 无 chat_types → Config.chat_types is None
 
@@ -174,7 +197,7 @@ def test_on_message_started_default_allows_all_chat_types() -> None:
 
 
 def test_on_message_started_filters_group_chat_when_only_dm_configured() -> None:
-    """streaming.chat_types: [dm] → 群聊不发卡片，私聊正常. """
+    """streaming.chat_types: [dm] → 群聊不发卡片，私聊正常."""
     ctrl = StreamCardController()
     _enable(ctrl)
     ctrl._cfg._raw = {
@@ -191,7 +214,7 @@ def test_on_message_started_filters_group_chat_when_only_dm_configured() -> None
 
 
 def test_on_message_started_filters_when_chat_type_not_in_allowlist() -> None:
-    """chat_type 不在列表内 → 不创建会话（回落纯文本）. """
+    """chat_type 不在列表内 → 不创建会话（回落纯文本）."""
     ctrl = StreamCardController()
     _enable(ctrl)
     ctrl._cfg._raw = {
@@ -205,7 +228,7 @@ def test_on_message_started_filters_when_chat_type_not_in_allowlist() -> None:
 
 
 def test_on_message_started_empty_chat_type_ignores_filter() -> None:
-    """上游未提供 chat_type（空串）→ 不因过滤而跳过，保持兼容. """
+    """上游未提供 chat_type（空串）→ 不因过滤而跳过，保持兼容."""
     ctrl = StreamCardController()
     _enable(ctrl)
     ctrl._cfg._raw = {
@@ -220,7 +243,7 @@ def test_on_message_started_empty_chat_type_ignores_filter() -> None:
 
 
 def test_on_interrupted_respects_chat_type_filter() -> None:
-    """interrupt 产生的重定向新会话同样遵守 chat_type 过滤. """
+    """interrupt 产生的重定向新会话同样遵守 chat_type 过滤."""
     ctrl = StreamCardController()
     _enable(ctrl)
     ctrl._cfg._raw = {
@@ -240,10 +263,10 @@ def test_on_interrupted_respects_chat_type_filter() -> None:
             chat_type="group",
         )
 
-    # 旧会话被 abort，新会话（group）不创建
+    # 旧会话收口，被过滤的新投递不建卡，旧标识也不存活为可写
     assert old.state == SessionState.ABORTED
     assert "new_msg" not in ctrl._sessions
-    assert ctrl._interrupt_map.get("old_msg") == "new_msg"
+    assert ctrl._resolve_session("old_msg") is None
 
 
 def test_consume_text_fallback_clears_anchor_alias() -> None:
@@ -293,25 +316,20 @@ def test_dispose_session_spares_successor_on_same_key() -> None:
         new_session = CardSession("new", "chat", loop)
         ctrl._register_session(old_session, session_key="key")
         ctrl._register_session(new_session, session_key="key")  # interrupt 接管
-        ctrl._interrupt_map["old"] = "new"
 
         ctrl._dispose_session(old_session)
 
         assert ctrl._sessions["new"] is new_session
         assert ctrl._session_keys["key"] is new_session
         assert "old" not in ctrl._sessions
-        # 重定向保留：旧消息迟到的完成回调仍需经 old→new 找到新卡
-        assert ctrl._interrupt_map.get("old") == "new"
-
-        # 新 session 清理后，指向它的重定向随之移除，不留悬挂映射
-        ctrl._dispose_session(new_session)
-        assert ctrl._interrupt_map == {}
+        assert old_session.flush.completed
+        assert ctrl.consume_text_fallback("old") is False
     finally:
         loop.close()
 
 
-def test_interrupt_redirect_cleanup_chain() -> None:
-    """A→B→C 嵌套中断：清理 B 时移除指向 B 的旧映射，保留 B→C 给 C 的完成路径消费."""
+def test_interrupt_redirect_chain_keeps_only_latest_writable() -> None:
+    """A→B→C：每个旧标识只留存有界墓碑，完成只收尾 C。"""
     ctrl = StreamCardController()
     _enable(ctrl)
     loop = asyncio.new_event_loop()
@@ -320,22 +338,22 @@ def test_interrupt_redirect_cleanup_chain() -> None:
         s_b = CardSession("bbb", "chat", loop)
         s_c = CardSession("ccc", "chat", loop)
         ctrl._register_session(s_a)
-        ctrl._register_session(s_b)
-        ctrl._register_session(s_c)
-        ctrl._interrupt_map["aaa"] = "bbb"
-        ctrl._interrupt_map["bbb"] = "ccc"
+        ctrl._register_session(s_b, session_key="key")
+        ctrl._register_session(s_c, session_key="key")
+        ctrl._close_delivery(s_a, reason="interrupted")
+        ctrl._close_delivery(s_b, reason="interrupted")
 
-        ctrl._dispose_session(s_b)
-
-        assert "bbb" not in ctrl._sessions
-        assert "aaa" not in ctrl._interrupt_map          # a→b 已随 b 清理
-        assert ctrl._interrupt_map == {"bbb": "ccc"}     # b→c 留给 msg=bbb 的完成回调重定向
+        assert "bbb" not in ctrl._session_keys
+        assert ctrl._resolve_session("aaa") is None
+        assert ctrl._resolve_session("bbb") is None
+        assert ctrl._resolve_session(None, "key") is s_c
+        assert all(expiry > time.time() for _, expiry in ctrl._closed_ids.values())
     finally:
         loop.close()
 
 
-def test_on_message_started_replaces_terminal_session() -> None:
-    """同 message_id 旧 session 已终态时允许重建，不再永久拒新."""
+def test_on_message_started_never_reopens_terminal_delivery() -> None:
+    """同一已终态标识只保留收口事实，再 start 不另开第二张卡。"""
     ctrl = StreamCardController()
     _enable(ctrl)
 
@@ -346,9 +364,10 @@ def test_on_message_started_replaces_terminal_session() -> None:
 
         ctrl.on_message_started(message_id="msg", chat_id="chat")
 
-    current = ctrl._sessions["msg"]
-    assert current is not stale
-    assert current.state == SessionState.IDLE
+    assert ctrl._sessions["msg"] is stale
+    assert ctrl.on_answer(message_id="msg", text="late") is False
+    assert ctrl.consume_text_fallback("msg") is False
+    assert stale.segment_state.segments == []
 
 
 def test_mark_failed_keeps_first_reason() -> None:
@@ -377,13 +396,13 @@ def test_on_interrupted_uses_new_message_id_and_anchor_alias() -> None:
     session = ctrl._sessions["new"]
     assert ctrl._sessions["quoted"] is session
     assert session.anchor_id == "quoted"
-    assert ctrl._interrupt_map["old"] == "new"
-    assert ctrl._sessions["old"].state == SessionState.ABORTED
+    assert ctrl._resolve_session("old") is None
+    assert ctrl.on_answer(message_id="old", session_key="session:chat", text="late") is True
     assert session.session_key == "session:chat"
     assert ctrl._session_keys["session:chat"] is session
 
 
-def test_on_interrupted_same_id_replaces_terminal_session() -> None:
+def test_on_interrupted_same_id_reuses_the_one_delivery() -> None:
     ctrl = StreamCardController()
     _enable(ctrl)
 
@@ -398,13 +417,13 @@ def test_on_interrupted_same_id_replaces_terminal_session() -> None:
         )
 
     new_session = ctrl._sessions["msg"]
-    assert old_session.state == SessionState.ABORTED
-    assert new_session is not old_session
+    assert new_session is old_session
     assert new_session.state == SessionState.IDLE
 
     ctrl._cleanup_session(old_session)
 
-    assert ctrl._sessions["msg"] is new_session
+    assert "msg" not in ctrl._sessions
+    assert ctrl._resolve_session("msg") is None
 
 
 @pytest.mark.asyncio
@@ -824,7 +843,10 @@ def test_clarify_tool_completed_without_pending_does_not_split() -> None:
     ctrl._sessions["msg_clarify"] = session
 
     ctrl.on_tool_update(
-        message_id="msg_clarify", tool_name="clarify", status="completed", detail="x",
+        message_id="msg_clarify",
+        tool_name="clarify",
+        status="completed",
+        detail="x",
     )
 
     # 没有封卡
@@ -938,8 +960,8 @@ class TestAwaitedCompletion:
         assert ctrl.consume_text_fallback("msg_failed") is True
 
     @pytest.mark.asyncio
-    async def test_failed_session_with_card_keeps_card_no_text_fallback(self) -> None:
-        """有卡时即使 FAILED 也不标记文本回退（卡片已在聊天中）."""
+    async def test_failed_session_with_card_still_allows_real_text(self) -> None:
+        """FAILED 保留答案放行：卡片存在也不能吞掉真实文本。"""
         ctrl = _setup_ctrl()
         session = CardSession("msg_failcard", "chat", asyncio.get_running_loop())
         session.state = SessionState.STREAMING
@@ -960,7 +982,7 @@ class TestAwaitedCompletion:
         assert await ctrl.on_completed_wait(message_id="msg_failcard", answer="ok") is False
 
         assert "msg_failcard" not in ctrl._sessions
-        assert ctrl._text_fallback_needed == set()
+        assert ctrl.consume_text_fallback("msg_failcard") is True
 
     @pytest.mark.asyncio
     async def test_finalization_failure_yields_to_gateway(self) -> None:
@@ -1006,14 +1028,15 @@ class TestAwaitedCompletion:
         ctrl._sessions[session.message_id] = session
 
         with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
-            assert await ctrl.on_completed_wait(
-                message_id=session.message_id,
-                answer="最终结果：已成功安装并通过验证。",
-            ) is True
+            assert (
+                await ctrl.on_completed_wait(
+                    message_id=session.message_id,
+                    answer="最终结果：已成功安装并通过验证。",
+                )
+                is True
+            )
 
-        answers = [
-            seg.text for seg in session.segment_state.segments if seg.type == "answer"
-        ]
+        answers = [seg.text for seg in session.segment_state.segments if seg.type == "answer"]
         assert answers == ["先检查它是否安装", "现在安装并验证", "最终结果：已成功安装并通过验证。"]
 
     @pytest.mark.asyncio
@@ -1028,14 +1051,15 @@ class TestAwaitedCompletion:
         ctrl._sessions[session.message_id] = session
 
         with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
-            assert await ctrl.on_completed_wait(
-                message_id=session.message_id,
-                answer="最终结果：已完成。",
-            ) is True
+            assert (
+                await ctrl.on_completed_wait(
+                    message_id=session.message_id,
+                    answer="最终结果：已完成。",
+                )
+                is True
+            )
 
-        assert [seg.text for seg in session.segment_state.segments] == [
-            "此前文本。最终结果：已完成。"
-        ]
+        assert [seg.text for seg in session.segment_state.segments] == ["此前文本。最终结果：已完成。"]
 
     @pytest.mark.asyncio
     async def test_completion_answer_with_reasoning_tags_not_duplicated(self) -> None:
@@ -1049,10 +1073,13 @@ class TestAwaitedCompletion:
         ctrl._sessions[session.message_id] = session
 
         with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
-            assert await ctrl.on_completed_wait(
-                message_id=session.message_id,
-                answer="<think>rea</think>Hello",
-            ) is True
+            assert (
+                await ctrl.on_completed_wait(
+                    message_id=session.message_id,
+                    answer="<think>rea</think>Hello",
+                )
+                is True
+            )
 
         # 标签内 reasoning 已剥掉，答案与流式段去重，不再追加重复段
         assert [seg.text for seg in session.segment_state.segments] == ["Hello"]
@@ -1070,21 +1097,23 @@ class TestAwaitedCompletion:
         ctrl._sessions[session.message_id] = session
 
         with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
-            assert await ctrl.on_completed_wait(
-                message_id=session.message_id,
-                answer="💭 **Reasoning:**\n```\nstep 1\nstep 2\n```\n\nHello",
-            ) is True
+            assert (
+                await ctrl.on_completed_wait(
+                    message_id=session.message_id,
+                    answer="💭 **Reasoning:**\n```\nstep 1\nstep 2\n```\n\nHello",
+                )
+                is True
+            )
 
         answers = [seg.text for seg in session.segment_state.segments if seg.type == "answer"]
         assert answers == ["Hello"]
         # reasoning 只保留 💭 面板这一份（segments 里的 reasoning 段）
-        assert [
-            seg.text for seg in session.segment_state.segments if seg.type == "reasoning"
-        ] == ["step 1"]
+        assert [seg.text for seg in session.segment_state.segments if seg.type == "reasoning"] == ["step 1"]
 
     @pytest.mark.asyncio
     async def test_thinking_tagged_text_does_not_leak_into_answer(self) -> None:
         ctrl = _setup_ctrl()
+        ctrl._cfg._reload = lambda: {"display": {"platforms": {"feishu": {"show_reasoning": True}}}}
         session = CardSession("msg_think_tags", "chat", asyncio.get_running_loop())
         session.state = SessionState.STREAMING
         session.card_id = "card_think_tags"
@@ -1115,14 +1144,15 @@ class TestAwaitedCompletion:
 
         with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
             for _ in range(2):
-                assert await ctrl.on_completed_wait(
-                    message_id=session.message_id,
-                    answer="final answer",
-                ) is True
+                assert (
+                    await ctrl.on_completed_wait(
+                        message_id=session.message_id,
+                        answer="final answer",
+                    )
+                    is True
+                )
 
-        assert [seg.text for seg in session.segment_state.segments] == [
-            "interim", "final answer"
-        ]
+        assert [seg.text for seg in session.segment_state.segments] == ["interim", "final answer"]
 
     @pytest.mark.asyncio
     async def test_agent_failure_finalizes_card_as_error(self) -> None:
@@ -1134,9 +1164,14 @@ class TestAwaitedCompletion:
         ctrl._sessions["msg_error"] = session
 
         with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True):
-            assert await ctrl.on_completed_wait(
-                message_id="msg_error", answer="request failed", is_error=True,
-            ) is True
+            assert (
+                await ctrl.on_completed_wait(
+                    message_id="msg_error",
+                    answer="request failed",
+                    is_error=True,
+                )
+                is True
+            )
 
         assert session.state == SessionState.FAILED
 
@@ -1152,12 +1187,11 @@ class TestAwaitedCompletion:
         session.footer = {"duration": 12.3}
         ctrl._sessions[session.message_id] = session
 
-        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True), patch.object(
-            ctrl, "_fire_and_forget", return_value=None
-        ) as fire:
-            assert await ctrl.on_completed_wait(
-                message_id=session.message_id, answer="done", duration=12.3
-            ) is True
+        with (
+            patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=True),
+            patch.object(ctrl, "_fire_and_forget", return_value=None) as fire,
+        ):
+            assert await ctrl.on_completed_wait(message_id=session.message_id, answer="done", duration=12.3) is True
 
         coroutine, loop = fire.call_args.args
         try:
@@ -1190,12 +1224,11 @@ class TestAwaitedCompletion:
         session.card_msg_id = "card_msg_notice_fail"
         ctrl._sessions[session.message_id] = session
 
-        with patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=False), patch.object(
-            ctrl, "_fire_and_forget"
-        ) as fire:
-            assert await ctrl.on_completed_wait(
-                message_id=session.message_id, answer="done"
-            ) is False
+        with (
+            patch.object(ctrl, "_complete_session_wait", new_callable=AsyncMock, return_value=False),
+            patch.object(ctrl, "_fire_and_forget") as fire,
+        ):
+            assert await ctrl.on_completed_wait(message_id=session.message_id, answer="done") is False
 
         fire.assert_not_called()
 
@@ -1224,24 +1257,14 @@ def _capture_split_calls(
     card_iter = iter(cards or ["card_next"])
     message_iter = iter(messages or ["msg_next"])
 
-    client.cardkit_batch_update = AsyncMock(
-        side_effect=lambda card_id, *a, **k: calls.append(("batch", card_id))
-    )
+    client.cardkit_batch_update = AsyncMock(side_effect=lambda card_id, *a, **k: calls.append(("batch", card_id)))
     if create_error is None:
-        client.cardkit_create = AsyncMock(
-            side_effect=lambda *a, **k: calls.append(("create", "")) or next(card_iter)
-        )
+        client.cardkit_create = AsyncMock(side_effect=lambda *a, **k: calls.append(("create", "")) or next(card_iter))
     else:
         client.cardkit_create = AsyncMock(side_effect=create_error)
-    client.reply_card_by_id = AsyncMock(
-        side_effect=lambda *a, **k: calls.append(("reply", "")) or next(message_iter)
-    )
-    client.cardkit_close_streaming = AsyncMock(
-        side_effect=lambda card_id, **k: calls.append(("close", card_id))
-    )
-    client.cardkit_update = AsyncMock(
-        side_effect=lambda card_id, *a, **k: calls.append(("seal", card_id))
-    )
+    client.reply_card_by_id = AsyncMock(side_effect=lambda *a, **k: calls.append(("reply", "")) or next(message_iter))
+    client.cardkit_close_streaming = AsyncMock(side_effect=lambda card_id, **k: calls.append(("close", card_id)))
+    client.cardkit_update = AsyncMock(side_effect=lambda card_id, *a, **k: calls.append(("seal", card_id)))
     return calls
 
 
@@ -1251,10 +1274,13 @@ def _capture_split_calls(
 class TestDispatch:
     """验证流式卡片 session 的入口会消费事件并更新 SegmentState."""
 
-    @pytest.mark.parametrize("event,kwargs,seg_type", [
-        ("on_reasoning", {"text": "r"}, "reasoning"),
-        ("on_answer", {"text": "a"}, "answer"),
-    ])
+    @pytest.mark.parametrize(
+        "event,kwargs,seg_type",
+        [
+            ("on_reasoning", {"text": "r"}, "reasoning"),
+            ("on_answer", {"text": "a"}, "answer"),
+        ],
+    )
     def test_dispatch_creates_segment(self, event: str, kwargs: dict, seg_type: str) -> None:
         ctrl = _setup_ctrl()
         ctrl._cfg._reload = lambda: {"display": {"platforms": {"feishu": {"show_reasoning": True}}}}  # type: ignore[assignment]
@@ -1266,9 +1292,7 @@ class TestDispatch:
     def test_on_reasoning_unknown_session_skips_config_read(self) -> None:
         """#17: 非目标会话早退，不求值 show_reasoning（每个 delta 不再重读配置）."""
         ctrl = _setup_ctrl()
-        boom = PropertyMock(
-            side_effect=AssertionError("show_reasoning evaluated before session resolution")
-        )
+        boom = PropertyMock(side_effect=AssertionError("show_reasoning evaluated before session resolution"))
         with patch.object(type(ctrl._cfg), "show_reasoning", boom):
             assert ctrl.on_reasoning(message_id="missing", text="r") is False
 
@@ -1307,12 +1331,12 @@ class TestDispatch:
         assert ctrl.on_answer(message_id="msg_early_delta", text="early") is True
         assert session.segment_state.segments[0].text == "early"
 
-    def test_guard_skips_terminal(self) -> None:
+    def test_late_delta_on_terminal_is_consumed_without_write(self) -> None:
         ctrl = _setup_ctrl()
         session = _make_session("msg_term")
         session.state = SessionState.COMPLETED
         ctrl._sessions["msg_term"] = session
-        assert ctrl.on_answer(message_id="msg_term", text="late text") is False
+        assert ctrl.on_answer(message_id="msg_term", text="late text") is True
         assert len(session.segment_state.segments) == 0
 
     def test_message_started_creates_session(self) -> None:
@@ -1567,9 +1591,7 @@ class TestDoFlush:
         sealed_cards: list[dict] = []
         ctrl._client.cardkit_create = AsyncMock(return_value="card_page_3")
         ctrl._client.reply_card_by_id = AsyncMock(return_value="msg_page_3")
-        ctrl._client.cardkit_update = AsyncMock(
-            side_effect=lambda _card_id, card, **_kwargs: sealed_cards.append(card)
-        )
+        ctrl._client.cardkit_update = AsyncMock(side_effect=lambda _card_id, card, **_kwargs: sealed_cards.append(card))
 
         session = _make_session("msg_second_split")
         session.state = SessionState.STREAMING
@@ -1686,7 +1708,7 @@ class TestDoFlush:
         注意：如果 steps 数量超过飞书元素上限，仍可能拆卡，但面板本身是合并的。
         """
         ctrl = _setup_ctrl()
-        calls = _capture_split_calls(
+        _capture_split_calls(
             ctrl,
             cards=["card_tool_page_2", "card_tool_page_3"],
             messages=["msg_tool_page_2", "msg_tool_page_3"],
@@ -2175,14 +2197,22 @@ class TestDoCompleteCard:
         session = _make_session("msg_model_keep")
         # 首次完成：带模型名
         ctrl._apply_completion_payload(
-            session=session, answer="first", duration=1.0, model="claude-3.5",
-            tokens=None, context=None,
+            session=session,
+            answer="first",
+            duration=1.0,
+            model="claude-3.5",
+            tokens=None,
+            context=None,
         )
         assert session.footer["model"] == "claude-3.5"
         # 续接/拆卡完成：Hermes followup result 不带 model → 空，但不应清掉已记录的模型名
         ctrl._apply_completion_payload(
-            session=session, answer="followup", duration=2.0, model="",
-            tokens=None, context=None,
+            session=session,
+            answer="followup",
+            duration=2.0,
+            model="",
+            tokens=None,
+            context=None,
         )
         assert session.footer["model"] == "claude-3.5"
 
@@ -2191,8 +2221,12 @@ class TestDoCompleteCard:
         ctrl = _setup_ctrl()
         session = _make_session("msg_model_new")
         ctrl._apply_completion_payload(
-            session=session, answer="a", duration=1.0, model="kimi-k3",
-            tokens=None, context=None,
+            session=session,
+            answer="a",
+            duration=1.0,
+            model="kimi-k3",
+            tokens=None,
+            context=None,
         )
         assert session.footer["model"] == "kimi-k3"
 
@@ -2308,7 +2342,9 @@ class TestCronDeliver:
         threading.Thread(target=loop.run_forever, daemon=True).start()
         try:
             result = ctrl.on_cron_deliver(
-                chat_id="c1", content="<think>rea</think>hello", loop=loop,
+                chat_id="c1",
+                content="<think>rea</think>hello",
+                loop=loop,
             )
             assert result is True
             args = mock_client.send_card_to_chat.call_args[0]
@@ -2335,7 +2371,9 @@ class TestCronDeliver:
         try:
             # 全部内容都是 reasoning → 剥空后保底用原文，空卡片比展示推理更糟
             result = ctrl.on_cron_deliver(
-                chat_id="c1", content="<think>pure reasoning</think>", loop=loop,
+                chat_id="c1",
+                content="<think>pure reasoning</think>",
+                loop=loop,
             )
             assert result is True
             args = mock_client.send_card_to_chat.call_args[0]

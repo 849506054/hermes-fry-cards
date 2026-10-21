@@ -220,7 +220,7 @@ class TestWaitForFlush:
 
 class TestMarkCompleted:
     @pytest.mark.asyncio
-    async def test_resolves_waiters(self) -> None:
+    async def test_waits_for_inflight_flush_after_closing_updates(self) -> None:
         ctrl = _make_async()
         ctrl.set_card_message_ready(True)
         flush_event = asyncio.Event()
@@ -228,7 +228,7 @@ class TestMarkCompleted:
         async def blocking_flush() -> None:
             await flush_event.wait()
 
-        _task = asyncio.create_task(ctrl._do_flush(blocking_flush))
+        task = asyncio.create_task(ctrl._do_flush(blocking_flush))
         await asyncio.sleep(0.02)
 
         waiter = asyncio.create_task(ctrl.wait_for_flush())
@@ -237,7 +237,29 @@ class TestMarkCompleted:
 
         ctrl.mark_completed()
         await asyncio.sleep(0.02)
+        assert ctrl.completed
+        assert not waiter.done()
+
+        flush_event.set()
+        await asyncio.wait_for(asyncio.gather(task, waiter), timeout=1)
         assert waiter.done()
+        assert not ctrl._flush_in_progress
+
+    @pytest.mark.asyncio
+    async def test_completed_pending_task_does_not_strand_waiters(self) -> None:
+        ctrl = _make_async()
+        ctrl.set_card_message_ready(True)
+        called = 0
+
+        async def flush() -> None:
+            nonlocal called
+            called += 1
+
+        task = ctrl._create_flush_task(flush)
+        ctrl.mark_completed()
+        await asyncio.wait_for(ctrl.wait_for_flush(), timeout=1)
+        assert task.done()
+        assert called == 0
 
 
 class TestReflush:

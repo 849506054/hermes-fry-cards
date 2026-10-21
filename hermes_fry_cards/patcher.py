@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import contextlib
-from collections.abc import Callable
 import importlib.util
 import logging
 import os
@@ -12,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from .config import hermes_home
@@ -64,6 +64,18 @@ MK_CLARIFY, MK_CLARIFY_END = MARKERS[15]
 # their tests are unaffected.
 MK_GROUP_BOUNDARY = f"# {PREFIX}_GROUP_BOUNDARY_BEGIN"
 MK_GROUP_BOUNDARY_END = f"# {PREFIX}_GROUP_BOUNDARY_END"
+
+# Layout-specific markers are registered on each Patcher instance.
+MK_BUSY_ACK = f"# {PREFIX}_BUSY_ACK_BEGIN"
+MK_BUSY_ACK_END = f"# {PREFIX}_BUSY_ACK_END"
+MK_TURN_REDIRECTED = f"# {PREFIX}_TURN_REDIRECTED_BEGIN"
+MK_TURN_REDIRECTED_END = f"# {PREFIX}_TURN_REDIRECTED_END"
+MK_BUSY_ACK_GATE = f"# {PREFIX}_BUSY_ACK_GATE_BEGIN"
+MK_BUSY_ACK_GATE_END = f"# {PREFIX}_BUSY_ACK_GATE_END"
+MK_WATCHER_NOTICE = f"# {PREFIX}_WATCHER_NOTICE_BEGIN"
+MK_WATCHER_NOTICE_END = f"# {PREFIX}_WATCHER_NOTICE_END"
+MK_COMPLETION_ID = f"# {PREFIX}_COMPLETION_ID_BEGIN"
+MK_COMPLETION_ID_END = f"# {PREFIX}_COMPLETION_ID_END"
 
 _BACKUP_SUFFIX = ".hermes_lark.bak"
 
@@ -223,6 +235,9 @@ def _default_modular_paths() -> dict[str, Path]:
         resolved = _resolve_module_path(f"gateway.run_turn_{optional}", roots)
         if resolved.exists():
             paths[optional] = resolved
+    notifications = _resolve_module_path("gateway.run_notifications", roots)
+    if notifications.exists():
+        paths["notifications"] = notifications
     return paths
 
 
@@ -374,9 +389,11 @@ def _followup_complete_hook(indent: str) -> str:
             "try:",
             "    from hermes_fry_cards.patch import on_queued_followup_boundary, collect_stream_stats",
             "    _lark_delivery_result = response if isinstance(response, dict) else result",
-            "    _lark_event_message_id = locals().get('event_message_id')",
-            "    if not _lark_event_message_id and locals().get('turn_ctx') is not None:",
-            "        _lark_event_message_id = turn_ctx.event_message_id",
+            "    _lark_turn_ctx = locals().get('turn_ctx')",
+            "    _lark_event_message_id = (",
+            "        _lark_turn_ctx.event_message_id if _lark_turn_ctx is not None",
+            "        else locals().get('event_message_id')",
+            "    )",
             "    _lark_followup_sent = await on_queued_followup_boundary(",
             "        message_id=_lark_event_message_id, result=_lark_delivery_result,",
             "        session_key=locals().get('session_key'),",
@@ -446,9 +463,11 @@ def _followup_done_hook(indent: str) -> str:
             "        on_queued_followup_completed, on_queued_followup_card_ready, collect_stream_stats,",
             "    )",
             "    if source.platform.value.lower() in ('feishu', 'lark'):",
-            "        # 该续轮自己的 message_id。事件型续轮有 next_message_id；无事件续轮",
-            "        # （后台通知 / steer）没有 id，按 session_key 复用边界处预建的卡（#37）。",
-            "        _lark_fu_id = next_message_id or getattr(pending_event, 'message_id', None)",
+            "        # The deepest result owns completion; event-less turns reuse the pre-created card.",
+            "        _lark_fu_id = (",
+            "            followup_result.get('_hermes_lark_completion_id')",
+            "            or next_message_id or getattr(pending_event, 'message_id', None)",
+            "        )",
             "        if not _lark_fu_id and turn_ctx.session_key:",
             "            _lark_fu_id = on_queued_followup_card_ready(",
             "                message_id=None,",
@@ -542,7 +561,8 @@ def _answer_hook(indent: str) -> str:
             "            _lark_session_key = session_key",
             "        except NameError:",
             "            _lark_session_key = None",
-            "    if text and _lark_run_current() and on_answer_delta(message_id=_lark_message_id, text=text, session_key=_lark_session_key):",
+            "    if (text and _lark_run_current() and on_answer_delta(",
+            "            message_id=_lark_message_id, text=text, session_key=_lark_session_key)):",
             "        try:",
             "            _lark_stts_consumer = _stts_consumer_ref",
             "        except NameError:",
@@ -581,7 +601,8 @@ def _thinking_hook(indent: str) -> str:
             "        except NameError:",
             "            _lark_session_key = None",
             "    if (text and not already_streamed and _lark_run_current()",
-            "            and on_thinking_delta(message_id=_lark_message_id, text=text, session_key=_lark_session_key)):",
+            "            and on_thinking_delta(",
+            "                message_id=_lark_message_id, text=text, session_key=_lark_session_key)):",
             "        return",
             *_hook_exception_lines("thinking"),
         ],
@@ -651,7 +672,9 @@ def _abort_hook(indent: str) -> str:
         [
             "try:",
             "    from hermes_fry_cards.patch import on_message_aborted",
-            "    on_message_aborted(message_id=event.message_id)",
+            "    _lark_abort_result = locals().get('agent_result') or {}",
+            "    _lark_abort_id = _lark_abort_result.get('_hermes_lark_completion_id') or event.message_id",
+            "    on_message_aborted(message_id=_lark_abort_id)",
             *_hook_exception_lines("abort"),
         ],
     )
@@ -674,6 +697,83 @@ def _stop_hook(indent: str) -> str:
     )
 
 
+def _busy_ack_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_BUSY_ACK,
+        MK_BUSY_ACK_END,
+        [
+            "try:",
+            "    from hermes_fry_cards.patch import on_busy_ack",
+            "    if on_busy_ack(",
+            '        message_id=self._reply_anchor_for_event(event) or getattr(event, "message_id", "") or "",',
+            "        session_key=session_key,",
+            "        text=message,",
+            "    ):",
+            "        return True",
+            *_hook_exception_lines("busy ack"),
+        ],
+    )
+
+def _turn_redirected_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_TURN_REDIRECTED,
+        MK_TURN_REDIRECTED_END,
+        [
+            "try:",
+            "    from hermes_fry_cards.patch import on_turn_redirected",
+            "    on_turn_redirected(session_key=session_key, message_id=anchor)",
+            *_hook_exception_lines("turn redirected"),
+        ],
+    )
+
+def _busy_ack_gate_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_BUSY_ACK_GATE,
+        MK_BUSY_ACK_GATE_END,
+        [
+            "if is_redirect_mode and not self._busy_steer_ack_enabled(event, session_key):",
+            "    return True",
+        ],
+    )
+
+def _watcher_notice_hook(indent: str) -> str:
+    return _make_hook(
+        indent,
+        MK_WATCHER_NOTICE,
+        MK_WATCHER_NOTICE_END,
+        [
+            "try:",
+            "    if platform_name.lower() in ('feishu', 'lark') and message_text:",
+            "        from hermes_fry_cards.patch import on_background_deliver",
+            "        _wn_finished = any(message_text.startswith(t(key)) for key in (",
+            "            'gateway.background.task_finished', 'gateway.background.task_failed',",
+            "        ))",
+            "        if _wn_finished and await on_background_deliver(",
+            "            chat_id=chat_id,",
+            "            preview=message_text[:60] + ('...' if len(message_text) > 60 else ''),",
+            "            content=message_text,",
+            "            reply_to_message_id=(watcher.get('message_id') or None),",
+            "        ):",
+            "            return",
+            *_hook_exception_lines("watcher_notice"),
+        ],
+    )
+
+
+def _completion_id_hook(indent: str) -> str:
+    """Carry the live reply anchor out of the worker to the final completion hook."""
+    return _make_hook(
+        indent, MK_COMPLETION_ID, MK_COMPLETION_ID_END,
+        [
+            "if isinstance(response, dict) and turn_ctx.event_message_id:",
+            "    response.setdefault('_hermes_lark_completion_id', turn_ctx.event_message_id)",
+        ],
+    )
+
+
 def _interrupt_hook(indent: str) -> str:
     return _make_hook(
         indent,
@@ -688,9 +788,11 @@ def _interrupt_hook(indent: str) -> str:
             "        _lark_was_interrupted = locals().get('was_interrupted')",
             "        if _lark_was_interrupted is None:",
             "            _lark_was_interrupted = bool(locals().get('result', {}).get('interrupted'))",
-            "        _lark_event_message_id = locals().get('event_message_id')",
-            "        if not _lark_event_message_id and locals().get('turn_ctx') is not None:",
-            "            _lark_event_message_id = turn_ctx.event_message_id",
+            "        _lark_turn_ctx = locals().get('turn_ctx')",
+            "        _lark_event_message_id = (",
+            "            _lark_turn_ctx.event_message_id if _lark_turn_ctx is not None",
+            "            else locals().get('event_message_id')",
+            "        )",
             "        _lark_next_message_id = getattr(pending_event, 'message_id', None) or next_message_id",
             "        _lark_next_anchor_id = next_message_id",
             "        if _lark_was_interrupted and _lark_next_message_id:",
@@ -873,6 +975,11 @@ _HOOK_FNS = {
     "bg_deliver": _bg_deliver_hook,
     "clarify": _clarify_hook,
     "group_boundary": _group_boundary_hook,
+    "busy_ack": _busy_ack_hook,
+    "turn_redirected": _turn_redirected_hook,
+    "busy_ack_gate": _busy_ack_gate_hook,
+    "watcher_notice": _watcher_notice_hook,
+    "completion_id": _completion_id_hook,
 }
 
 
@@ -945,7 +1052,7 @@ class Patcher:
                 )
             # 可选模块（0.22+ 的 progress / persistence）只接受已知名字，
             # 防止拼写错误让锚点静默回退到旧模块。
-            unknown = set(modular_paths) - required - {"progress", "persistence"}
+            unknown = set(modular_paths) - required - {"progress", "persistence", "notifications"}
             if unknown:
                 raise PatcherError(
                     "modular_paths contains unknown modules: " + ", ".join(sorted(unknown))
@@ -969,8 +1076,25 @@ class Patcher:
             )
         # Modular layout additionally hosts the group-security-boundary hook (in
         # gateway/run_turn_runner.py), so removal / status must know its markers.
+        self.MARKERS = list(MARKERS)
+        self._has_notifications = bool(self._modular_paths and "notifications" in self._modular_paths)
+        self._has_completion_id = bool(
+            self._modular_paths and _find_completion_id_site(
+                ast.parse(self.run_path.read_text(encoding="utf-8")),
+                self.run_path.read_text(encoding="utf-8").splitlines(keepends=True),
+            ) is not None
+        )
         if self._modular_paths is not None:
-            self.MARKERS = list(MARKERS) + [(MK_GROUP_BOUNDARY, MK_GROUP_BOUNDARY_END)]
+            self.MARKERS.extend([
+                (MK_GROUP_BOUNDARY, MK_GROUP_BOUNDARY_END),
+                (MK_BUSY_ACK, MK_BUSY_ACK_END),
+                (MK_TURN_REDIRECTED, MK_TURN_REDIRECTED_END),
+                (MK_BUSY_ACK_GATE, MK_BUSY_ACK_GATE_END),
+            ])
+            if self._has_notifications:
+                self.MARKERS.append((MK_WATCHER_NOTICE, MK_WATCHER_NOTICE_END))
+            if self._has_completion_id:
+                self.MARKERS.append((MK_COMPLETION_ID, MK_COMPLETION_ID_END))
 
     def _source_paths(self) -> list[Path]:
         if self._modular_paths is not None:
@@ -1081,6 +1205,9 @@ class Patcher:
             (_find_interrupt_site(turn_tree, turn_lines), "interrupt"),
             (_find_bg_deliver_site(turn_tree, turn_lines), "background deliver"),
             (_find_stop_site(busy_tree, busy_lines), "stop"),
+            (_find_busy_ack_site(busy_tree, busy_lines), "busy ack"),
+            (_find_turn_redirected_site(busy_tree, busy_lines), "turn redirected"),
+            (_find_busy_ack_gate_site(busy_tree, busy_lines), "busy ack gate"),
             (_find_func_body(tool_tree, tool_lines, "progress_callback"), "tool"),
             (_find_func_body(runner_tree, runner_lines, "interim_assistant_cb"), "thinking"),
             (_find_reasoning_site(runner_tree, runner_lines), "reasoning"),
@@ -1088,6 +1215,11 @@ class Patcher:
             (_find_clarify_site(runner_tree, runner_lines), "clarify"),
             (_find_ephemeral_prompt_return(runner_tree, runner_lines), "group boundary"),
         ]
+        if self._has_notifications:
+            _, notification_tree, notification_lines = parsed["notifications"]
+            checks.append((
+                _find_func_body(notification_tree, notification_lines, "_send_watcher_message"), "watcher notice",
+            ))
         answer_sites = _find_func_bodies(runner_tree, runner_lines, "stream_delta_cb")
         if not answer_sites:
             checks.append((None, "answer callback"))
@@ -1202,12 +1334,23 @@ class Patcher:
                 ("clarify", "clarify", _find_clarify_site),
                 ("group_boundary", "group_boundary", _find_ephemeral_prompt_return),
             ],
-            "busy": [("stop", "stop", _find_stop_site)],
+            "busy": [
+                ("stop", "stop", _find_stop_site),
+                ("busy_ack", "busy ack", _find_busy_ack_site),
+                ("turn_redirected", "turn redirected", _find_turn_redirected_site),
+                ("busy_ack_gate", "busy ack gate", _find_busy_ack_gate_site),
+            ],
+            "notifications": [
+                ("watcher_notice", "watcher notice",
+                 lambda tree, lines: _find_func_body(tree, lines, "_send_watcher_message")),
+            ],
             # 0.22+ 独立 progress 模块的宿主（tool 注入点按 progress_callback 归属动态挂载）。
             "progress": [],
             # persistence 只承载 agent:end 的 verify 探测，无注入点；留在 specs 里防 KeyError。
             "persistence": [],
         }
+        if self._has_completion_id:
+            specs["turn"].append(("completion_id", "completion id", _find_completion_id_site))
         # tool 锚点宿主：与 _verify_modular_target 的解析顺序一致（progress 优先，回退 runner）。
         tool_host = "runner"
         if "progress" in contents:
@@ -1452,6 +1595,81 @@ def _find_stop_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | Non
     return None
 
 
+def _find_busy_ack_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """Locate the plain-text busy-ack fallback send in run_busy.py.
+
+    The injected block goes immediately before it: the plugin claims the notice for the
+    live card when one exists, and a False return falls through to the original send.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "_send_busy_ack_reply":
+            continue
+        if not isinstance(func.value, ast.Name) or func.value.id != "self":
+            continue
+        return node.lineno - 1, _safe_indent(lines, node.lineno - 1)
+    return None
+
+def _find_turn_redirected_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """Locate the success return of ``run_busy._redirect_active_turn``.
+
+    The hook must run after the turn was re-anchored to the new inbound message, so it goes
+    immediately before the function's final ``return True``.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        if node.name != "_redirect_active_turn":
+            continue
+        returns = [stmt for stmt in node.body if isinstance(stmt, ast.Return)]
+        if not returns:
+            return None
+        last = returns[-1]
+        return last.lineno - 1, _safe_indent(lines, last.lineno - 1)
+    return None
+
+def _find_busy_ack_gate_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """Locate the steer-ack early return in the busy handler.
+
+    Upstream only guards ``is_steer_mode``; the injected block adds the same guard for
+    redirect mode immediately before it.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And) and len(test.values) >= 2):
+            continue
+        first, second = test.values[0], test.values[1]
+        if not (isinstance(first, ast.Name) and first.id == "is_steer_mode"):
+            continue
+        if not (
+            isinstance(second, ast.UnaryOp)
+            and isinstance(second.op, ast.Not)
+            and isinstance(second.operand, ast.Call)
+            and isinstance(second.operand.func, ast.Attribute)
+            and second.operand.func.attr == "_busy_steer_ack_enabled"
+        ):
+            continue
+        return node.lineno - 1, _safe_indent(lines, node.lineno - 1)
+    return None
+
+
+def _find_completion_id_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """Stamp the completed worker result before queued delivery or recursive return."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "response" for target in node.targets
+        ) and isinstance(node.value, ast.Await):
+            call = node.value.value
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "_run_agent_await_turn_worker"):
+                return node.end_lineno, _safe_indent(lines, node.lineno - 1)
+    return None
+
+
 def _find_interrupt_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
     for i, line in enumerate(lines):
         if (
@@ -1490,7 +1708,8 @@ def _find_followup_result_site(tree: ast.Module, lines: list[str]) -> tuple[int,
         if stripped == "return _preserve_queued_followup_history_offset(result, followup_result)":
             return i, _safe_indent(lines, i)
         # 0.21.1+ assignment form: <var> = _preserve_queued_followup_history_offset(result, followup_result)
-        if stripped.endswith("= _preserve_queued_followup_history_offset(result, followup_result)") and not stripped.startswith("return"):
+        if (stripped.endswith("= _preserve_queued_followup_history_offset(result, followup_result)")
+                and not stripped.startswith("return")):
             return i, _safe_indent(lines, i)
     return None
 
