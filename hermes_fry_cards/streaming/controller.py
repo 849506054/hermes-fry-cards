@@ -143,7 +143,14 @@ class StreamingController:
                 width_mode=self._cfg.width_mode,
             )
             notices = [s for s in session.active_segments() if s.type in (SegmentType.STICKY, SegmentType.NOTICE)]
-            card["body"]["elements"][:0] = [
+            # 提示与正文同落点：工具面板之后、loading 之前（正文就是这样插进来的）。
+            # 插到 body 开头会让重定向提示停在工具调用框上方，等首段正文替换元素时再跳下来。
+            elements = card["body"]["elements"]
+            notice_at = next(
+                (i for i, element in enumerate(elements) if element.get("element_id") == LOADING_ELEMENT_ID),
+                len(elements),
+            )
+            elements[notice_at:notice_at] = [
                 {"tag": "markdown", "element_id": s.el_id, "content": s.text, "text_size": self._cfg.body_text_size}
                 for s in notices
             ]

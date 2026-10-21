@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from hermes_fry_cards.cardkit.builder import build_background_card
+from hermes_fry_cards.cardkit.builder import LOADING_ELEMENT_ID, TOOL_PANEL_ELEMENT_ID, build_background_card
 from hermes_fry_cards.controller import StreamCardController
 from hermes_fry_cards.feishu import FeishuClient
 from hermes_fry_cards.streaming.session import SessionState
@@ -111,7 +111,9 @@ async def test_redirect_chain_creation_and_sticky_first_render(ctrl):
     assert c.segment_state.segments[0].dirty
     await ctrl._do_create_card(c)
     first_card = ctrl._client.cardkit_create.await_args.args[0]
-    assert first_card["body"]["elements"][0]["content"] == "↪ 已重定向当前运行 · 正在按你的修正调整…"
+    ids = [el.get("element_id") for el in first_card["body"]["elements"]]
+    assert ids.index("sticky_notice") == ids.index(TOOL_PANEL_ELEMENT_ID) + 1
+    assert ids.index(LOADING_ELEMENT_ID) == ids.index("sticky_notice") + 1
     assert ctrl.on_busy_ack(session_key="key", text="busy") is True
     assert (
         await ctrl.on_background_deliver(chat_id="chat", preview="preview", content="receipt", reply_to_message_id="C")

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from hermes_fry_cards.cardkit.builder import build_complete_card
+from hermes_fry_cards.cardkit.builder import LOADING_ELEMENT_ID, TOOL_PANEL_ELEMENT_ID, build_complete_card
 from hermes_fry_cards.controller import StreamCardController
 from hermes_fry_cards.feishu import FeishuClient
 from hermes_fry_cards.streaming.segments import SegmentState, SegmentType
@@ -78,7 +78,9 @@ async def test_real_redirect_create_stream_and_complete_payloads(tmp_path):
     session = ctrl._sessions["B"]
     await ctrl._do_create_card(session)
     initial = ctrl._client.cardkit_create.await_args.args[0]
-    assert initial["body"]["elements"][0]["content"] == PROMPT
+    ids = [el.get("element_id") for el in initial["body"]["elements"]]
+    assert ids.index("sticky_notice") == ids.index(TOOL_PANEL_ELEMENT_ID) + 1
+    assert ids.index(LOADING_ELEMENT_ID) == ids.index("sticky_notice") + 1
     with patch.object(ctrl, "_schedule_flush"):
         assert ctrl.on_answer(message_id="B", session_key="key", text="hello")
     await ctrl._do_flush(session)
