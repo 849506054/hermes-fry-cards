@@ -50,6 +50,20 @@ class Segment:
         self.reasoning_finalized: bool = False
 
 
+class NotificationSlot:
+    """一条待渲染到卡片通知区的提示（Hermes 原文）.
+
+    不占卡片元素：流式态由 loading 图标淡出表示，完成态由 builder 统一渲染在
+    完成态卡片顶部。``kind`` 仅用于日志，不参与文案。
+    """
+
+    __slots__ = ("kind", "text")
+
+    def __init__(self, text: str, kind: str = "notice") -> None:
+        self.text = text
+        self.kind = kind
+
+
 class SegmentState:
     """管理单张流式卡片的扁平内容段列表.
 
@@ -60,6 +74,7 @@ class SegmentState:
     __slots__ = (
         "_completion_answers",
         "_counter",
+        "notices",
         "segments",
         "max_reasoning_panels",
         "max_answer_segments",
@@ -69,6 +84,7 @@ class SegmentState:
         self._counter = 0
         self._completion_answers: set[str] = set()
         self.segments: list[Segment] = []
+        self.notices: list[NotificationSlot] = []
         # 限制独立 reasoning 面板数量，超出后合并进最后一个 reasoning 面板，
         # 避免「不支持分段思考」的模型频繁切换 thinking/tool 时产生海量面板导致卡片元素溢出。
         self.max_reasoning_panels = max_reasoning_panels
@@ -77,6 +93,19 @@ class SegmentState:
         # 同一个 tool_panel element_id 只占一个面板——不设上限的只有 answer，
         # 20 轮工具调用就能产生 20 个 answer 段把卡片元素推向飞书 200 硬上限。
         self.max_answer_segments = max_answer_segments
+
+    def add_notice(self, text: str) -> None:
+        """记录一条状态提示（Hermes 原文），随完成态卡片一起渲染.
+
+        #43：忙碌回执 / 重定向 / 后台回执由 Hermes 自己合成文案，插件只负责把它
+        写进当前卡片的通知槽，不另写文案、不另发纯文本。展示位置与 i18n 标签
+        由 builder 决定（``NotificationSlot``）。
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        if not any(slot.text == cleaned for slot in self.notices):
+            self.notices.append(NotificationSlot(cleaned))
 
     def _new_reasoning(self, text: str) -> Segment:
         c = self._counter

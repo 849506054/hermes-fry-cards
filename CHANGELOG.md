@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+本版包含 #41 元素记账修复与 #43 提示消息入卡（在 0.5.5 之后）。
+
+### 新增 / Added
+- **提示消息入卡**（#43）：Hermes 在回合中合成的忙碌回执 / 重定向 / 后台回执不再另发纯文本，改为写进当前卡片的通知区（完成态卡顶 `💡 提示`，流式态建卡带最新一条）。文案完全沿用 Hermes 原文，插件不另写。
+  - 归属解析沿用 `_sessions` / `_session_keys`：`message_id` → `session_key` → 唯一活跃卡；多卡且无标识时放弃，让 Hermes 照常发原文。
+  - 重定向沿用 `on_interrupted` + `_interrupt_map` 换卡，旧卡收尾、新卡接手。
+  - 新增 `BUSY_ACK` / `REDIRECT` 两个可选注入点：旧版 Hermes 缺锚点时跳过注入，`verify` 不报错。
+
+### 修复 / Fixed
+- **工具面板增量恒为 0**（#41）：`_do_flush` 提前推进 `session.tool_panel_estimate`，批更新前的
+  快照读到的已是新值，增量永远为 0，面板元素从不进 `element_count`，`ELEMENT_THRESHOLD` 主动拆卡
+  一次也不触发。改为只在 `_do_batch_update` 成功后推进。
+- **拆卡后新卡重发旧卡步骤**（#41）：dirty 分支写死 `start = 0`，新卡面板从全量步骤渲染。新增
+  `panel_steps_start()`，三处分支统一取本卡首个工具段的 `tool_offset`。
+- **强制拆卡不推进 `split_index`**（#41）：300305 后 `split_index` 前移到首个未创建 segment，
+  完成态 `active_segments()` 不再重渲已封印内容（否则再次超限、重试失败后整轮回落纯文本）；
+  日志补 `split_idx=`。
+- **拆卡判断重复计入面板**（#41）：`_maybe_rollover_tool_segment` 以恒为 0 的 `seg.element_estimate`
+  为基准，每步把整块面板重复计入，约 17 步就拆卡。改为以本卡已入账的面板总量为基准。
+- **面板占满时拆卡永不触发**：`find_tool_split_offset` 返回 `None` 后直接放弃，改为按 step 边界
+  强制拆，本卡至少保留 1 个 step。
+- **拆出只有 loading 的空白卡**：拆卡前容量判断把旧面板重复算进 `new_el_total`，新卡首个工具段又是
+  整体替换面板。改为按「替换后的面板估算」计算并扣掉旧面板。
+- **通知区多条提示共用固定 `element_id=fry_notice`**（#43）：命中两条提示时卡内元素 id 冲突；
+  改为按序号派生 `fry_notice_1`、`fry_notice_2`。
+- **通知区元素未计入 `element_count`**（#43）：接近 300305 时会少算一格；建卡基线与完成态重建
+  都按提示条数同步记账。
+
+### 测试 / Tests
+- 新增 `tests/test_element_budget.py`（#41 状态级回归）与 `tests/test_notice_in_card.py`（#43）。
+
+---
+
 ## [0.5.5] - 2026-10-22
 
 日志降噪：回复目标消息已失效（99992354 / 1000023 / 231003 / 230011）不再打完整堆栈。

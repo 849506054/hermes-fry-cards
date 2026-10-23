@@ -29,6 +29,11 @@ _T: dict[str, tuple[str, str]] = {
     "thinking_panel": ("Thinking", "思考中"),
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),
+    # 通知区（#43）：Hermes 原文由 _content_t 选取语言后原样写入，标签双语。
+    "notice": ("Notice", "提示"),
+    "notice_redirect": ("Redirected", "已重定向"),
+    "notice_background": ("Background task", "后台任务"),
+    "notice_gateway_restart": ("Gateway restarted", "网关重启"),
     "card_overflow_fallback": (
         "This reply exceeded the Feishu card element limit; the full answer is delivered as plain text below.",
         "本次回复超出飞书卡片元素上限，完整内容以纯文本在下方送达。",
@@ -64,6 +69,8 @@ _CONTENT_LANG_CACHE: str | None = None
 
 def _content_t(key: str) -> str:
     """内容层单语词条：按 ``streaming.content_lang`` 选取，模块级缓存（重启生效）."""
+    if key not in _T:
+        return key  # 非词条（如 Hermes 原文）原样返回，由调用方负责语言选取
     global _CONTENT_LANG_CACHE
     if _CONTENT_LANG_CACHE is None:
         try:

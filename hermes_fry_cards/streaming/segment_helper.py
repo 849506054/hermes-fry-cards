@@ -101,19 +101,41 @@ def estimate_tool_elements(start: int, end: int, all_steps: list[ToolDisplayStep
     return count
 
 
+def panel_steps_start(segments: list[Segment], split_index: int, default: int) -> int:
+    """本卡共享工具面板的渲染起点：本卡首个工具段（拆卡后不重发旧卡步骤）.
+
+    ``segments[split_index:]`` 是本卡承接的 segment，按顺序排列，首个 TOOL 段
+    的 ``tool_offset`` 即本卡面板起点。不能取最小值：同一张卡上多个工具段合并为
+    一个面板，后面打开的段 ``tool_offset`` 可能小于前面已入账段的 ``tool_end_offset``
+    （终结前记录的是 step 数，减 1 后偏移有差），取最小会让面板估算回退、增量失真。
+    若本卡尚无工具段，回落到调用方的 ``default``。
+    """
+    for seg in segments[split_index:]:
+        if seg.type == SegmentType.TOOL:
+            return seg.tool_offset
+    return default
+
+
 def find_tool_split_offset(
     *,
     base_count: int,
     seg: Segment,
     all_steps: list[ToolDisplayStep],
+    panel_start: int | None = None,
 ) -> int | None:
-    """寻找 tool step 拆分点，让当前卡保留尽可能多的 steps."""
+    """寻找 tool step 拆分点，让当前卡保留尽可能多的 steps.
+
+    ``panel_start`` 为本卡面板渲染起点（默认本段起点）。共享面板保留
+    ``[panel_start, split_offset)``，估算必须按这些步骤算。始终至少保留 1 个
+    step：否则拆出来的首段是空的，拆卡也无法降下来。
+    """
     start = seg.tool_offset
     end = tool_segment_end(seg, all_steps)
     if end - start <= 1:
         return None
+    panel_start = start if panel_start is None else panel_start
     for split_offset in range(end - 1, start, -1):
-        estimate = estimate_tool_elements(start, split_offset, all_steps)
+        estimate = estimate_tool_elements(panel_start, split_offset, all_steps)
         if base_count + estimate + FOOTER_RESERVE <= ELEMENT_THRESHOLD:
             return split_offset
     return None

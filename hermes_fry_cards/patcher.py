@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import contextlib
-from collections.abc import Callable
 import importlib.util
 import logging
 import os
@@ -12,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from .config import hermes_home
@@ -38,6 +38,8 @@ _HOOK_NAMES = [
     "INTERRUPT",
     "BG_DELIVER",
     "CLARIFY",
+    "BUSY_ACK",
+    "REDIRECT",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -57,6 +59,15 @@ MK_STOP, MK_STOP_END = MARKERS[12]
 MK_INTERRUPT, MK_INTERRUPT_END = MARKERS[13]
 MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[14]
 MK_CLARIFY, MK_CLARIFY_END = MARKERS[15]
+MK_BUSY_ACK, MK_BUSY_ACK_END = MARKERS[16]
+MK_REDIRECT, MK_REDIRECT_END = MARKERS[17]
+
+# 可选注入点：锚点不存在时跳过而不让整次安装失败（#43 提示入卡）。
+# 旧版 Hermes 的 busy 处理可能没有独立回调，缺失时插件退回既有行为（Hermes 原文另发）。
+OPTIONAL_HOOKS: frozenset[str] = frozenset({"busy_ack", "redirect"})
+_OPTIONAL_MARKERS: frozenset[str] = frozenset(
+    f"# {PREFIX}_{name.upper()}_BEGIN" for name in OPTIONAL_HOOKS
+)
 
 # Group-security boundary is MODULAR-ONLY (targets ``_combined_ephemeral_prompt`` in
 # gateway/run_turn_runner.py, which exists only in the Hermes 0.21+ modular layout). Kept out of
@@ -260,7 +271,54 @@ _ANCHOR_CHECKS: list[tuple[str, tuple[str, ...], str]] = [
     ("_already_sent = bool(", (), "complete"),
     ("Discarding stale agent result", (), "abort"),
     ("agent.clarify_callback = _clarify_callback_sync", (), "clarify_callback"),
+    ("await adapter._send_with_retry(", (), "busy ack"),
 ]
+
+
+
+def _busy_ack_hook(indent: str) -> str:
+    """忙碌回执入卡：把 Hermes 合成的那条文案并进当前卡，并吞掉纯文本（#43）."""
+    return _make_hook(
+        indent,
+        MK_BUSY_ACK,
+        MK_BUSY_ACK_END,
+        [
+            "try:",
+            "    if event.source.platform.value.lower() in ('feishu', 'lark'):",
+            "        from hermes_fry_cards.patch import on_busy_ack",
+            "        if on_busy_ack(",
+            "            message_id=event.message_id,",
+            "            session_key=session_key,",
+            "            text=message,",
+            "        ):",
+            "            return True",
+            *_hook_exception_lines("busy_ack"),
+        ],
+    )
+
+
+def _redirect_hook(indent: str) -> str:
+    """忙碌提示入卡：重定向时旧卡收尾、新卡接手，其余模式并入当前卡（#43）."""
+    return _make_hook(
+        indent,
+        MK_REDIRECT,
+        MK_REDIRECT_END,
+        [
+            "try:",
+            "    if event.source.platform.value.lower() in ('feishu', 'lark'):",
+            "        from hermes_fry_cards.patch import on_turn_redirected",
+            "        on_turn_redirected(",
+            "            new_message_id=event.message_id,",
+            "            chat_id=event.source.chat_id,",
+            "            chat_type=getattr(event.source, 'chat_type', '') or '',",
+            "            session_key=session_key,",
+            "            anchor_id=self._reply_anchor_for_event(event),",
+            "            redirected=('redirected' in locals() and bool(redirected)),",
+            "            text=message,",
+            "        )",
+            *_hook_exception_lines("redirect"),
+        ],
+    )
 
 
 def _make_hook(indent: str, begin: str, end: str, body_lines: list[str]) -> str:
@@ -872,6 +930,8 @@ _HOOK_FNS = {
     "background_review": _background_review_hook,
     "bg_deliver": _bg_deliver_hook,
     "clarify": _clarify_hook,
+    "busy_ack": _busy_ack_hook,
+    "redirect": _redirect_hook,
     "group_boundary": _group_boundary_hook,
 }
 
@@ -991,6 +1051,9 @@ class Patcher:
             source = path.read_text(encoding="utf-8")
             answer_sites += len(_find_func_bodies(ast.parse(source), source.splitlines(keepends=True), answer_name))
         for begin, end in self.MARKERS:
+            if begin in _OPTIONAL_MARKERS and content.count(begin) == 0:
+                # 可选锚点（#43）：该 layout 没有对应回调时本就不注入，不算未打全。
+                continue
             expected = answer_sites if begin == MK_ANSWER else 1
             if content.count(begin) != expected or content.count(end) != expected:
                 return False
@@ -1202,7 +1265,12 @@ class Patcher:
                 ("clarify", "clarify", _find_clarify_site),
                 ("group_boundary", "group_boundary", _find_ephemeral_prompt_return),
             ],
-            "busy": [("stop", "stop", _find_stop_site)],
+            "busy": [
+                ("stop", "stop", _find_stop_site),
+                # #43 可选锚点：旧版 Hermes 缺任一回调时跳过注入（见 _inject_sites 的 optional 处理）
+                ("busy_ack", "busy ack", _find_busy_ack_site),
+                ("redirect", "redirect", _find_redirect_site),
+            ],
             # 0.22+ 独立 progress 模块的宿主（tool 注入点按 progress_callback 归属动态挂载）。
             "progress": [],
             # persistence 只承载 agent:end 的 verify 探测，无注入点；留在 specs 里防 KeyError。
@@ -1246,6 +1314,11 @@ class Patcher:
         sites: list[tuple[int, str, str]] = []
         for hook_fn_name, name, loc in hook_defs:
             if loc is None:
+                if hook_fn_name in OPTIONAL_HOOKS:
+                    # 可选锚点（#43 提示入卡）：旧版 Hermes 没有该回调时跳过，
+                    # 不影响安装；对应功能降级为 Hermes 原有的纯文本提示。
+                    _logger.info("optional injection target missing, skipped: %s", name)
+                    continue
                 raise PatcherError(f"Cannot locate {name} injection site — Hermes version may be incompatible")
             sites.append((loc[0], loc[1], hook_fn_name))
         sites.sort(key=lambda item: item[0], reverse=True)
@@ -1544,6 +1617,140 @@ def _find_clarify_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | 
         }:
             return i + 1, _safe_indent(lines, i)
     return None
+
+
+
+def _find_busy_ack_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """忙碌回执发送点：只允许在 ``_handle_active_session_busy_message`` 内命中.
+
+    优先 ``await self._send_busy_ack_reply(event, adapter, message)``（0.22.0 起：
+    回执文案与重定向判定都已就绪，且只会执行一次）；旧版没有该调用时退回
+    ``_send_with_retry``。全局直接搜会撞上同一文件里其它发送点，因此先按函数名
+    定位（AST），再在函数行范围内做文本匹配。
+    """
+    for needle in ("_send_busy_ack_reply(", "_send_with_retry("):
+        hit = _find_call_line_in_function(
+            tree, lines, "_handle_active_session_busy_message", needle,
+        )
+        if hit is None:
+            continue
+        # 发送可能被 try 包着：插入点取「调用之前、try 之内」，
+        # 落到 except 之后会插进异常处理块，语法直接坏掉。
+        idx = _insert_before_in_try(tree, hit[0])
+        return idx, _safe_indent(lines, idx) or hit[1]
+    return None
+
+
+def _find_redirect_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """忙碌提示入卡点：回执文案合成之后、发送之前.
+
+    0.22.0 起回执经 ``_send_busy_ack_reply`` 发出；旧版直接 ``_send_with_retry``。
+    两种都按函数内匹配，不跨函数串到 ``_send_busy_reply`` 的发送上。
+    发送可能被 ``try`` 包着，插入点取「调用之前、``try`` 之内」，不能落到
+    ``except`` 之后（那样会插入到异常处理块里，语法直接坏掉）。
+    """
+    for needle in ("_send_busy_ack_reply(", "_send_with_retry("):
+        hit = _find_call_line_in_function(
+            tree, lines, "_handle_active_session_busy_message", needle,
+        )
+        if hit is None:
+            continue
+        idx = _insert_before_in_try(tree, hit[0])
+        return idx, _safe_indent(lines, idx) or hit[1]
+    return None
+
+
+def _find_call_line_in_function(
+    tree: ast.Module,
+    lines: list[str],
+    func_name: str,
+    needle: str,
+) -> tuple[int, str] | None:
+    """在指定函数的行范围内找一条命中行，返回 ``(行下标, 缩进)``."""
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != func_name:
+            continue
+        start = node.lineno - 1
+        end = min(node.end_lineno or node.lineno, len(lines))
+        for i in range(start, end):
+            if needle in lines[i]:
+                return i, _safe_indent(lines, i)
+    return None
+
+
+def _insert_before_in_try(tree: ast.Module, lineno: int) -> int:
+    """行 ``lineno``（0-based）是 ``try`` 里一条语句的首行时，返回该语句在 ``try``
+    体内的首行下标（即 ``try:`` 之后、``else``/``except`` 之前的插入点）；
+    否则原样返回 ``lineno``.
+    """
+    best: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        first = node.body[0].lineno - 1
+        last = (node.body[-1].end_lineno or node.body[-1].lineno) - 1
+        if first <= lineno <= last:
+            best.append(first)
+    return min(best) if best else lineno
+
+
+def _find_call_in_function(
+    tree: ast.Module,
+    lines: list[str],
+    func_name: str,
+    needle: str,
+    *,
+    after: bool = False,
+) -> tuple[int, str] | None:
+    """在指定函数（含嵌套函数）的行范围内找一处调用，返回其前后插入点.
+
+    ``needle`` 按「行内包含」匹配（调用行常带 ``await``/赋值前缀）。
+    ``after=True`` 时返回命中行之后一行（用于读取刚赋值的局部变量）；
+    ``needle`` 以 ``(`` 结尾时返回整个调用语句之后（调用可能跨多行）。
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != func_name:
+            continue
+        start = node.lineno - 1
+        end = node.end_lineno or node.lineno
+        for i in range(start, min(end, len(lines))):
+            # 用 contains 而非 startswith：调用前面可能还有 `await`、赋值等前缀。
+            if needle not in lines[i]:
+                continue
+            if needle.endswith("("):
+                # 调用可能跨多行（`await adapter._send_with_retry(` 后换行），
+                # 插入点要落在整个调用语句之后，否则会把调用截成两半。
+                call_end = _statement_end_after(tree, i + 1)
+                return call_end, _safe_indent(lines, call_end)
+            idx = i + 1 if after else i
+            return idx, _safe_indent(lines, idx)
+    return None
+
+
+def _statement_end_after(tree: ast.Module, lineno: int) -> int:
+    """返回第 ``lineno`` 行（1-based）所在**最内层**语句结束后的行下标（0-based 插入点）.
+
+    只取最内层：外层 ``try`` / ``if`` / 函数体同样覆盖这一行，取最外层会把插入点
+    推到函数末尾或更后面（实测 0.22.0 的 busy 处理里直接落到了函数外）。
+    """
+    best: ast.stmt | None = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt):
+            continue
+        node_lineno = getattr(node, "lineno", 0)
+        node_end = getattr(node, "end_lineno", 0) or node_lineno
+        if not (node_lineno <= lineno <= node_end):
+            continue
+        if best is None:
+            best = node
+            continue
+        best_end = getattr(best, "end_lineno", 0) or best.lineno
+        best_span = best_end - best.lineno
+        if (node_end - node_lineno) < best_span:
+            best = node
+    if best is None:
+        return lineno
+    return best.end_lineno or (best.lineno - 1)
 
 
 def _safe_indent(lines: list[str], lineno: int) -> str:

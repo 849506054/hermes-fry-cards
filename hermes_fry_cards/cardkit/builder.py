@@ -132,6 +132,42 @@ def _build_header(status: str) -> dict[str, Any]:
     }
 
 
+_NOTICE_ELEMENT_ID = "fry_notice"
+
+
+def notice_element_id(index: int) -> str:
+    """第 ``index`` 条提示的元素 id：``fry_notice`` / ``fry_notice_1`` / ``fry_notice_2`` …
+
+    完成态可能同时命中多条提示（重定向 + 后台回执），`notices` 只按文本去重，
+    不同文本会各占一个元素；固定 id 会让卡里出现重复 element_id（#43 评审）。
+    """
+    return _NOTICE_ELEMENT_ID if index == 0 else f"{_NOTICE_ELEMENT_ID}_{index}"
+
+
+def build_notice_elements(texts: list[str] | None) -> list[dict]:
+    """通知区元素列表：每条提示一个元素，id 按序号派生，保证卡内唯一."""
+    return [
+        build_notice_element(text, element_id=notice_element_id(index))
+        for index, text in enumerate(texts or [])
+    ]
+
+
+def build_notice_element(text: str, *, element_id: str = _NOTICE_ELEMENT_ID) -> dict:
+    """通知区的单条提示（Hermes 原文，只加状态标签）.
+
+    文案不新增：``text`` 是 Hermes 合成的那条原文，这里原样写入；只有标签走 i18n。
+    """
+    return {
+        "tag": "markdown",
+        "element_id": element_id,
+        "content": f"💡 **{_T['notice'][0]}**\n{text}",
+        "i18n_content": {
+            "zh_cn": f"💡 **{_T['notice'][1]}**\n{text}",
+            "en_us": f"💡 **{_T['notice'][0]}**\n{text}",
+        },
+    }
+
+
 def _loading_element() -> dict:
     return {
         "tag": "markdown",
@@ -712,6 +748,7 @@ def build_streaming_card_v2(
     header_enabled: bool = False,
     text_size: str = "normal_v2",
     width_mode: str = "default",
+    notice: str | None = None,
 ) -> dict[str, Any]:
     """CardKit 2.0 流式占位卡片 — 工具面板合并到底部."""
     elements: list[dict] = []
@@ -720,6 +757,10 @@ def build_streaming_card_v2(
         elements.append(
             _build_reasoning_panel(" ", expanded=True, element_id=REASONING_ELEMENT_ID)
         )
+
+    if notice:
+        # 通知区：流式态只显示最新一条（Hermes 原文），随完成态卡片顶部完整呈现（#43）
+        elements.append(build_notice_element(notice))
 
     if show_streaming_element:
         elements.append(_streaming_element(text_size=text_size))
@@ -773,6 +814,7 @@ def build_complete_card(
     body_text_size: str = "normal_v2",
     show_tool_use: bool = True,
     width_mode: str = "default",
+    notices: list[str] | None = None,
 ) -> dict[str, Any]:
     """完成态流式卡片 — 推理+工具合并成底部统一面板，答案在上面.
 
@@ -942,7 +984,9 @@ def build_complete_card(
     }
     if summary:
         card["config"]["summary"] = {"content": summary}
-    card["body"] = {"elements": elements}
+    # 通知区放在正文顶部：Hermes 原文（忙碌回执 / 重定向 / 后台回执）不另发纯文本（#43）。
+    # 每条提示占一个元素（id 按序号派生），元素数计入 session.element_count。
+    card["body"] = {"elements": build_notice_elements(notices) + elements}
     if header_enabled:
         header_status = "error" if is_error else "stopped" if is_aborted else "completed"
         card["header"] = _build_header(header_status)

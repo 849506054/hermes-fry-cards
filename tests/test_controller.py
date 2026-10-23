@@ -1602,9 +1602,10 @@ class TestDoFlush:
         assert session.card_msg_id == "msg_next"
         assert session.split_index == 2
         assert session.split_disabled is False
-        # 新卡 element_count 重置为 loading 基线(1)。合并面板模式下工具面板是建卡骨架内
-        # 的共享元素，走 update 而非 add，不累计进 element_count（见 controller 注释）。
-        assert session.element_count == 1
+        # 新卡 element_count 重置为 loading 基线(1)，再计入工具面板的真实估算
+        # （共享面板只计一次增量；#41：面板元素必须进 element_count）。
+        assert session.element_count == 1 + session.tool_panel_estimate
+        assert session.tool_panel_estimate > 0
         assert [s.created for s in session.segment_state.segments] == [True, True, True]
 
     @pytest.mark.asyncio
@@ -1888,15 +1889,26 @@ class TestDoFlush:
         assert session.element_count == 0
 
         # 第二次 flush：合并面板模式下工具面板作为建卡骨架内共享元素被重建（走 update，
-        # 非 add），不累计进 element_count（见 controller 注释），因此 element_count 保持 0
-        # （无重复累加）。恢复的关键不变量：segment 重新标记为已创建、不脏，且无死循环重试。
+        # 非 add）。#41 后面板估算计入 element_count，且只计一次：等于 loading 基线 +
+        # 面板总估算，不随步骤增长重复累加。恢复的关键不变量：segment 重新标记为已创建、
+        # 不脏，且无死循环重试。
         await ctrl._do_flush(session)
 
         assert tool_seg.created is True
         assert tool_seg.dirty is False
-        assert session.element_count == 0  # 工具面板不计入 element_count（骨架内元素）
+        assert session.tool_panel_estimate > 0
+        assert session.element_count == session.tool_panel_estimate
+
         # 两次 batch_update 调用：第一次失败，第二次成功（非死循环重试 N 次）
         assert client.cardkit_batch_update.await_count == 2
+
+        # 再写入一个 step：面板增量只按新增步骤累加，不把整块面板重复计入。
+        client.cardkit_batch_update = AsyncMock(return_value=None)
+        session.tool_use.record_start("read", "file2")
+        session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
+        await ctrl._do_flush(session)
+        assert session.element_count == session.tool_panel_estimate
+        assert session.element_count > 0
 
     @pytest.mark.asyncio
     async def test_reasoning_finalized_snapshot(self) -> None:

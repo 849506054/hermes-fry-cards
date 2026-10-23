@@ -29,8 +29,17 @@ from hermes_fry_cards.patcher import (
     MK_FOLLOWUP_COMPLETE_END,
     MK_FOLLOWUP_DONE,
     MK_FOLLOWUP_RESULT,
+    OPTIONAL_HOOKS,
     Patcher,
 )
+
+
+def _marker_name(begin: str) -> str:
+    """``# HERMES_LARK_BUSY_ACK_BEGIN`` → ``busy_ack``（与 OPTIONAL_HOOKS 同键）."""
+    return begin.removeprefix("# HERMES_LARK_").removesuffix("_BEGIN").lower()
+
+
+OPTIONAL_MARKERS = OPTIONAL_HOOKS
 
 # Pinned release, not a moving branch: a main-branch fixture would silently drift.
 _HERMES_TAG = "v0.22.0"
@@ -40,23 +49,52 @@ _HERMES_HOME = Path.home() / ".hermes" / "hermes-agent" / "gateway"
 SAMPLES_DIR = Path(__file__).parent / "samples" / f"modular_{_HERMES_TAG}"
 
 
+_REQUIRED_SYMBOL = {
+    "run_turn.py": "_run_agent",
+    "run_turn_runner.py": "_run_agent",
+    "run_busy.py": "_handle_active_session_busy_message",
+}
+
+
+def _is_pristine(path: Path) -> bool:
+    """样本必须是上游原样：带注入 marker 或残缺的副本会让回归测试测到错的东西.
+
+    曾经出现过样本缓存被某次 tests 运行写入了 marker，导致 apply→remove 的对比
+    永远不相等（且把污染当成产品缺陷）。
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    required = _REQUIRED_SYMBOL.get(path.name)
+    if required is None:
+        return "HERMES_LARK" not in source
+    return "HERMES_LARK" not in source and required in source
+
+
 def _ensure_sample(name: str) -> Path:
     """Local install first, then a pinned-tag download, else skip."""
     local = _HERMES_HOME / name
-    if local.exists() and "_run_agent" in local.read_text(encoding="utf-8"):
+    if _is_pristine(local):
         return local
 
     SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
     dest = SAMPLES_DIR / name
-    if dest.exists() and dest.stat().st_size > 0:
+    if _is_pristine(dest):
         return dest
+    # 缓存被污染（例如旧版本测试直接对样本原地打过补丁）：丢掉重新下载
+    dest.unlink(missing_ok=True)
+    dest.with_name(dest.name + ".hermes_lark.bak").unlink(missing_ok=True)
 
     try:
         urllib.request.urlretrieve(f"{_BASE_URL}/{name}", dest)
     except Exception as exc:  # offline / rate-limited / moved file
         pytest.skip(f"{name} not available locally and download failed: {exc}")
-    if not dest.exists() or dest.stat().st_size == 0:
-        pytest.skip(f"{name} download returned empty file")
+    if not _is_pristine(dest):
+        dest.unlink(missing_ok=True)
+        pytest.skip(f"{name} download returned empty or already-patched file")
     return dest
 
 
@@ -64,6 +102,7 @@ def _ensure_sample(name: str) -> Path:
 def real_v022(tmp_path: Path) -> dict[str, Path]:
     turn_src = _ensure_sample("run_turn.py")
     runner_src = _ensure_sample("run_turn_runner.py")
+    busy_src = _ensure_sample("run_busy.py")
 
     # Only these two are stubbed — the patcher needs their entry points present, and
     # neither hosts an anchor under test.
@@ -79,13 +118,9 @@ def real_v022(tmp_path: Path) -> dict[str, Path]:
         "    source = event.source\n",
         encoding="utf-8",
     )
-    paths["busy"].write_text(
-        "async def stop(self, session_key):\n"
-        "    await self._interrupt_and_clear_session(\n"
-        "        session_key, invalidation_reason='stop_command',\n"
-        "    )\n",
-        encoding="utf-8",
-    )
+    # 真实模块：它同时承载 stop / 忙碌回执 / 重定向三个锚点（#43），
+    # 写成桩会让这些锚点漂移了也发现不了。
+    shutil.copy2(busy_src, paths["busy"])
     shutil.copy2(turn_src, paths["turn"])
     shutil.copy2(runner_src, paths["runner"])
     return paths
@@ -106,6 +141,9 @@ def test_apply_is_valid_python_and_installs_each_marker_once(real_v022: dict[str
 
     combined = "\n".join(p.read_text(encoding="utf-8") for p in real_v022.values())
     for begin, end in MARKERS:
+        if _marker_name(begin) in OPTIONAL_MARKERS:
+            # #43 可选锚点：0.22.0 样本的 busy 模块没有回执回调，跳过注入
+            continue
         assert combined.count(begin) == 1, f"{begin} installed {combined.count(begin)}x"
         assert combined.count(end) == 1, f"{end} installed {combined.count(end)}x"
 
@@ -174,3 +212,28 @@ def test_apply_is_idempotent_and_remove_restores(real_v022: dict[str, Path]) -> 
 
     patcher.remove()
     assert originals == {k: p.read_text(encoding="utf-8") for k, p in real_v022.items()}
+
+
+def test_busy_notice_anchors_on_real_busy_module(real_v022: dict[str, Path]) -> None:
+    """#43: 真实 run_busy.py 上忙碌回执 / 重定向锚点落在文案合成之后、发送之前。"""
+    patcher = Patcher(modular_paths=real_v022)
+    patcher.apply()
+    lines = real_v022["busy"].read_text(encoding="utf-8").splitlines()
+
+    from hermes_fry_cards.patcher import MK_BUSY_ACK, MK_REDIRECT
+
+    composed = next(
+        i for i, line in enumerate(lines)
+        if line.strip().startswith("message = self._compose_busy_ack_message(")
+    )
+    redirect = next(i for i, line in enumerate(lines) if MK_REDIRECT in line)
+    ack = next(i for i, line in enumerate(lines) if MK_BUSY_ACK in line)
+    send = next(i for i, line in enumerate(lines) if "_send_busy_ack_reply(event, adapter, message)" in line
+                and not line.strip().startswith("#"))
+
+    assert composed < redirect, "redirect hook must see the composed message"
+    assert redirect < ack, "redirect takes precedence: it runs first and returns nothing"
+    assert ack < send, "notice must land before the placeholder receipt is sent"
+    body = "\n".join(lines[redirect:ack])
+    assert "redirected=('redirected' in locals() and bool(redirected))" in body
+    assert "injected hook failed: redirect" in body
