@@ -25,12 +25,20 @@ import pytest
 
 from hermes_fry_cards.patcher import (
     MARKERS,
+    OPTIONAL_HOOKS,
     MK_FOLLOWUP_COMPLETE,
     MK_FOLLOWUP_COMPLETE_END,
     MK_FOLLOWUP_DONE,
     MK_FOLLOWUP_RESULT,
     Patcher,
 )
+
+def _marker_name(begin: str) -> str:
+    """``# HERMES_LARK_BUSY_ACK_BEGIN`` → ``busy_ack``（与 OPTIONAL_HOOKS 同键）."""
+    return begin.removeprefix("# HERMES_LARK_").removesuffix("_BEGIN").lower()
+
+
+OPTIONAL_MARKERS = OPTIONAL_HOOKS
 
 # Pinned release, not a moving branch: a main-branch fixture would silently drift.
 _HERMES_TAG = "v0.22.0"
@@ -106,6 +114,9 @@ def test_apply_is_valid_python_and_installs_each_marker_once(real_v022: dict[str
 
     combined = "\n".join(p.read_text(encoding="utf-8") for p in real_v022.values())
     for begin, end in MARKERS:
+        if _marker_name(begin) in OPTIONAL_MARKERS:
+            # #43 可选锚点：0.22.0 样本的 busy 模块没有回执回调，跳过注入
+            continue
         assert combined.count(begin) == 1, f"{begin} installed {combined.count(begin)}x"
         assert combined.count(end) == 1, f"{end} installed {combined.count(end)}x"
 

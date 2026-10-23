@@ -68,6 +68,20 @@ def _clean_delivered_text(content: str) -> str:
     return stripped if stripped.strip() else content
 
 
+def _latest_notice(session: CardSession) -> str | None:
+    """流式态只展示最新一条提示（新卡建立时带上，避免重定向后新卡看不到提示）."""
+    notices = _session_notices(session)
+    return notices[-1] if notices else None
+
+
+def _session_notices(session: CardSession) -> list[str]:
+    """完成态卡片的通知区文案（Hermes 原文，按到达顺序，去重）."""
+    segment_state = session.segment_state
+    if segment_state is None:
+        return []
+    return [slot.text for slot in segment_state.notices]
+
+
 async def _resolve_answer_images(
     segments: list[Segment],
     resolver: ImageResolver,
@@ -141,6 +155,7 @@ class StreamingController:
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
+                notice=_latest_notice(session),
             )
             card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -767,6 +782,7 @@ class StreamingController:
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
+                notice=_latest_notice(session),
             )
             new_card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -981,6 +997,7 @@ class StreamingController:
             body_text_size=self._cfg.body_text_size,
             show_tool_use=self._cfg.show_tool_use,
             width_mode=self._cfg.width_mode,
+            notices=_session_notices(session),
         )
 
         streaming_closed = False

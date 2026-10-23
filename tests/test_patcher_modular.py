@@ -86,6 +86,17 @@ MODULAR_SOURCES = {
                 session_key,
                 invalidation_reason="stop_command",
             )
+
+        async def _handle_active_session_busy_message(self, event, session_key):
+            message = "Queued for the next turn"
+            try:
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=message,
+                )
+            except Exception:
+                pass
+            return True
     """,
 }
 
@@ -201,6 +212,9 @@ def test_modular_022_apply_installs_tool_hook_in_progress_module(modular_022_cop
     assert "HERMES_LARK_TOOL_BEGIN" not in contents["runner"]
     assert "HERMES_LARK_NORMALIZE_BEGIN" in contents["inbound"]
     assert "HERMES_LARK_STOP_BEGIN" in contents["busy"]
+    # #43：忙碌回执入卡 / 重定向换卡（可选锚点）
+    assert "HERMES_LARK_BUSY_ACK_BEGIN" in contents["busy"]
+    assert "HERMES_LARK_REDIRECT_BEGIN" in contents["busy"]
     for begin, _end in [*MARKERS, (MK_GROUP_BOUNDARY, MK_GROUP_BOUNDARY_END)]:
         total = sum(content.count(begin) for content in contents.values())
         assert total == 1, f"{begin} installed {total}x"
@@ -297,6 +311,9 @@ def test_modular_marker_distribution(modular_copy: dict[str, Path]) -> None:
     for marker in ("TOOL", "ANSWER", "THINKING", "REASONING", "BACKGROUND_REVIEW", "CLARIFY"):
         assert f"HERMES_LARK_{marker}_BEGIN" in contents["runner"]
     assert "HERMES_LARK_STOP_BEGIN" in contents["busy"]
+    # #43：忙碌回执入卡 / 重定向换卡（可选锚点）
+    assert "HERMES_LARK_BUSY_ACK_BEGIN" in contents["busy"]
+    assert "HERMES_LARK_REDIRECT_BEGIN" in contents["busy"]
 
 
 def test_modular_followup_done_seals_card_before_merge(modular_copy: dict[str, Path]) -> None:
@@ -370,3 +387,59 @@ def test_modular_cron_apply_is_idempotent_and_reversible(tmp_path: Path) -> None
     assert copied.read_text(encoding="utf-8") == first
     patcher.remove()
     assert copied.read_text(encoding="utf-8") == original
+
+
+def test_busy_ack_hook_merges_receipt_and_suppresses_plain_text(modular_copy: dict[str, Path]) -> None:
+    """#43: 忙碌回执写入当前卡并吞掉 Hermes 纯文本（返回 True 即消费）。"""
+    patcher = Patcher(modular_paths=modular_copy)
+    patcher.apply()
+    busy = modular_copy["busy"].read_text(encoding="utf-8")
+
+    begin = busy.index("HERMES_LARK_BUSY_ACK_BEGIN")
+    end = busy.index("HERMES_LARK_BUSY_ACK_END")
+    block = busy[begin:end]
+    assert "from hermes_fry_cards.patch import on_busy_ack" in block
+    assert "text=message" in block
+    assert "return True" in block
+    assert "injected hook failed: busy_ack" in block
+    # 注入点落在整段回执发送语句之后（多行调用不会被截断）
+    assert busy.index("HERMES_LARK_BUSY_ACK_BEGIN") > busy.index("_send_with_retry(")
+
+
+def test_redirect_hook_rebuilds_card_before_notice(modular_copy: dict[str, Path]) -> None:
+    """#43: 重定向先经 on_interrupted 换卡，再写提示。"""
+    patcher = Patcher(modular_paths=modular_copy)
+    patcher.apply()
+    busy = modular_copy["busy"].read_text(encoding="utf-8")
+
+    block = busy[busy.index("HERMES_LARK_REDIRECT_BEGIN"):busy.index("HERMES_LARK_REDIRECT_END")]
+    assert "from hermes_fry_cards.patch import on_turn_redirected" in block
+    assert "new_message_id=event.message_id" in block
+    assert "injected hook failed: redirect" in block
+
+
+def test_optional_hooks_are_skipped_when_anchor_missing(tmp_path: Path) -> None:
+    """#43: 旧版 Hermes 的 busy 模块没有回执回调时，跳过注入而不是让安装失败。"""
+    paths = {}
+    for name, content in MODULAR_SOURCES.items():
+        if name == "busy":
+            content = """
+        async def stop(self, session_key):
+            await self._interrupt_and_clear_session(
+                session_key,
+                invalidation_reason="stop_command",
+            )
+    """
+        destination = tmp_path / f"run_{name}.py"
+        destination.write_text(textwrap.dedent(content), encoding="utf-8")
+        paths[name] = destination
+
+    patcher = Patcher(modular_paths=paths)
+    patcher.verify_target()
+    patcher.apply()
+
+    busy = paths["busy"].read_text(encoding="utf-8")
+    assert "HERMES_LARK_STOP_BEGIN" in busy
+    assert "HERMES_LARK_BUSY_ACK_BEGIN" not in busy
+    assert "HERMES_LARK_REDIRECT_BEGIN" not in busy
+    assert patcher.is_fully_patched()

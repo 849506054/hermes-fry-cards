@@ -19,6 +19,7 @@ import pytest
 
 from hermes_fry_cards.patcher import (
     MARKERS,
+    OPTIONAL_HOOKS,
     MK_CRON_DELIVER,
     MK_CRON_DELIVER_END,
     CronPatcher,
@@ -194,6 +195,14 @@ def _build_tool_hook_runner(*, use_turn_context: bool):
     )
     exec(compile(source, "<tool-hook-test>", "exec"), namespace)
     return lambda _ctx: namespace["callback"]
+
+
+def _marker_name(begin: str) -> str:
+    """``# HERMES_LARK_BUSY_ACK_BEGIN`` → ``busy_ack``（与 OPTIONAL_HOOKS 同键）."""
+    return begin.removeprefix("# HERMES_LARK_").removesuffix("_BEGIN").lower()
+
+
+OPTIONAL_MARKERS = OPTIONAL_HOOKS
 
 
 class TestVerify:
@@ -537,6 +546,9 @@ class TestApplyRemove:
         patcher.apply()
         content = run_copy.read_text(encoding="utf-8")
         for begin, end in MARKERS:
+            if _marker_name(begin) in OPTIONAL_MARKERS:
+                # #43 可选锚点：该 layout 没有对应回调时跳过注入
+                continue
             assert begin in content, f"Missing marker: {begin}"
             assert end in content, f"Missing marker: {end}"
         assert content.count("# HERMES_LARK_ANSWER_BEGIN") == expected_answer_hooks

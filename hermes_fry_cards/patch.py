@@ -504,6 +504,61 @@ def on_message_interrupted(
     )
 
 
+def on_busy_ack(
+    *,
+    message_id: str | None = None,
+    session_key: str | None = None,
+    text: str = "",
+) -> bool:
+    """[注入点 12] 忙碌回执 — 写进当前卡的通知槽并吞掉纯文本（#43）.
+
+    ``text`` 是 Hermes 自己合成的那条文案，插件原样落卡，不另写。
+    返回 True 时注入点应跳过 Hermes 的纯文本发送。
+    """
+    try:
+        ctrl = get_controller()
+        if not ctrl.enabled:
+            return False
+        return bool(ctrl.on_busy_ack(text=text, message_id=message_id, session_key=session_key))
+    except Exception as exc:
+        _logger.warning("on_busy_ack error: %s", exc, exc_info=True)
+        return False
+
+
+def on_turn_redirected(
+    *,
+    old_message_id: str,
+    new_message_id: str,
+    chat_id: str,
+    chat_type: str = "",
+    anchor_id: str | None = None,
+    session_key: str | None = None,
+    text: str = "",
+) -> None:
+    """[注入点 13] 回合被新消息重定向 — 旧卡收尾、新卡接手并带上提示（#43）.
+
+    ``text`` 是 Hermes 的重定向提示原文。新旧卡的接续沿用现有
+    ``on_interrupted`` + ``_interrupt_map``（完成回调按映射落到新卡）；
+    这里额外把提示写进新卡通知槽。
+    """
+    try:
+        ctrl = get_controller()
+        if not ctrl.enabled:
+            return
+        ctrl.on_interrupted(
+            old_message_id=old_message_id,
+            new_message_id=new_message_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            anchor_id=anchor_id,
+            session_key=session_key,
+        )
+        if text.strip():
+            ctrl.on_redirected_notice(text=text, message_id=new_message_id, session_key=session_key)
+    except Exception as exc:
+        _logger.warning("on_turn_redirected error: %s", exc, exc_info=True)
+
+
 def on_cron_deliver(
     *,
     chat_id: str,

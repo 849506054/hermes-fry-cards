@@ -35,6 +35,8 @@ class StreamCardController(StreamingController):
         self._sessions: dict[str, CardSession] = {}
         self._session_keys: dict[str, CardSession] = {}
         self._interrupt_map: dict[str, str] = {}
+        # #43：重定向提示早于新卡登记时按 session_key 暂存，注册时补写
+        self._pending_notices: dict[str, list[str]] = {}
         self._initialized = False
         self._init_lock = threading.Lock()
         self._session_ttl = self._cfg.card_duration_sec
@@ -152,6 +154,88 @@ class StreamCardController(StreamingController):
         session = self._resolve_session(message_id, session_key)
         return session.message_id if session is not None else None
 
+    def _notice_session(
+        self,
+        message_id: str | None,
+        session_key: str | None = None,
+    ) -> CardSession | None:
+        """状态提示（忙碌回执 / 重定向 / 后台回执）的卡片归属.
+
+        #43：Hermes 自己在回合进行中合成这些文案。提示属于「当前正在跑的那张卡」：
+        - 有 message_id 且能解析到会话 → 就是它；
+        - 只有 session_key → 按会话键取当前活跃卡；
+        - 什么都没有 → 取唯一活跃卡（单用户 DM 的常见形态）。
+        多张活跃卡且无标识时返回 None（宁可走 Hermes 原发送，也不误写别人的卡）。
+        """
+        session = self._resolve_session(message_id, session_key)
+        if session is not None:
+            return session
+        if message_id or session_key:
+            return None
+        live = {id(s): s for s in list(self._sessions.values()) if not s.state.is_terminal}
+        if len(live) == 1:
+            return next(iter(live.values()))
+        return None
+
+    def on_busy_ack(
+        self,
+        *,
+        text: str,
+        message_id: str | None = None,
+        session_key: str | None = None,
+    ) -> bool:
+        """忙碌回执 → 写进当前卡的通知槽并吞掉纯文本（#43）.
+
+        返回 True 表示提示已合并进卡片，Hermes 不应再发纯文本。
+        文案就是 Hermes 传进来的原文，插件不另写。
+        """
+        if not self.enabled or not text.strip():
+            return False
+        session = self._notice_session(message_id, session_key)
+        if session is None or session.segment_state is None:
+            return False
+        session.segment_state.add_notice(text)
+        self._schedule_flush(session)
+        _logger.info(
+            "busy_receipt_merged: incoming=%s owner=%s key=%s",
+            message_id or "",
+            session.message_id,
+            session_key or "",
+        )
+        return True
+
+    def on_redirected_notice(
+        self,
+        *,
+        text: str,
+        message_id: str | None = None,
+        session_key: str | None = None,
+    ) -> bool:
+        """重定向提示 → 写进 redirect 后的新卡（#43）.
+
+        ``on_interrupted`` 已把新消息建卡并按 ``_interrupt_map`` 接续完成；
+        这里只负责把 Hermes 的重定向原文落到新卡通知槽，旧卡已收尾。
+        新卡尚未登记时按 ``session_key`` 暂存，由 ``_register_session`` 补写。
+        """
+        if not self.enabled or not text.strip():
+            return False
+        session = self._notice_session(message_id, session_key)
+        if session is None or session.segment_state is None:
+            if session_key:
+                self._pending_notices.setdefault(session_key, []).append(text.strip())
+                _logger.info("redirect_notice_pending: key=%s", session_key)
+                return True
+            return False
+        session.segment_state.add_notice(text)
+        self._schedule_flush(session)
+        _logger.info(
+            "redirect_notice_merged: incoming=%s owner=%s key=%s",
+            message_id or "",
+            session.message_id,
+            session_key or "",
+        )
+        return True
+
     def _fire_and_forget(
         self,
         coro: Coroutine[Any, Any, Any],
@@ -177,7 +261,22 @@ class StreamCardController(StreamingController):
         anchor_id: str | None = None,
         session_key: str | None = None,
     ) -> None:
-        """统一 session 注册入口：维护 _sessions（message_id + anchor 别名）与 _session_keys."""
+        """统一 session 注册入口：维护 _sessions（message_id + anchor 别名）与 _session_keys.
+
+        #43：同一 session_key 下出现新会话即「重定向换卡」——新卡接管该键，
+        旧卡收尾；否则 session_key 仍指向旧卡，提示与完成回调都会落到已封的卡上。
+        """
+        previous = self._session_keys.get(session_key) if session_key else None
+        if previous is not None and previous is not session and not previous.state.is_terminal:
+            previous.state = SessionState.ABORTED
+            previous.flush.mark_completed()
+            _logger.info(
+                "session_key_takeover: key=%s old=%s new=%s",
+                session_key,
+                previous.message_id[:12],
+                session.message_id[:12],
+            )
+            self._complete_session(previous)
         self._sessions[session.message_id] = session
         if anchor_id and anchor_id != session.message_id:
             session.anchor_id = anchor_id
@@ -185,6 +284,11 @@ class StreamCardController(StreamingController):
         if session_key:
             session.session_key = session_key
             self._session_keys[session_key] = session
+            # 提示先于新卡登记到达（重定向开口与建卡并发）时，注册成功这里补写
+            pending = self._pending_notices.pop(session_key, [])
+            if session.segment_state is not None:
+                for text in pending:
+                    session.segment_state.add_notice(text)
 
     def _chat_type_allowed(self, chat_type: str) -> bool:
         """聊天类型是否允许发流式卡片.
@@ -666,9 +770,20 @@ class StreamCardController(StreamingController):
         content: str,
         reply_to_message_id: str | None = None,
     ) -> bool:
-        """Background 任务完成推送 — 包装为静态卡片发送，成功返回 True."""
+        """Background 任务完成推送 — 包装为静态卡片发送，成功返回 True.
+
+        #43：若该后台任务属于仍活跃的卡片会话（按任务自己的回复标识
+        ``reply_to_message_id`` 解析），不再另发一张静态卡，改为把回执写进
+        当前卡的通知槽，随完成态卡片一起呈现；否则保持原有静态卡投递。
+        """
         if not self.enabled or not content or not chat_id:
             return False
+        session = self._notice_session(reply_to_message_id)
+        if session is not None and session.chat_id == chat_id and session.segment_state is not None:
+            session.segment_state.add_notice(content)
+            self._schedule_flush(session)
+            _logger.info("background_receipt_merged: id=%s chat=%s", session.message_id, chat_id[:12])
+            return True
         try:
             await self._do_background_deliver(
                 chat_id,
