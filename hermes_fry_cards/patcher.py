@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import contextlib
-from collections.abc import Callable
 import importlib.util
 import logging
 import os
@@ -12,6 +11,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from .config import hermes_home
@@ -298,7 +298,7 @@ def _busy_ack_hook(indent: str) -> str:
 
 
 def _redirect_hook(indent: str) -> str:
-    """重定向换卡：旧卡收尾、新卡接手，提示随新卡出现（#43）."""
+    """忙碌提示入卡：重定向时旧卡收尾、新卡接手，其余模式并入当前卡（#43）."""
     return _make_hook(
         indent,
         MK_REDIRECT,
@@ -313,6 +313,8 @@ def _redirect_hook(indent: str) -> str:
             "            chat_type=getattr(event.source, 'chat_type', '') or '',",
             "            session_key=session_key,",
             "            anchor_id=self._reply_anchor_for_event(event),",
+            "            redirected=('redirected' in locals() and bool(redirected)),",
+            "            text=message,",
             "        )",
             *_hook_exception_lines("redirect"),
         ],
@@ -1621,24 +1623,75 @@ def _find_clarify_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | 
 def _find_busy_ack_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
     """忙碌回执发送点：只允许在 ``_handle_active_session_busy_message`` 内命中.
 
-    全局直接搜 ``await adapter._send_with_retry(`` 会撞上同一文件里其它发送点，
-    因此先按函数名定位（AST），再在函数行范围内做文本匹配。
+    优先 ``await self._send_busy_ack_reply(event, adapter, message)``（0.22.0 起：
+    回执文案与重定向判定都已就绪，且只会执行一次）；旧版没有该调用时退回
+    ``_send_with_retry``。全局直接搜会撞上同一文件里其它发送点，因此先按函数名
+    定位（AST），再在函数行范围内做文本匹配。
     """
-    return _find_call_in_function(
-        tree, lines, "_handle_active_session_busy_message", "_send_with_retry(",
-    )
+    for needle in ("_send_busy_ack_reply(", "_send_with_retry("):
+        hit = _find_call_line_in_function(
+            tree, lines, "_handle_active_session_busy_message", needle,
+        )
+        if hit is None:
+            continue
+        # 发送可能被 try 包着：插入点取「调用之前、try 之内」，
+        # 落到 except 之后会插进异常处理块，语法直接坏掉。
+        idx = _insert_before_in_try(tree, hit[0])
+        return idx, _safe_indent(lines, idx) or hit[1]
+    return None
 
 
 def _find_redirect_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
-    """重定向换卡点：busy 处理里对运行中 agent 调 ``interrupt()`` 的那行之后."""
-    # 裸 "agent.interrupt(" 也匹配 "running_agent.interrupt("，check 后即可覆盖两种写法。
-    hit = _find_call_in_function(
-        tree, lines, "_handle_active_session_busy_message", "agent.interrupt(", after=True,
-    )
-    if hit is not None:
-        return hit
-    # 没有 interrupt 形态的 Hermes：退到忙碌回执发送点之后，换卡位置一致。
-    return _find_busy_ack_site(tree, lines)
+    """忙碌提示入卡点：回执文案合成之后、发送之前.
+
+    0.22.0 起回执经 ``_send_busy_ack_reply`` 发出；旧版直接 ``_send_with_retry``。
+    两种都按函数内匹配，不跨函数串到 ``_send_busy_reply`` 的发送上。
+    发送可能被 ``try`` 包着，插入点取「调用之前、``try`` 之内」，不能落到
+    ``except`` 之后（那样会插入到异常处理块里，语法直接坏掉）。
+    """
+    for needle in ("_send_busy_ack_reply(", "_send_with_retry("):
+        hit = _find_call_line_in_function(
+            tree, lines, "_handle_active_session_busy_message", needle,
+        )
+        if hit is None:
+            continue
+        idx = _insert_before_in_try(tree, hit[0])
+        return idx, _safe_indent(lines, idx) or hit[1]
+    return None
+
+
+def _find_call_line_in_function(
+    tree: ast.Module,
+    lines: list[str],
+    func_name: str,
+    needle: str,
+) -> tuple[int, str] | None:
+    """在指定函数的行范围内找一条命中行，返回 ``(行下标, 缩进)``."""
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != func_name:
+            continue
+        start = node.lineno - 1
+        end = min(node.end_lineno or node.lineno, len(lines))
+        for i in range(start, end):
+            if needle in lines[i]:
+                return i, _safe_indent(lines, i)
+    return None
+
+
+def _insert_before_in_try(tree: ast.Module, lineno: int) -> int:
+    """行 ``lineno``（0-based）是 ``try`` 里一条语句的首行时，返回该语句在 ``try``
+    体内的首行下标（即 ``try:`` 之后、``else``/``except`` 之前的插入点）；
+    否则原样返回 ``lineno``.
+    """
+    best: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        first = node.body[0].lineno - 1
+        last = (node.body[-1].end_lineno or node.body[-1].lineno) - 1
+        if first <= lineno <= last:
+            best.append(first)
+    return min(best) if best else lineno
 
 
 def _find_call_in_function(
@@ -1675,16 +1728,29 @@ def _find_call_in_function(
 
 
 def _statement_end_after(tree: ast.Module, lineno: int) -> int:
-    """返回第 ``lineno`` 行（1-based）所在语句结束后的行下标（0-based 插入点）."""
-    last_end = lineno
+    """返回第 ``lineno`` 行（1-based）所在**最内层**语句结束后的行下标（0-based 插入点）.
+
+    只取最内层：外层 ``try`` / ``if`` / 函数体同样覆盖这一行，取最外层会把插入点
+    推到函数末尾或更后面（实测 0.22.0 的 busy 处理里直接落到了函数外）。
+    """
+    best: ast.stmt | None = None
     for node in ast.walk(tree):
-        if not isinstance(node, ast.stmt) or node is tree:
+        if not isinstance(node, ast.stmt):
             continue
         node_lineno = getattr(node, "lineno", 0)
         node_end = getattr(node, "end_lineno", 0) or node_lineno
-        if node_lineno <= lineno <= node_end:
-            last_end = max(last_end, node_end)
-    return last_end
+        if not (node_lineno <= lineno <= node_end):
+            continue
+        if best is None:
+            best = node
+            continue
+        best_end = getattr(best, "end_lineno", 0) or best.lineno
+        best_span = best_end - best.lineno
+        if (node_end - node_lineno) < best_span:
+            best = node
+    if best is None:
+        return lineno
+    return best.end_lineno or (best.lineno - 1)
 
 
 def _safe_indent(lines: list[str], lineno: int) -> str:

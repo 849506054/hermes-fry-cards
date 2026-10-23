@@ -533,28 +533,35 @@ def on_turn_redirected(
     chat_type: str = "",
     anchor_id: str | None = None,
     session_key: str | None = None,
+    redirected: bool = False,
     text: str = "",
 ) -> None:
-    """[注入点 13] 回合被新消息重定向 — 旧卡收尾、新卡接手并带上提示（#43）.
+    """[注入点 13] 忙碌提示入卡 — 重定向时换卡，其余模式并入当前卡（#43）.
 
-    ``text`` 是 Hermes 的重定向提示原文。新旧卡的接续沿用现有
-    ``on_interrupted`` + ``_interrupt_map``（完成回调按映射落到新卡）；
-    这里额外把提示写进新卡通知槽。
+    ``text`` 是 Hermes 合成的提示原文（重定向 / queue / steer / interrupt 共用
+    一条回执通道）。只有在 ``redirected`` 为真时才走换卡：Hermes 已把回复
+    重新锚定到新消息，卡片跟着旧卡收尾、新卡接手；新旧卡接续沿用现有
+    ``on_interrupted`` + ``_interrupt_map``，完成回调仍按映射落到新卡。
+    其余模式只把提示写进当前卡的通知槽。
     """
     try:
         ctrl = get_controller()
         if not ctrl.enabled:
             return
-        ctrl.on_interrupted(
-            old_message_id=old_message_id,
-            new_message_id=new_message_id,
-            chat_id=chat_id,
-            chat_type=chat_type,
-            anchor_id=anchor_id,
-            session_key=session_key,
-        )
+        if redirected:
+            ctrl.on_interrupted(
+                old_message_id=old_message_id,
+                new_message_id=new_message_id,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                anchor_id=anchor_id,
+                session_key=session_key,
+            )
+            if text.strip():
+                ctrl.on_redirected_notice(text=text, message_id=new_message_id, session_key=session_key)
+            return
         if text.strip():
-            ctrl.on_redirected_notice(text=text, message_id=new_message_id, session_key=session_key)
+            ctrl.on_busy_ack(text=text, message_id=old_message_id or None, session_key=session_key)
     except Exception as exc:
         _logger.warning("on_turn_redirected error: %s", exc, exc_info=True)
 

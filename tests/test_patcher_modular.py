@@ -402,8 +402,10 @@ def test_busy_ack_hook_merges_receipt_and_suppresses_plain_text(modular_copy: di
     assert "text=message" in block
     assert "return True" in block
     assert "injected hook failed: busy_ack" in block
-    # 注入点落在整段回执发送语句之后（多行调用不会被截断）
-    assert busy.index("HERMES_LARK_BUSY_ACK_BEGIN") > busy.index("_send_with_retry(")
+    # 注入点落在回执发送语句之前（占位回执前的逻辑），且仍在 try 体内
+    ack = busy.index("HERMES_LARK_BUSY_ACK_BEGIN")
+    assert ack < busy.index("_send_with_retry(")
+    assert busy.index("try:", busy.index("async def _handle_active_session_busy_message")) < ack
 
 
 def test_redirect_hook_rebuilds_card_before_notice(modular_copy: dict[str, Path]) -> None:

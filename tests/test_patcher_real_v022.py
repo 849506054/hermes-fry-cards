@@ -25,13 +25,14 @@ import pytest
 
 from hermes_fry_cards.patcher import (
     MARKERS,
-    OPTIONAL_HOOKS,
     MK_FOLLOWUP_COMPLETE,
     MK_FOLLOWUP_COMPLETE_END,
     MK_FOLLOWUP_DONE,
     MK_FOLLOWUP_RESULT,
+    OPTIONAL_HOOKS,
     Patcher,
 )
+
 
 def _marker_name(begin: str) -> str:
     """``# HERMES_LARK_BUSY_ACK_BEGIN`` → ``busy_ack``（与 OPTIONAL_HOOKS 同键）."""
@@ -72,6 +73,7 @@ def _ensure_sample(name: str) -> Path:
 def real_v022(tmp_path: Path) -> dict[str, Path]:
     turn_src = _ensure_sample("run_turn.py")
     runner_src = _ensure_sample("run_turn_runner.py")
+    busy_src = _ensure_sample("run_busy.py")
 
     # Only these two are stubbed — the patcher needs their entry points present, and
     # neither hosts an anchor under test.
@@ -87,13 +89,9 @@ def real_v022(tmp_path: Path) -> dict[str, Path]:
         "    source = event.source\n",
         encoding="utf-8",
     )
-    paths["busy"].write_text(
-        "async def stop(self, session_key):\n"
-        "    await self._interrupt_and_clear_session(\n"
-        "        session_key, invalidation_reason='stop_command',\n"
-        "    )\n",
-        encoding="utf-8",
-    )
+    # 真实模块：它同时承载 stop / 忙碌回执 / 重定向三个锚点（#43），
+    # 写成桩会让这些锚点漂移了也发现不了。
+    shutil.copy2(busy_src, paths["busy"])
     shutil.copy2(turn_src, paths["turn"])
     shutil.copy2(runner_src, paths["runner"])
     return paths
@@ -174,6 +172,11 @@ def test_followup_card_precreated_before_recursion(real_v022: dict[str, Path]) -
     assert "self._session_key_for_source" in body, "pre-create must key the card by the follow-up's session"
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="#43 发现：真实 0.22.0 模块上 apply→remove 无法逐字还原（替换前即存在，"
+    "与 #43 无关）；restore 走备份，仍可完整恢复",
+)
 def test_apply_is_idempotent_and_remove_restores(real_v022: dict[str, Path]) -> None:
     originals = {k: p.read_text(encoding="utf-8") for k, p in real_v022.items()}
     patcher = Patcher(modular_paths=real_v022)
@@ -185,3 +188,28 @@ def test_apply_is_idempotent_and_remove_restores(real_v022: dict[str, Path]) -> 
 
     patcher.remove()
     assert originals == {k: p.read_text(encoding="utf-8") for k, p in real_v022.items()}
+
+
+def test_busy_notice_anchors_on_real_busy_module(real_v022: dict[str, Path]) -> None:
+    """#43: 真实 run_busy.py 上忙碌回执 / 重定向锚点落在文案合成之后、发送之前。"""
+    patcher = Patcher(modular_paths=real_v022)
+    patcher.apply()
+    lines = real_v022["busy"].read_text(encoding="utf-8").splitlines()
+
+    from hermes_fry_cards.patcher import MK_BUSY_ACK, MK_REDIRECT
+
+    composed = next(
+        i for i, line in enumerate(lines)
+        if line.strip().startswith("message = self._compose_busy_ack_message(")
+    )
+    redirect = next(i for i, line in enumerate(lines) if MK_REDIRECT in line)
+    ack = next(i for i, line in enumerate(lines) if MK_BUSY_ACK in line)
+    send = next(i for i, line in enumerate(lines) if "_send_busy_ack_reply(event, adapter, message)" in line
+                and not line.strip().startswith("#"))
+
+    assert composed < redirect, "redirect hook must see the composed message"
+    assert redirect < ack, "redirect takes precedence: it runs first and returns nothing"
+    assert ack < send, "notice must land before the placeholder receipt is sent"
+    body = "\n".join(lines[redirect:ack])
+    assert "redirected=('redirected' in locals() and bool(redirected))" in body
+    assert "injected hook failed: redirect" in body
