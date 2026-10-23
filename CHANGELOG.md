@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.6] - 2026-10-23
+## [0.5.7] - 2026-10-23
 
 修复工具面板元素记账（#41），长工具轮次不再静默撞 200 元素上限后整轮回落纯文本；忙碌回执 / 重定向 / 后台回执改为写进当前卡片（#43）。
 
@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   改为按序号派生 `fry_notice_1`、`fry_notice_2`。
 - **通知区元素未计入 `element_count`**（#43）：接近 300305 时会少算一格；建卡基线与完成态重建
   都按提示条数同步记账。
+- **网关重启后遗留卡片一直转圈**（#43）：活跃卡登记到 profile 的 `state/fry-cards-live.json`，
+  进程启动时把「登记过但不属于本进程」的卡封成「已中断」；单条登记连续 3 个进程封不掉即出列。
+- **Hermes 0.22.3+ 装不上 `BUSY_ACK` / `REDIRECT`**（#43）：回执发送迁到了
+  `_busy_interrupt_and_ack`，锚点按 `_handle_active_session_busy_message` → `_busy_interrupt_and_ack`
+  顺序查找；此前可选锚点缺失会静默跳过，两个 marker 一个都没注入。
 
 ### 测试 / Tests
 - 新增 `tests/test_element_budget.py`（#41 状态级回归）与 `tests/test_notice_in_card.py`（#43）。

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import threading
 import time
+import uuid
 from collections.abc import Callable, Coroutine, Iterator
 from concurrent.futures import Future as ConcurrentFuture
 from contextlib import contextmanager
@@ -24,6 +27,31 @@ from .streaming.unavailable_guard import extract_api_code, is_terminal_api_code
 
 _logger = logging.getLogger("hermes_fry_cards")
 _CARD_CREATION_WAIT_SEC = 10.0
+# 活跃卡登记（#43 网关重启封卡）：进程重启后把遗留卡封成「已中断」。
+# 单条登记连续 N 个进程都封不掉就出列，避免无效消息 id 反复请求飞书。
+_STALE_SWEEP_MAX_ATTEMPTS = 2
+_LIVE_CARD_MAX_CLOSE_ATTEMPTS = 3
+
+
+def _interrupted_card() -> dict[str, Any]:
+    """网关重启后给遗留卡用的静态「已中断」卡片（文案由插件提供，中英双语）."""
+    return {
+        "schema": "2.0",
+        "config": {"update_multi": True, "locales": ["zh_cn", "en_us"]},
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": _NOTICE_RESTART_EN,
+                    "i18n_content": {"zh_cn": _NOTICE_RESTART_ZH, "en_us": _NOTICE_RESTART_EN},
+                }
+            ]
+        },
+    }
+
+
+_NOTICE_RESTART_EN = "⚠️ The gateway restarted during this turn; this card stopped updating."
+_NOTICE_RESTART_ZH = "⚠️ 网关在本轮处理中重启，卡片已停止更新。"
 
 
 class StreamCardController(StreamingController):
@@ -45,6 +73,11 @@ class StreamCardController(StreamingController):
         self._text_fallback_needed: set[str] = set()
         self._text_fallback_aliases: dict[str, set[str]] = {}
         self._unscoped_enabled: bool | None = None
+        # #43 网关重启封卡：活跃卡登记 + 启动清扫
+        self._live_cards_lock = threading.RLock()
+        self._swept_stale_cards = False
+        self._stale_sweep_attempts = 0
+        self._stale_sweep_lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
@@ -106,6 +139,147 @@ class StreamCardController(StreamingController):
                     )
                 )
             self._initialized = True
+        self._maybe_sweep_stale_cards()
+
+    # ── 网关重启封卡（#43） ─────────────────────────────────────────────
+    # 跨进程登记放在 profile 的 state 下：进程启动时读一次，凡是登记过、但本进程
+    # 没有对应会话的卡，都说明上一轮进程没来得及收尾（重启/崩溃），统一封成
+    # 「已中断」，否则用户会一直看到一张转圈的卡。
+
+    def _live_cards_path(self) -> Path:
+        return self._profile_home / "state" / "fry-cards-live.json"
+
+    def _read_live_cards(self) -> dict[str, Any]:
+        try:
+            data = json.loads(self._live_cards_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            _logger.warning("live card registry unreadable, treating as empty", exc_info=True)
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_live_cards(self, data: dict[str, Any]) -> None:
+        path = self._live_cards_path()
+        if not data:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _track_live_card(self, session: CardSession) -> None:
+        """登记活跃卡（幂等）：card_msg_id 为主键，附带 card_id 与 chat_id."""
+        if not session.card_msg_id:
+            return
+        try:
+            with self._live_cards_lock:
+                data = self._read_live_cards()
+                data[session.card_msg_id] = {
+                    "card_id": session.card_id or "",
+                    "chat_id": session.chat_id,
+                    "at": time.time(),
+                }
+                self._write_live_cards(data)
+        except OSError:
+            _logger.warning("live card registry update failed", exc_info=True)
+
+    def _untrack_live_card(self, session: CardSession) -> None:
+        """注销（幂等）：卡已正常收尾，下次启动不该再封它."""
+        if not session.card_msg_id:
+            return
+        try:
+            with self._live_cards_lock:
+                data = self._read_live_cards()
+                if data.pop(session.card_msg_id, None) is not None:
+                    self._write_live_cards(data)
+        except OSError:
+            _logger.warning("live card registry close failed", exc_info=True)
+
+    def _maybe_sweep_stale_cards(self) -> None:
+        """首次初始化后触发一次启动清扫（每进程最多尝试 N 次）.
+
+        非阻塞：拿不到锁说明别的线程已在清扫，直接返回。
+        """
+        if self._swept_stale_cards or self._stale_sweep_attempts >= _STALE_SWEEP_MAX_ATTEMPTS:
+            return
+        if not self._stale_sweep_lock.acquire(blocking=False):
+            return
+        try:
+            if self._swept_stale_cards:
+                return
+            self._stale_sweep_attempts += 1
+            loop = self._get_loop()
+            if loop is None or loop.is_closed():
+                # 没有可用循环（例如同步上下文先触发初始化）：不记为已清扫，
+                # 下次有循环时再试，最多 _STALE_SWEEP_MAX_ATTEMPTS 次。
+                return
+            self._swept_stale_cards = True
+            self._fire_and_forget(self._sweep_stale_cards(), loop)
+        except Exception:
+            _logger.warning("stale card sweep scheduling failed", exc_info=True)
+        finally:
+            self._stale_sweep_lock.release()
+
+    async def _sweep_stale_cards(self) -> None:
+        """把上次进程遗留的活跃卡封成「已中断」."""
+        try:
+            with self._live_cards_lock:
+                snapshot = self._read_live_cards()
+        except OSError:
+            _logger.warning("live card registry read failed", exc_info=True)
+            return
+        if not snapshot:
+            return
+        live_message_ids = {s.card_msg_id for s in self._sessions.values() if s.card_msg_id}
+        recovered = 0
+        for message_id, record in list(snapshot.items()):
+            if message_id in live_message_ids:
+                continue
+            card_id = record.get("card_id") if isinstance(record, dict) else ""
+            if not card_id:
+                self._drop_live_card(message_id, record)
+                continue
+            try:
+                assert self._client is not None
+                await self._client.cardkit_update(card_id, _interrupted_card(), sequence=1)
+            except Exception:
+                attempts = int(record.get("attempts", 0)) + 1 if isinstance(record, dict) else 1
+                _logger.warning(
+                    "stale card close failed (attempt %d/%d): id=%s",
+                    attempts,
+                    _LIVE_CARD_MAX_CLOSE_ATTEMPTS,
+                    message_id,
+                )
+                _logger.debug("stale card close error", exc_info=True)
+                if attempts >= _LIVE_CARD_MAX_CLOSE_ATTEMPTS or not isinstance(record, dict):
+                    self._drop_live_card(message_id, record)
+                else:
+                    self._update_live_card(message_id, record, {**record, "attempts": attempts})
+                continue
+            self._drop_live_card(message_id, record)
+            recovered += 1
+            _logger.info("delivery_closed: id=%s reason=gateway_restart", message_id)
+        if recovered:
+            _logger.info("gateway restart: closed %d stale card(s)", recovered)
+
+    def _drop_live_card(self, message_id: str, record: Any) -> None:
+        with self._live_cards_lock:
+            data = self._read_live_cards()
+            if data.get(message_id) is record or data.get(message_id) == record:
+                data.pop(message_id, None)
+                self._write_live_cards(data)
+
+    def _update_live_card(self, message_id: str, record: Any, new_record: dict[str, Any]) -> None:
+        with self._live_cards_lock:
+            data = self._read_live_cards()
+            if data.get(message_id) == record:
+                data[message_id] = new_record
+                self._write_live_cards(data)
 
     def _get_loop(self) -> asyncio.AbstractEventLoop | None:
         """获取事件循环，缓存以便跨线程复用."""
@@ -279,6 +453,7 @@ class StreamCardController(StreamingController):
             )
             self._complete_session(previous)
         self._sessions[session.message_id] = session
+        self._track_live_card(session)  # #43：跨进程登记，网关重启时封卡（创建成功再覆盖）
         if anchor_id and anchor_id != session.message_id:
             session.anchor_id = anchor_id
             self._sessions[anchor_id] = session
@@ -863,6 +1038,7 @@ class StreamCardController(StreamingController):
         session.flush.mark_completed()
         if session.image_resolver:
             session.image_resolver.cancel_pending()
+        self._untrack_live_card(session)  # #43：正常收尾后不再被重启清扫
         if removed_any:
             _logger.info(
                 "session_disposed: msg=%s anchor=%s key=%s",

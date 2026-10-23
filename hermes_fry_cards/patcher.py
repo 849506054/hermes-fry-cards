@@ -1620,43 +1620,40 @@ def _find_clarify_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | 
 
 
 
-def _find_busy_ack_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
-    """忙碌回执发送点：只允许在 ``_handle_active_session_busy_message`` 内命中.
+# 忙碌回执可能落在的宿主函数（Hermes 0.22.3 起把「中断 + 回执」拆进后者）。
+_BUSY_ACK_HOSTS = ("_handle_active_session_busy_message", "_busy_interrupt_and_ack")
 
-    优先 ``await self._send_busy_ack_reply(event, adapter, message)``（0.22.0 起：
-    回执文案与重定向判定都已就绪，且只会执行一次）；旧版没有该调用时退回
-    ``_send_with_retry``。全局直接搜会撞上同一文件里其它发送点，因此先按函数名
-    定位（AST），再在函数行范围内做文本匹配。
+
+def _find_busy_ack_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """忙碌回执发送点：落在回执宿主函数内、发送调用之前.
+
+    回执经 ``_send_busy_ack_reply`` 发出（更早的版本直接 ``_send_with_retry``）。
+    宿主函数随 Hermes 版本变化：0.22.0 在 ``_handle_active_session_busy_message``，
+    0.22.3 起拆到 ``_busy_interrupt_and_ack``；按 ``_BUSY_ACK_HOSTS`` 顺序试，
+    避免全局搜索串到同文件其它发送点。
     """
-    for needle in ("_send_busy_ack_reply(", "_send_with_retry("):
-        hit = _find_call_line_in_function(
-            tree, lines, "_handle_active_session_busy_message", needle,
-        )
-        if hit is None:
-            continue
-        # 发送可能被 try 包着：插入点取「调用之前、try 之内」，
-        # 落到 except 之后会插进异常处理块，语法直接坏掉。
-        idx = _insert_before_in_try(tree, hit[0])
-        return idx, _safe_indent(lines, idx) or hit[1]
-    return None
+    return _find_busy_notice_site(tree, lines)
 
 
 def _find_redirect_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
-    """忙碌提示入卡点：回执文案合成之后、发送之前.
+    """忙碌提示入卡点：与忙碌回执同一点（「文案合成后、发送前」）.
 
-    0.22.0 起回执经 ``_send_busy_ack_reply`` 发出；旧版直接 ``_send_with_retry``。
-    两种都按函数内匹配，不跨函数串到 ``_send_busy_reply`` 的发送上。
-    发送可能被 ``try`` 包着，插入点取「调用之前、``try`` 之内」，不能落到
-    ``except`` 之后（那样会插入到异常处理块里，语法直接坏掉）。
+    文案由 ``_compose_busy_ack_message`` 按模式合成，注入进去后由 ``redirected``
+    分流（重定向才换卡，其余并入当前卡），所以两种形态共用一个锚点。
     """
-    for needle in ("_send_busy_ack_reply(", "_send_with_retry("):
-        hit = _find_call_line_in_function(
-            tree, lines, "_handle_active_session_busy_message", needle,
-        )
-        if hit is None:
-            continue
-        idx = _insert_before_in_try(tree, hit[0])
-        return idx, _safe_indent(lines, idx) or hit[1]
+    return _find_busy_notice_site(tree, lines)
+
+
+def _find_busy_notice_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    for host in _BUSY_ACK_HOSTS:
+        for needle in ("_send_busy_ack_reply(", "_send_with_retry("):
+            hit = _find_call_line_in_function(tree, lines, host, needle)
+            if hit is None:
+                continue
+            # 发送可能被 try 包着：插入点取「调用之前、try 之内」，
+            # 落到 except 之后会插进异常处理块，语法直接坏掉。
+            idx = _insert_before_in_try(tree, hit[0])
+            return idx, _safe_indent(lines, idx) or hit[1]
     return None
 
 

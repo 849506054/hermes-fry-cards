@@ -200,6 +200,7 @@ class StreamingController:
                             card={"type": "card", "data": {"card_id": card_id}},
                         )
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
+            self._track_live_card(session)  # #43：卡片建好后登记，网关重启时据此封卡
             session.element_count = 1  # loading element
             # 流式建卡时已带上最新一条提示（_latest_notice），记账同步这一格
             session.notice_element_count = 1 if _latest_notice(session) else 0
@@ -686,6 +687,7 @@ class StreamingController:
 
         new_card_id, new_msg_id = new_card
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
+        self._track_live_card(session)  # #43：新卡改登记（旧卡封完已注销）
         session.element_count = 1  # loading element
         # 新卡同样带最新一条提示（_latest_notice），记账同步这一格
         session.notice_element_count = 1 if _latest_notice(session) else 0
@@ -923,6 +925,7 @@ class StreamingController:
 
         new_card_id, new_msg_id = new_card
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
+        self._track_live_card(session)  # #43：强制拆卡后改登记新卡
         session.element_count = 1  # loading element
         # 新卡同样带最新一条提示（_latest_notice），记账同步这一格
         session.notice_element_count = 1 if _latest_notice(session) else 0

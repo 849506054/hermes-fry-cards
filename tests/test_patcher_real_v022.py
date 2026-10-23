@@ -237,3 +237,65 @@ def test_busy_notice_anchors_on_real_busy_module(real_v022: dict[str, Path]) -> 
     body = "\n".join(lines[redirect:ack])
     assert "redirected=('redirected' in locals() and bool(redirected))" in body
     assert "injected hook failed: redirect" in body
+
+
+# ── Hermes v0.22.3+：忙碌回执宿主拆分（#43 回归） ──────────────────────────────
+
+_SAMPLE_225 = SAMPLES_DIR.parent / "modular_v0.22.5"
+_MODULES_225 = ("run_turn.py", "run_turn_runner.py", "run_turn_progress.py",
+                "run_turn_persistence.py", "run_busy.py")
+
+
+@pytest.fixture()
+def real_v0225(tmp_path: Path) -> dict[str, Path]:
+    """真实 v0.22.5 源码树：0.22.3 起忙碌回执拆进 ``_busy_interrupt_and_ack``."""
+    if not all((_SAMPLE_225 / name).exists() for name in _MODULES_225):
+        pytest.skip("v0.22.5 samples not available")
+    paths = {}
+    for key, name in zip(
+        ("turn", "runner", "progress", "persistence", "busy"), _MODULES_225, strict=True
+    ):
+        destination = tmp_path / name
+        shutil.copy2(_SAMPLE_225 / name, destination)
+        paths[key] = destination
+    paths["inbound"] = tmp_path / "run_inbound.py"
+    paths["inbound"].write_text(
+        "async def _handle_message(self, event):\n"
+        "    _admitted = await self._admit(event)\n"
+        "    source = event.source\n",
+        encoding="utf-8",
+    )
+    return paths
+
+
+def test_v0225_installs_busy_notice_hooks(real_v0225: dict[str, Path]) -> None:
+    """0.22.5 把回执发送挪到 `_busy_interrupt_and_ack`，锚点仍要能找到（#43）."""
+    from hermes_fry_cards.patcher import MK_BUSY_ACK, MK_REDIRECT
+
+    patcher = Patcher(modular_paths=real_v0225)
+    patcher.verify_target()
+    patcher.apply()
+
+    busy_lines = real_v0225["busy"].read_text(encoding="utf-8").splitlines()
+    host = next(
+        i for i, line in enumerate(busy_lines)
+        if line.strip().startswith("async def _busy_interrupt_and_ack(")
+    )
+    send = next(
+        i for i, line in enumerate(busy_lines)
+        if "_send_busy_ack_reply(event, adapter, message)" in line
+        and not line.strip().startswith("#")
+    )
+    redirect = next(i for i, line in enumerate(busy_lines) if MK_REDIRECT in line)
+    ack = next(i for i, line in enumerate(busy_lines) if MK_BUSY_ACK in line)
+
+    assert host < redirect < ack < send, "两个钩子必须落在新宿主函数内、发送之前"
+    assert patcher.is_fully_patched()
+
+
+def test_v0225_remove_restores_busy_module(real_v0225: dict[str, Path]) -> None:
+    original = (_SAMPLE_225 / "run_busy.py").read_text(encoding="utf-8")
+    patcher = Patcher(modular_paths=real_v0225)
+    patcher.apply()
+    patcher.remove()
+    assert real_v0225["busy"].read_text(encoding="utf-8") == original

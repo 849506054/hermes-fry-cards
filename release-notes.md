@@ -1,8 +1,8 @@
-## 🍟 hermes-fry-cards v0.5.6
+## 🍟 hermes-fry-cards v0.5.7
 
 > 工具密集的长轮次不再「静默涨到飞书 200 元素上限 → 拆卡 → 整轮回落纯文本」；
 > 忙碌回执、重定向、后台回执不再另发一条纯文本，改为写进当前卡片。
-> **一次记修复 + 一次提示入卡。**
+> 本版还补上网关重启封卡，并适配 Hermes 0.22.3 起把回执发送拆进新函数的改动。
 
 ### 🐛 工具面板元素记账（#41）
 
@@ -33,16 +33,30 @@ Hermes 在回合进行中会自己合成状态提示。此前它们以纯文本�
 - 新增 `BUSY_ACK` / `REDIRECT` 两个**可选注入点**：旧版 Hermes 缺锚点时跳过注入，`verify` 不报错
 - 通知元素 id 按序号派生（`fry_notice`、`fry_notice_1`…），并计入 `element_count`
 
+### 🔧 网关重启封卡（#43）
+
+网关重启或崩溃时，正在流式的卡片不会被收尾，用户会一直看到一张转圈的卡：
+
+- 卡片建好后登记到 profile 的 `state/fry-cards-live.json`（消息 id → 卡片 id / 会话），正常收尾即注销
+- 进程启动时读一次登记表，凡是「登记过但不属于本进程」的卡，统一封成「⚠️ 网关在本轮处理中重启」
+- 单条登记连续 3 个进程都封不掉就出列，避免无效消息 id 反复请求飞书
+
+### 🐛 Hermes 0.22.3+ 锚点适配（#43）
+
+0.22.3 起 Hermes 把忙碌回执的发送从 `_handle_active_session_busy_message` 拆进了
+`_busy_interrupt_and_ack`，锚点按旧函数名限定搜索会落空；两个注入点又在可选集里，于是
+**静默跳过、一个都没装上**。现按 `_handle_active_session_busy_message` → `_busy_interrupt_and_ack`
+顺序查找，并新增 v0.22.5 真实源码回归。
+
 ### ⚠️ 尚未覆盖
 
-- 网关重启时把遗留的活跃卡封成「已中断」（需要跨进程登记）
 - 独立的后台完成通知注入点（目前只在 `reply_to_message_id` 命中活跃卡时并入）
 - `busy_steer_ack_enabled: false` 的实际行为尚未实测
 
 ### ✅ 验证
 
-- 全量 **873 passed**（新增 `tests/test_element_budget.py`、`tests/test_notice_in_card.py`）
-- 真实 Hermes v0.22.0 源码上的锚点位置与 `apply` → `remove` 逐字还原
+- 全量 **891 passed**（新增 `tests/test_element_budget.py`、`tests/test_notice_in_card.py`）
+- 真实 Hermes **v0.22.0 与 v0.22.5** 源码上的锚点位置与 `apply` → `remove` 逐字还原
 - 已在 Hermes v0.22.0 + systemd `hermes-gateway` 上 `verify` / `uninstall` / `install` / 重启，
   `busy_ack` / `redirect` 两个新注入点均落位，网关运行无注入相关报错
 
@@ -85,4 +99,4 @@ hermes gateway restart
 
 完整明细见 [CHANGELOG.md](https://github.com/techysy/hermes-fry-cards/blob/main/CHANGELOG.md)。
 
-**Full Changelog**: [v0.5.5...v0.5.6](https://github.com/techysy/hermes-fry-cards/compare/v0.5.5...v0.5.6)
+**Full Changelog**: [v0.5.6...v0.5.7](https://github.com/techysy/hermes-fry-cards/compare/v0.5.6...v0.5.7)
