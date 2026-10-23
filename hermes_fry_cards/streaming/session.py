@@ -61,6 +61,7 @@ class CardSession:
         "guard",
         "image_resolver",
         "message_id",
+        "notice_element_count",
         "segment_state",
         "sequence",
         "session_key",
@@ -110,6 +111,9 @@ class CardSession:
         self.image_resolver: ImageResolver | None = None
         self.segment_state: SegmentState | None = SegmentState()
         self.element_count: int = 0
+        # 完成态通知区实际占用的元素数（#43）：每条提示一个 markdown 元素。
+        # 完成态重建前由 controller 按 notices 条数写入，拆卡/切卡时随基线一起重置。
+        self.notice_element_count: int = 0
         self.split_disabled = False
         self.split_index: int = 0
         self.clarify_pending_split: bool = False
@@ -138,3 +142,9 @@ class CardSession:
         if self.segment_state is None:
             return []
         return self.segment_state.segments[self.split_index:]
+
+    def active_notices(self) -> list[str]:
+        """本卡通知区要渲染的提示（Hermes 原文，按到达顺序）."""
+        if self.segment_state is None:
+            return []
+        return [slot.text for slot in self.segment_state.notices]

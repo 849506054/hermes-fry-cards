@@ -76,10 +76,23 @@ def _latest_notice(session: CardSession) -> str | None:
 
 def _session_notices(session: CardSession) -> list[str]:
     """完成态卡片的通知区文案（Hermes 原文，按到达顺序，去重）."""
-    segment_state = session.segment_state
-    if segment_state is None:
-        return []
-    return [slot.text for slot in segment_state.notices]
+    return session.active_notices()
+
+
+def _sync_notice_elements(session: CardSession) -> list[str]:
+    """通知区文案同步进元素记账，返回文案列表.
+
+    完成态每条提示占一个 markdown 元素（``fry_notice{_i}``），会在 loading 基线之外
+    多出 N 个元素。这里把 N 记进 ``notice_element_count`` 并补进 ``element_count``，
+    让拆卡阈值看到卡片真实元素数（#43 评审；接近 300305 时少算一格就会撞上限）。
+    幂等：只按变化量调整。
+    """
+    notices = session.active_notices()
+    delta = len(notices) - session.notice_element_count
+    if delta:
+        session.element_count = max(0, session.element_count + delta)
+        session.notice_element_count = len(notices)
+    return notices
 
 
 async def _resolve_answer_images(
@@ -186,6 +199,9 @@ class StreamingController:
                         )
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
             session.element_count = 1  # loading element
+            # 流式建卡时已带上最新一条提示（_latest_notice），记账同步这一格
+            session.notice_element_count = 1 if _latest_notice(session) else 0
+            session.element_count += session.notice_element_count
             session.flush.set_throttle(CARDKIT_MS)
 
             if session.image_resolver is None and self._client:
@@ -624,6 +640,9 @@ class StreamingController:
         new_card_id, new_msg_id = new_card
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
         session.element_count = 1  # loading element
+        # 新卡同样带最新一条提示（_latest_notice），记账同步这一格
+        session.notice_element_count = 1 if _latest_notice(session) else 0
+        session.element_count += session.notice_element_count
         session.sequence = 1  # 新卡从 1 重新计数
         session.tool_panel_created = False
         session.tool_panel_estimate = 0
@@ -840,6 +859,9 @@ class StreamingController:
         new_card_id, new_msg_id = new_card
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
         session.element_count = 1  # loading element
+        # 新卡同样带最新一条提示（_latest_notice），记账同步这一格
+        session.notice_element_count = 1 if _latest_notice(session) else 0
+        session.element_count += session.notice_element_count
         session.sequence = 1  # 新卡从 1 重新计数
         session.tool_panel_created = False  # 新卡需要重建 tool_panel
         session.tool_panel_estimate = 0  # 新卡工具面板从 0 重新估算
@@ -981,6 +1003,8 @@ class StreamingController:
                 log_prefix="CardKit",
             )
 
+        # 完成态通知区每条提示占一个元素：先记账再判断，避免低估撞 300305
+        notices = _sync_notice_elements(session)
         card = build_complete_card(
             segments=active_segments,
             all_tool_steps=all_tool_steps,
@@ -997,7 +1021,7 @@ class StreamingController:
             body_text_size=self._cfg.body_text_size,
             show_tool_use=self._cfg.show_tool_use,
             width_mode=self._cfg.width_mode,
-            notices=_session_notices(session),
+            notices=notices,
         )
 
         streaming_closed = False

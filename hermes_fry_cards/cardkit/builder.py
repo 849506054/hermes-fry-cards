@@ -135,6 +135,23 @@ def _build_header(status: str) -> dict[str, Any]:
 _NOTICE_ELEMENT_ID = "fry_notice"
 
 
+def notice_element_id(index: int) -> str:
+    """第 ``index`` 条提示的元素 id：``fry_notice`` / ``fry_notice_1`` / ``fry_notice_2`` …
+
+    完成态可能同时命中多条提示（重定向 + 后台回执），`notices` 只按文本去重，
+    不同文本会各占一个元素；固定 id 会让卡里出现重复 element_id（#43 评审）。
+    """
+    return _NOTICE_ELEMENT_ID if index == 0 else f"{_NOTICE_ELEMENT_ID}_{index}"
+
+
+def build_notice_elements(texts: list[str] | None) -> list[dict]:
+    """通知区元素列表：每条提示一个元素，id 按序号派生，保证卡内唯一."""
+    return [
+        build_notice_element(text, element_id=notice_element_id(index))
+        for index, text in enumerate(texts or [])
+    ]
+
+
 def build_notice_element(text: str, *, element_id: str = _NOTICE_ELEMENT_ID) -> dict:
     """通知区的单条提示（Hermes 原文，只加状态标签）.
 
@@ -968,7 +985,8 @@ def build_complete_card(
     if summary:
         card["config"]["summary"] = {"content": summary}
     # 通知区放在正文顶部：Hermes 原文（忙碌回执 / 重定向 / 后台回执）不另发纯文本（#43）。
-    card["body"] = {"elements": [build_notice_element(notice) for notice in notices or []] + elements}
+    # 每条提示占一个元素（id 按序号派生），元素数计入 session.element_count。
+    card["body"] = {"elements": build_notice_elements(notices) + elements}
     if header_enabled:
         header_status = "error" if is_error else "stopped" if is_aborted else "completed"
         card["header"] = _build_header(header_status)

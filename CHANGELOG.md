@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 新增 / Added
+- **提示消息入卡**（#43）：Hermes 在回合中合成的忙碌回执 / 重定向 / 后台回执不再另发纯文本，改为写进当前卡片的通知区（完成态卡顶 `💡 提示`，流式态建卡带最新一条）。文案完全沿用 Hermes 原文，插件不另写。
+  - 归属解析沿用 `_sessions` / `_session_keys`：`message_id` → `session_key` → 唯一活跃卡；多卡且无标识时放弃，让 Hermes 照常发原文。
+  - 重定向沿用 `on_interrupted` + `_interrupt_map` 换卡，旧卡收尾、新卡接手。
+  - 新增 `BUSY_ACK` / `REDIRECT` 两个可选注入点：旧版 Hermes 缺锚点时跳过注入，`verify` 不报错。
+
+### 修复 / Fixed
+- 通知区多条提示共用固定 `element_id=fry_notice`，命中两条提示时卡内元素 id 冲突；改为按序号派生 `fry_notice_1`、`fry_notice_2`。
+- 通知区元素未计入 `element_count`，接近 300305 时会少算一格；建卡基线与完成态重建都按提示条数同步记账。
+
+---
+
 ## [0.5.4] - 2026-10-20
 
 修复 #37 无事件续轮回复投递两次；修复 #38 适配 Hermes 微模块重构（run_turn_progress / run_turn_persistence）。

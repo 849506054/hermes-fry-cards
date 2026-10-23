@@ -244,3 +244,76 @@ def test_streaming_card_carries_latest_notice_after_redirect() -> None:
 
     card = build_streaming_card_v2(notice=_latest_notice(session))
     assert card["body"]["elements"][0]["element_id"] == "fry_notice"
+
+
+# ── 通知区元素记账（#43 评审） ──────────────────────────────────────────────
+
+
+def test_complete_card_notice_ids_are_unique() -> None:
+    """一张卡命中多条提示时，元素 id 必须唯一（固定 fry_notice 会撞 id）."""
+    card = build_complete_card(segments=[], all_tool_steps=[], notices=[BUSY_TEXT, REDIRECT_TEXT])
+    ids = [el["element_id"] for el in card["body"]["elements"] if el.get("element_id", "").startswith("fry_notice")]
+    assert ids == ["fry_notice", "fry_notice_1"]
+    assert len(ids) == len(set(ids))
+
+
+def test_three_notices_have_three_distinct_ids() -> None:
+    from hermes_fry_cards.cardkit.builder import build_notice_elements
+
+    elements = build_notice_elements(["a", "b", "c"])
+    assert [e["element_id"] for e in elements] == ["fry_notice", "fry_notice_1", "fry_notice_2"]
+
+
+def test_notice_elements_are_counted_in_element_budget() -> None:
+    """每条提示占一个元素，必须计入 element_count，否则接近上限时会少算."""
+    from hermes_fry_cards.streaming.controller import _sync_notice_elements
+
+    session = _make_session("msg_notice_budget")
+    # 已建卡：loading 元素已在计数器里
+    session.element_count = 10
+    session.notice_element_count = 0
+    session.segment_state.add_notice(BUSY_TEXT)
+    session.segment_state.add_notice(REDIRECT_TEXT)
+
+    notices = _sync_notice_elements(session)
+    assert notices == [BUSY_TEXT, REDIRECT_TEXT]
+    assert session.notice_element_count == 2
+    assert session.element_count == 12
+
+
+def test_notice_element_sync_is_idempotent() -> None:
+    from hermes_fry_cards.streaming.controller import _sync_notice_elements
+
+    session = _make_session("msg_notice_idem")
+    session.element_count = 5
+    session.notice_element_count = 0
+    session.segment_state.add_notice(BUSY_TEXT)
+
+    _sync_notice_elements(session)
+    _sync_notice_elements(session)
+    assert session.element_count == 6
+    assert session.notice_element_count == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_card_element_count_matches_rendered_elements() -> None:
+    """完成态：记账的元素数不小于卡片实际元素数（含通知区）."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_notice_card", key="key_notice_card")
+    session.segment_state.on_answer_delta("answer text")
+    session.segment_state.add_notice(BUSY_TEXT)
+    session.segment_state.add_notice(REDIRECT_TEXT)
+    session.create_task = None
+    session.card_id = "card_notice_card"
+    # 已建卡：loading 元素已有基线，尚未给提示记账
+    session.element_count = 1
+    session.notice_element_count = 0
+
+    assert await ctrl._do_complete_card(session) is True
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    rendered = [
+        el for el in card["body"]["elements"] if str(el.get("element_id", "")).startswith("fry_notice")
+    ]
+    assert len(rendered) == 2
+    assert session.element_count >= len(card["body"]["elements"])
