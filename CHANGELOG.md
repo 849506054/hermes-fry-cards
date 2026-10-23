@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+修复 #41 工具面板元素记账：长工具轮次不再静默涨到 200 元素上限后整轮回落纯文本。
+
+### 修复 / Fixed
+- **工具面板增量恒为 0**（#41）：`_do_flush` 提前推进 `session.tool_panel_estimate`，批更新前的
+  快照读到的已是新值，增量永远为 0，面板元素从不进 `element_count`，`ELEMENT_THRESHOLD` 主动拆卡
+  一次也不触发。改为只在 `_do_batch_update` 成功后推进。
+- **拆卡后新卡重发旧卡步骤**（#41）：dirty 分支写死 `start = 0`，新卡面板从全量步骤渲染。新增
+  `panel_steps_start()`，三处分支统一取本卡首个工具段的 `tool_offset`。
+- **强制拆卡不推进 `split_index`**（#41）：300305 后 `split_index` 前移到首个未创建 segment，
+  完成态 `active_segments()` 不再重渲已封印内容（否则再次超限、重试失败后整轮回落纯文本）；
+  日志补 `split_idx=`。
+- **拆卡判断重复计入面板**（#41）：`_maybe_rollover_tool_segment` 以恒为 0 的 `seg.element_estimate`
+  为基准，每步把整块面板重复计入，约 17 步就拆卡。改为以本卡已入账的面板总量为基准。
+- **面板占满时拆卡永不触发**：`find_tool_split_offset` 返回 `None` 后直接放弃，改为按 step 边界
+  强制拆，本卡至少保留 1 个 step。
+- **拆出只有 loading 的空白卡**：拆卡前容量判断把旧面板重复算进 `new_el_total`，新卡首个工具段又是
+  整体替换面板。改为按「替换后的面板估算」计算并扣掉旧面板。
+
+### 测试 / Tests
+- 新增 `tests/test_element_budget.py`（状态级回归，不触达飞书接口）。
+
+---
+
 ## [0.5.4] - 2026-10-20
 
 修复 #37 无事件续轮回复投递两次；修复 #38 适配 Hermes 微模块重构（run_turn_progress / run_turn_persistence）。
