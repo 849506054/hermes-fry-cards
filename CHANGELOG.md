@@ -41,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hermes 0.22.3+ 装不上 `BUSY_ACK` / `REDIRECT`**（#43）：回执发送迁到了
   `_busy_interrupt_and_ack`，锚点按 `_handle_active_session_busy_message` → `_busy_interrupt_and_ack`
   顺序查找；此前可选锚点缺失会静默跳过，两个 marker 一个都没注入。
+- **触发压缩封卡**：会话发生上下文压缩（会话分裂、in-place compaction 等）时主动封印旧卡，
+  避免卡片停留在流式转圈；新增可选注入点 `COMPRESSION` 挂载在 `Session split detected` 处。
+- **钩子调用签名别名兼容**：`on_turn_redirected` 允许接收 `message_id` 作为别名并兼容缺失的 `chat_id`；
+  `on_busy_ack` 允许接收或不接收 `ctrl`，兼容镜像烘入的不同模板调用形状。
 
 ### 测试 / Tests
 - 新增 `tests/test_element_budget.py`（#41 状态级回归）与 `tests/test_notice_in_card.py`（#43）。

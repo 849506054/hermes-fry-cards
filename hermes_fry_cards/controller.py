@@ -411,6 +411,61 @@ class StreamCardController(StreamingController):
         )
         return True
 
+    async def on_session_compressed(
+        self,
+        *,
+        session_key: str | None = None,
+        message_id: str | None = None,
+    ) -> bool:
+        """会话触发上下文压缩时封卡.
+
+        当触发上下文压缩（例如会话分裂、in-place compaction 或手动压缩），
+        之前的上下文历史已缩减/重写。旧卡片必须立即封印，确保卡片停止转圈、
+        渲染完成态，后续消息或新轮次从新卡开始。
+        """
+        if not self.enabled:
+            return False
+        session = self._resolve_session(message_id, session_key)
+        if session is None or session.state.is_terminal:
+            return False
+
+        session.state = SessionState.COMPLETED
+        session.flush.mark_completed()
+        _logger.info(
+            "session_compressed: msg=%s key=%s card=%s sealing",
+            session.message_id[:12],
+            session_key or "",
+            (session.card_id or "")[:12],
+        )
+        if session.has_card:
+            return await self._complete_session_after_creation(session)
+        else:
+            self._cleanup_session(session)
+            return True
+
+    def on_compression(
+        self,
+        *,
+        session_key: str | None = None,
+        message_id: str | None = None,
+    ) -> bool:
+        """同步入口：触发压缩封卡."""
+        if not self.enabled:
+            return False
+        session = self._resolve_session(message_id, session_key)
+        if session is None or session.state.is_terminal:
+            return False
+        session.state = SessionState.COMPLETED
+        session.flush.mark_completed()
+        _logger.info(
+            "session_compressed_sync: msg=%s key=%s card=%s sealing",
+            session.message_id[:12],
+            session_key or "",
+            (session.card_id or "")[:12],
+        )
+        self._complete_session(session)
+        return True
+
     def _fire_and_forget(
         self,
         coro: Coroutine[Any, Any, Any],

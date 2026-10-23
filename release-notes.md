@@ -48,6 +48,13 @@ Hermes 在回合进行中会自己合成状态提示。此前它们以纯文本�
 **静默跳过、一个都没装上**。现按 `_handle_active_session_busy_message` → `_busy_interrupt_and_ack`
 顺序查找，并新增 v0.22.5 真实源码回归。
 
+### ⚡ 触发压缩封卡与别名兼容（#43）
+
+- **触发压缩封卡**：会话发生上下文压缩（会话分裂、in-place compaction 等）时主动封印旧卡，
+  避免卡片停留在流式转圈；新增可选注入点 `COMPRESSION` 挂载在 `Session split detected` 处
+- **钩子调用签名别名兼容**：`on_turn_redirected` 允许接收 `message_id` 作为别名并兼容缺失的 `chat_id`；
+  `on_busy_ack` 允许接收或不接收 `ctrl`，兼容镜像烘入的不同模板调用形状
+
 ### ⚠️ 尚未覆盖
 
 - 独立的后台完成通知注入点（目前只在 `reply_to_message_id` 命中活跃卡时并入）

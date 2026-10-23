@@ -40,6 +40,7 @@ _HOOK_NAMES = [
     "CLARIFY",
     "BUSY_ACK",
     "REDIRECT",
+    "COMPRESSION",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -61,10 +62,11 @@ MK_BG_DELIVER, MK_BG_DELIVER_END = MARKERS[14]
 MK_CLARIFY, MK_CLARIFY_END = MARKERS[15]
 MK_BUSY_ACK, MK_BUSY_ACK_END = MARKERS[16]
 MK_REDIRECT, MK_REDIRECT_END = MARKERS[17]
+MK_COMPRESSION, MK_COMPRESSION_END = MARKERS[18]
 
-# 可选注入点：锚点不存在时跳过而不让整次安装失败（#43 提示入卡）。
-# 旧版 Hermes 的 busy 处理可能没有独立回调，缺失时插件退回既有行为（Hermes 原文另发）。
-OPTIONAL_HOOKS: frozenset[str] = frozenset({"busy_ack", "redirect"})
+# 可选注入点：锚点不存在时跳过而不让整次安装失败（#43 提示入卡与压缩封卡）。
+# 旧版 Hermes 或精简布局可能缺失部分回调，缺失时插件退回既有行为。
+OPTIONAL_HOOKS: frozenset[str] = frozenset({"busy_ack", "redirect", "compression"})
 _OPTIONAL_MARKERS: frozenset[str] = frozenset(
     f"# {PREFIX}_{name.upper()}_BEGIN" for name in OPTIONAL_HOOKS
 )
@@ -317,6 +319,25 @@ def _redirect_hook(indent: str) -> str:
             "            text=message,",
             "        )",
             *_hook_exception_lines("redirect"),
+        ],
+    )
+
+
+def _compression_hook(indent: str) -> str:
+    """会话触发上下文压缩时封卡（#43 增强）."""
+    return _make_hook(
+        indent,
+        MK_COMPRESSION,
+        MK_COMPRESSION_END,
+        [
+            "try:",
+            "    _lark_src = locals().get('source') or getattr(locals().get('ctx'), 'source', None)",
+            "    _lark_sk = locals().get('session_key') or getattr(locals().get('ctx'), 'session_key', None)",
+            "    _lark_plat = getattr(getattr(_lark_src, 'platform', None), 'value', '').lower() if _lark_src else ''",
+            "    if _lark_plat in ('feishu', 'lark'):",
+            "        from hermes_fry_cards.patch import on_session_compressed",
+            "        on_session_compressed(session_key=_lark_sk)",
+            *_hook_exception_lines("compression"),
         ],
     )
 
@@ -932,6 +953,7 @@ _HOOK_FNS = {
     "clarify": _clarify_hook,
     "busy_ack": _busy_ack_hook,
     "redirect": _redirect_hook,
+    "compression": _compression_hook,
     "group_boundary": _group_boundary_hook,
 }
 
@@ -1263,6 +1285,7 @@ class Patcher:
                 ("reasoning", "reasoning", _find_reasoning_site),
                 ("background_review", "background_review", _find_background_review_site),
                 ("clarify", "clarify", _find_clarify_site),
+                ("compression", "compression", _find_compression_site),
                 ("group_boundary", "group_boundary", _find_ephemeral_prompt_return),
             ],
             "busy": [
@@ -1346,6 +1369,7 @@ class Patcher:
             ("background_review", "background_review", _find_background_review_site(tree, lines)),
             ("bg_deliver", "bg_deliver", _find_bg_deliver_site(tree, lines)),
             ("clarify", "clarify", _find_clarify_site(tree, lines)),
+            ("compression", "compression", _find_compression_site(tree, lines)),
         ]
         hook_defs.extend(
             ("answer", f"answer callback {index}", loc)
@@ -1355,6 +1379,9 @@ class Patcher:
         sites: list[tuple[int, str, str]] = []
         for hook_fn_name, name, loc in hook_defs:
             if loc is None:
+                if hook_fn_name in OPTIONAL_HOOKS:
+                    _logger.info("optional injection target missing in run.py, skipped: %s", name)
+                    continue
                 # 定位失败硬失败，不静默跳过（防位置漂移致重复消息）
                 raise PatcherError(
                     f"Cannot locate {name} injection site — Hermes version may be incompatible"
@@ -1379,6 +1406,9 @@ class Patcher:
             "bg_deliver": _bg_deliver_hook,
             "clarify": _clarify_hook,
             "followup_done": _followup_done_hook,
+            "busy_ack": _busy_ack_hook,
+            "redirect": _redirect_hook,
+            "compression": _compression_hook,
         }
         for idx, indent, fn_name in sites:
             hook = _HOOK_FNS[fn_name](indent)
@@ -1616,6 +1646,15 @@ def _find_clarify_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | 
             "agent.clarify_callback = self._clarify_callback_sync",
         }:
             return i + 1, _safe_indent(lines, i)
+    return None
+
+
+def _find_compression_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """会话压缩检测点：在 `Session split detected` 语句之后."""
+    for i, line in enumerate(lines):
+        if "Session split detected" in line:
+            end_idx = _statement_end_after(tree, i + 1)
+            return end_idx, _safe_indent(lines, end_idx)
     return None
 
 

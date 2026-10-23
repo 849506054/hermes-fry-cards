@@ -79,6 +79,11 @@ MODULAR_SOURCES = {
                 if extra:
                     combined = (combined + "\\n\\n" + extra).strip()
             return combined
+
+        def _sync_session_after_run(self, agent_history):
+            if session_was_split:
+                logger.info("Session split detected: %s → %s (compression)", ctx.session_id, agent_session_id)
+            return compacted_in_place, agent_session_id, offset
     """,
     "busy": """
         async def stop(self, session_key):
@@ -141,6 +146,11 @@ MODULAR_022_OVERRIDES = {
                 if extra:
                     combined = (combined + "\\n\\n" + extra).strip()
             return combined
+
+        def _sync_session_after_run(self, agent_history):
+            if session_was_split:
+                logger.info("Session split detected: %s → %s (compression)", ctx.session_id, agent_session_id)
+            return compacted_in_place, agent_session_id, offset
     """,
 }
 
@@ -308,7 +318,7 @@ def test_modular_marker_distribution(modular_copy: dict[str, Path]) -> None:
         "ABORT", "INTERRUPT", "BG_DELIVER",
     ):
         assert f"HERMES_LARK_{marker}_BEGIN" in contents["turn"]
-    for marker in ("TOOL", "ANSWER", "THINKING", "REASONING", "BACKGROUND_REVIEW", "CLARIFY"):
+    for marker in ("TOOL", "ANSWER", "THINKING", "REASONING", "BACKGROUND_REVIEW", "CLARIFY", "COMPRESSION"):
         assert f"HERMES_LARK_{marker}_BEGIN" in contents["runner"]
     assert "HERMES_LARK_STOP_BEGIN" in contents["busy"]
     # #43：忙碌回执入卡 / 重定向换卡（可选锚点）

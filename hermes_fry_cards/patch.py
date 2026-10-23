@@ -506,9 +506,11 @@ def on_message_interrupted(
 
 def on_busy_ack(
     *,
+    ctrl: Any = None,
     message_id: str | None = None,
     session_key: str | None = None,
     text: str = "",
+    **kwargs: Any,
 ) -> bool:
     """[注入点 12] 忙碌回执 — 写进当前卡的通知槽并吞掉纯文本（#43）.
 
@@ -516,7 +518,7 @@ def on_busy_ack(
     返回 True 时注入点应跳过 Hermes 的纯文本发送。
     """
     try:
-        ctrl = get_controller()
+        ctrl = ctrl or get_controller()
         if not ctrl.enabled:
             return False
         return bool(ctrl.on_busy_ack(text=text, message_id=message_id, session_key=session_key))
@@ -527,43 +529,71 @@ def on_busy_ack(
 
 def on_turn_redirected(
     *,
-    old_message_id: str,
-    new_message_id: str,
-    chat_id: str,
+    ctrl: Any = None,
+    old_message_id: str | None = None,
+    new_message_id: str | None = None,
+    chat_id: str = "",
     chat_type: str = "",
     anchor_id: str | None = None,
     session_key: str | None = None,
     redirected: bool = False,
     text: str = "",
+    message_id: str | None = None,
+    **kwargs: Any,
 ) -> None:
     """[注入点 13] 忙碌提示入卡 — 重定向时换卡，其余模式并入当前卡（#43）.
 
     ``text`` 是 Hermes 合成的提示原文（重定向 / queue / steer / interrupt 共用
-    一条回执通道）。只有在 ``redirected`` 为真时才走换卡：Hermes 已把回复
+    一条回执通道）。只有在 ``redirected`` 为真或显式重定向时才走换卡：Hermes 已把回复
     重新锚定到新消息，卡片跟着旧卡收尾、新卡接手；新旧卡接续沿用现有
     ``on_interrupted`` + ``_interrupt_map``，完成回调仍按映射落到新卡。
     其余模式只把提示写进当前卡的通知槽。
+    支持 ``message_id`` 别名与缺省 ``chat_id``，兼容镜像烘入的不同模板。
     """
     try:
-        ctrl = get_controller()
+        ctrl = ctrl or get_controller()
         if not ctrl.enabled:
             return
-        if redirected:
+        old_session = ctrl._resolve_session(None, session_key) if session_key else None
+        old_msg = old_message_id or (old_session.message_id if old_session else message_id) or ""
+        new_msg = new_message_id or message_id or (old_session.message_id if old_session else "")
+        target_chat = chat_id or (old_session.chat_id if old_session else "")
+        is_redirect = redirected or (bool(new_msg and old_msg and new_msg != old_msg)) or bool(message_id and not text)
+
+        if is_redirect:
             ctrl.on_interrupted(
-                old_message_id=old_message_id,
-                new_message_id=new_message_id,
-                chat_id=chat_id,
+                old_message_id=old_msg,
+                new_message_id=new_msg,
+                chat_id=target_chat,
                 chat_type=chat_type,
                 anchor_id=anchor_id,
                 session_key=session_key,
             )
             if text.strip():
-                ctrl.on_redirected_notice(text=text, message_id=new_message_id, session_key=session_key)
+                ctrl.on_redirected_notice(text=text, message_id=new_msg, session_key=session_key)
             return
         if text.strip():
-            ctrl.on_busy_ack(text=text, message_id=old_message_id or None, session_key=session_key)
+            ctrl.on_busy_ack(text=text, message_id=old_msg or None, session_key=session_key)
     except Exception as exc:
         _logger.warning("on_turn_redirected error: %s", exc, exc_info=True)
+
+
+def on_session_compressed(
+    *,
+    ctrl: Any = None,
+    session_key: str | None = None,
+    message_id: str | None = None,
+    **kwargs: Any,
+) -> bool:
+    """[注入点 14] 上下文压缩触发 — 封印当前会话的活跃卡片."""
+    try:
+        ctrl = ctrl or get_controller()
+        if not ctrl.enabled:
+            return False
+        return bool(ctrl.on_compression(session_key=session_key, message_id=message_id))
+    except Exception as exc:
+        _logger.warning("on_session_compressed error: %s", exc, exc_info=True)
+        return False
 
 
 def on_cron_deliver(

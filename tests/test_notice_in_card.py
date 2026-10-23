@@ -317,3 +317,73 @@ async def test_completed_card_element_count_matches_rendered_elements() -> None:
     ]
     assert len(rendered) == 2
     assert session.element_count >= len(card["body"]["elements"])
+
+
+# ── 压缩封卡与别名兼容（#43 增强） ──────────────────────────────────────
+
+
+def test_on_turn_redirected_accepts_message_id_alias() -> None:
+    """镜像烘入的模板调用 on_turn_redirected(session_key=..., message_id=...) 必须正常工作."""
+    from unittest.mock import patch
+
+    import hermes_fry_cards.patch as patch_mod
+    from hermes_fry_cards.patch import on_turn_redirected
+
+    ctrl = _setup_ctrl()
+    _streaming(ctrl, "msg_old", key="key_alias")
+    with patch.object(patch_mod, "get_controller", return_value=ctrl):
+        # 即使只有 session_key 和 message_id，也不应抛 TypeError
+        on_turn_redirected(session_key="key_alias", message_id="msg_new")
+    assert "msg_new" in ctrl._sessions
+
+
+def test_on_busy_ack_accepts_ctrl_keyword() -> None:
+    """构建模板传或不传 ctrl 都不应抛 TypeError."""
+    from unittest.mock import patch
+
+    import hermes_fry_cards.patch as patch_mod
+    from hermes_fry_cards.patch import on_busy_ack
+
+    ctrl = _setup_ctrl()
+    _streaming(ctrl, "msg_b1", key="key_b1")
+    with patch.object(patch_mod, "get_controller", return_value=ctrl):
+        assert on_busy_ack(ctrl=ctrl, text=BUSY_TEXT, session_key="key_b1") is True
+        assert on_busy_ack(text=BUSY_TEXT, session_key="key_b1") is True
+
+
+@pytest.mark.asyncio
+async def test_session_compressed_seals_active_card() -> None:
+    """触发压缩时封卡：把当前会话活跃卡片封死为完成态."""
+    ctrl = _setup_ctrl()
+    session = _streaming(ctrl, "msg_comp", key="key_comp")
+    session.card_id = "card_comp"
+    sealed = []
+    ctrl._complete_session_after_creation = AsyncMock(side_effect=lambda s: sealed.append(s.card_id) or True)
+
+    assert await ctrl.on_session_compressed(session_key="key_comp") is True
+    assert session.state == SessionState.COMPLETED
+    assert sealed == ["card_comp"]
+
+
+def test_on_compression_sync_entry() -> None:
+    """同步 entry 调用 on_compression."""
+    ctrl = _setup_ctrl()
+    session = _streaming(ctrl, "msg_sync", key="key_sync")
+    session.card_id = "card_sync"
+    closed = []
+    ctrl._complete_session = lambda s: closed.append(s.card_id)
+
+    assert ctrl.on_compression(session_key="key_sync") is True
+    assert session.state == SessionState.COMPLETED
+    assert closed == ["card_sync"]
+
+
+def test_on_session_compressed_skips_when_no_active_session() -> None:
+    ctrl = _setup_ctrl()
+    from unittest.mock import patch
+
+    import hermes_fry_cards.patch as patch_mod
+    from hermes_fry_cards.patch import on_session_compressed
+
+    with patch.object(patch_mod, "get_controller", return_value=ctrl):
+        assert on_session_compressed(session_key="non_existent") is False
