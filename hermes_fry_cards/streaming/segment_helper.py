@@ -74,7 +74,7 @@ def estimate_segment_elements(seg: Segment, all_steps: list[ToolDisplayStep]) ->
     """估算单个 segment 新增的卡片元素数."""
     if seg.type == SegmentType.REASONING:
         return 4  # collapsible_panel + plain_text + standard_icon + markdown
-    if seg.type in (SegmentType.ANSWER, SegmentType.NOTICE, SegmentType.STICKY):
+    if seg.type in (SegmentType.ANSWER, SegmentType.NOTICE):
         return estimate_answer_elements(seg.text)
     if seg.type == SegmentType.TOOL:
         return estimate_tool_elements(
@@ -135,7 +135,7 @@ def build_add_segment_action(
             element_id=seg.el_id,
             text_element_id=seg.text_el_id,
         )
-    elif seg.type in (SegmentType.ANSWER, SegmentType.NOTICE, SegmentType.STICKY):
+    elif seg.type in (SegmentType.ANSWER, SegmentType.NOTICE):
         element = _streaming_element(element_id=seg.el_id, text_size=text_size)
     elif seg.type == SegmentType.TOOL:
         start = seg.tool_offset

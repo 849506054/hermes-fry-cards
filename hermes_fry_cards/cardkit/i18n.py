@@ -47,6 +47,10 @@ _T: dict[str, tuple[str, str]] = {
         "… (middle section omitted; opening context and final conclusions preserved, to prevent card overflow) …",
         "…（中段分析已省略，保留开头背景与末尾核心结论，防卡片溢出）…",
     ),
+    "card_interrupted_restart": (
+        "⚠️ This run was interrupted by a gateway restart; the card is no longer updating.",
+        "⚠️ 本轮因网关重启中断，卡片已停止更新。",  # noqa: RUF001
+    ),
 }
 
 

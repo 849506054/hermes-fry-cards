@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from hermes_fry_cards.cardkit.builder import LOADING_ELEMENT_ID, TOOL_PANEL_ELEMENT_ID, build_background_card
+from hermes_fry_cards.cardkit.builder import build_background_card
 from hermes_fry_cards.controller import StreamCardController
 from hermes_fry_cards.feishu import FeishuClient
 from hermes_fry_cards.streaming.session import SessionState
@@ -97,7 +97,7 @@ async def test_new_start_closes_previous_and_same_anchor_reuses(ctrl):
 
 
 @pytest.mark.asyncio
-async def test_redirect_chain_creation_and_sticky_first_render(ctrl):
+async def test_redirect_chain_creation_and_native_notice(ctrl):
     register(ctrl)
     with patch.object(ctrl, "_fire_and_forget", side_effect=lambda coro, loop: coro.close()):
         ctrl.on_turn_redirected(session_key="key", message_id="B")
@@ -108,12 +108,12 @@ async def test_redirect_chain_creation_and_sticky_first_render(ctrl):
     c = ctrl._session_keys["key"]
     assert b.flush.completed
     assert c.message_id == "C"
-    assert c.segment_state.segments[0].dirty
+    # 重定向只换卡，不写提示语；文案由 Hermes 的 busy-ack 原样带进来。
+    assert c.segment_state.segments == []
     await ctrl._do_create_card(c)
     first_card = ctrl._client.cardkit_create.await_args.args[0]
     ids = [el.get("element_id") for el in first_card["body"]["elements"]]
-    assert ids.index("sticky_notice") == ids.index(TOOL_PANEL_ELEMENT_ID) + 1
-    assert ids.index(LOADING_ELEMENT_ID) == ids.index("sticky_notice") + 1
+    assert "sticky_notice" not in ids
     assert ctrl.on_busy_ack(session_key="key", text="busy") is True
     assert (
         await ctrl.on_background_deliver(chat_id="chat", preview="preview", content="receipt", reply_to_message_id="C")
@@ -127,7 +127,7 @@ async def test_redirect_chain_creation_and_sticky_first_render(ctrl):
     card = ctrl._client.cardkit_update.await_args.args[1]
     texts = [el.get("content") for el in card["body"]["elements"] if el.get("tag") == "markdown"]
     assert texts[:2] == ["receipt", "answer"]
-    assert "↪ 已重定向当前运行 · 正在按你的修正调整…" not in json.dumps(card, ensure_ascii=False)
+    assert "↪ 已重定向当前运行" not in json.dumps(card, ensure_ascii=False)
 
 
 @pytest.mark.asyncio

@@ -139,3 +139,15 @@ def test_current_layout_optional_notifications_filtered(current_core: dict[str, 
     patcher.apply()
     assert patcher.is_fully_patched()
     assert all(patcher.marker_status().values())
+
+
+def test_optional_injection_site_is_skipped_instead_of_failing_install() -> None:
+    """老版本 Hermes 没有 busy/redirect 锚点时，跳过注入而不是让整次安装失败。"""
+    lines = ["line\n"]
+    out = injector.Patcher._inject_sites(lines, [("busy_ack", "busy ack", None)])
+    assert out == "line\n"
+
+
+def test_required_injection_site_still_fails_loudly() -> None:
+    with pytest.raises(injector.PatcherError):
+        injector.Patcher._inject_sites(["line\n"], [("stop", "stop", None)])

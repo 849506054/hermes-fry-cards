@@ -124,3 +124,24 @@ async def test_registry_preserves_unrelated_record_fields(ctrl):
     ctrl._track_live_card(s)
     ctrl._untrack_live_card(s)
     assert json.loads(ctrl._live_cards_path().read_text()) == {"other": {"opaque": [1, 2], "note": "keep"}}
+
+
+@pytest.mark.asyncio
+async def test_initial_recovery_gives_up_after_two_attempts(ctrl):
+    """一条封不掉的登记不能在每轮对话里反复请求飞书。"""
+    ctrl._swept_stale_cards = False
+    ctrl._write_live_cards({"dead": {"card_id": "old", "chat_id": "chat"}})
+    ctrl._client.patch_card_message.side_effect = RuntimeError("invalid id")
+    await ctrl._ensure_init()
+    await ctrl._ensure_init()
+    await ctrl._ensure_init()
+    assert ctrl._client.patch_card_message.await_count == 2
+    assert ctrl._read_live_cards()["dead"]["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_sweep_drops_record_after_three_failed_processes(ctrl):
+    ctrl._write_live_cards({"dead": {"card_id": "old", "chat_id": "chat", "attempts": 2}})
+    ctrl._client.patch_card_message.side_effect = RuntimeError("invalid id")
+    await ctrl._sweep_stale_cards()
+    assert "dead" not in ctrl._read_live_cards()

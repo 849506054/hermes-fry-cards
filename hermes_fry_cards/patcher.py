@@ -18,6 +18,8 @@ from .config import hermes_home
 
 _logger = logging.getLogger("hermes_fry_cards")
 
+# 新版本 Hermes 才提供的注入点：缺失时跳过，不让整次安装失败。
+_OPTIONAL_INJECTION_LABELS = frozenset({"busy ack", "turn redirected", "busy ack gate"})
 
 PREFIX = "HERMES_LARK"
 
@@ -1223,7 +1225,7 @@ class Patcher:
         answer_sites = _find_func_bodies(runner_tree, runner_lines, "stream_delta_cb")
         if not answer_sites:
             checks.append((None, "answer callback"))
-        missing = [label for site, label in checks if site is None]
+        missing = [label for site, label in checks if site is None and label not in _OPTIONAL_INJECTION_LABELS]
         if missing:
             raise PatcherError(
                 "Missing modular Hermes injection targets: " + ", ".join(missing)
@@ -1389,6 +1391,11 @@ class Patcher:
         sites: list[tuple[int, str, str]] = []
         for hook_fn_name, name, loc in hook_defs:
             if loc is None:
+                if name in _OPTIONAL_INJECTION_LABELS:
+                    _logger.warning(
+                        "optional injection site %s not found — skipping (Hermes build without it)", name
+                    )
+                    continue
                 raise PatcherError(f"Cannot locate {name} injection site — Hermes version may be incompatible")
             sites.append((loc[0], loc[1], hook_fn_name))
         sites.sort(key=lambda item: item[0], reverse=True)

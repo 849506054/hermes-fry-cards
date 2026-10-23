@@ -1634,6 +1634,7 @@ class TestDoFlush:
         tool_seg = session.segment_state.segments[0]
         tool_seg.created = True
         tool_seg.element_estimate = estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        session.tool_panel_estimate = tool_seg.element_estimate
         session.element_count = 174
 
         for idx in range(1, 4):
@@ -1679,6 +1680,7 @@ class TestDoFlush:
         tool_seg = session.segment_state.segments[1]
         tool_seg.created = True
         tool_seg.element_estimate = estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        session.tool_panel_estimate = tool_seg.element_estimate
 
         session.tool_use.record_start("read", "file1")
         session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
@@ -1754,6 +1756,7 @@ class TestDoFlush:
         tool_seg = session.segment_state.segments[0]
         tool_seg.created = True
         tool_seg.element_estimate = estimate_segment_elements(tool_seg, session.tool_use.build_display_steps())
+        session.tool_panel_estimate = tool_seg.element_estimate
         session.element_count = 174
 
         for idx in range(1, 4):

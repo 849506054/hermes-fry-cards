@@ -11,7 +11,6 @@ class SegmentType(StrEnum):
     ANSWER = "answer"
     TOOL = "tool"
     NOTICE = "notice"
-    STICKY = "sticky"
 
 
 # 判定「流式段尾与完成文本开头重叠」所需的最小重叠长度：低于此值多为偶然同字，
@@ -80,18 +79,16 @@ class SegmentState:
         # 20 轮工具调用就能产生 20 个 answer 段把卡片元素推向飞书 200 硬上限。
         self.max_answer_segments = max_answer_segments
 
-    def add_notice(self, text: str, *, sticky: bool = False) -> Segment:
-        """提示与正文分别保存；顶部提示和普通通知各占一个槽位。"""
-        kind = SegmentType.STICKY if sticky else SegmentType.NOTICE
+    def add_notice(self, text: str) -> Segment:
+        """提示与正文分别保存，普通通知占一个独立槽位。"""
         for segment in self.segments:
-            if segment.type == kind:
+            if segment.type == SegmentType.NOTICE:
                 segment.text = text
                 segment.dirty = True
                 return segment
-        segment = Segment(kind, "sticky_notice" if sticky else "notice")
+        segment = Segment(SegmentType.NOTICE, "notice")
         segment.text = text
-        index = 0 if sticky else sum(s.type == SegmentType.STICKY for s in self.segments)
-        self.segments.insert(index, segment)
+        self.segments.insert(0, segment)
         return segment
 
     def _new_reasoning(self, text: str) -> Segment:
@@ -149,25 +146,9 @@ class SegmentState:
                     return
         self._new_reasoning(text)
 
-    def _take_redirect_placeholder(self, text: str) -> bool:
-        """首段正文原地替换提示，沿用已经发送的元素标识。"""
-        if not text:
-            return False
-        for segment in self.segments:
-            if segment.type == SegmentType.STICKY:
-                segment.type = SegmentType.ANSWER
-                segment.text = text
-                segment.start_time = time.time()
-                segment.dirty = True
-                self._finalize_prev_reasoning(segment.start_time)
-                self.segments.remove(segment)
-                self.segments.append(segment)
-                return True
-        return False
-
     def on_answer_delta(self, text: str) -> None:
         """处理 answer 增量，同类型追加否则新建 segment."""
-        if not text or self._take_redirect_placeholder(text):
+        if not text:
             return
         if self.segments and self.segments[-1].type == SegmentType.ANSWER:
             self.segments[-1].text += text
@@ -197,9 +178,6 @@ class SegmentState:
         流式段里那段旧稿不是合法历史，用定稿整段替换，否则封卡后正文出现旧稿+定稿两段。
         """
         if not text or text in self._completion_answers:
-            return
-        if self._take_redirect_placeholder(text):
-            self._completion_answers.add(text)
             return
         if replaced:
             for segment in reversed(self.segments):

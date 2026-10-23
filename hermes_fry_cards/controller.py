@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from .cardkit.i18n import _t
 from .config import Config, hermes_home
 from .delivery import DeliveryKind, DeliveryResolution
 from .feishu import (
@@ -26,6 +27,7 @@ from .streaming.text import strip_reasoning_tags
 
 _logger = logging.getLogger("hermes_fry_cards")
 _CARD_CREATION_WAIT_SEC = 10.0
+_STALE_SWEEP_MAX_ATTEMPTS = 2
 
 
 class StreamCardController(StreamingController):
@@ -41,6 +43,7 @@ class StreamCardController(StreamingController):
         self._closed_ids: dict[str, tuple[DeliveryKind, float]] = {}
         self._live_cards_lock = threading.RLock()
         self._swept_stale_cards = False
+        self._stale_sweep_attempts = 0
         self._stale_sweep_lock = threading.Lock()
         self._initialized = False
         self._init_lock = threading.Lock()
@@ -108,10 +111,17 @@ class StreamCardController(StreamingController):
                             )
                         )
                     self._initialized = True
-        if not self._swept_stale_cards and self._stale_sweep_lock.acquire(blocking=False):
+        if (
+            not self._swept_stale_cards
+            and self._stale_sweep_attempts < _STALE_SWEEP_MAX_ATTEMPTS
+            and self._stale_sweep_lock.acquire(blocking=False)
+        ):
             try:
                 if not self._swept_stale_cards:
-                    self._swept_stale_cards = await self._sweep_stale_cards()
+                    self._stale_sweep_attempts += 1
+                    recovered = await self._sweep_stale_cards()
+                    if recovered or self._stale_sweep_attempts >= _STALE_SWEEP_MAX_ATTEMPTS:
+                        self._swept_stale_cards = True
             finally:
                 self._stale_sweep_lock.release()
 
@@ -173,7 +183,11 @@ class StreamCardController(StreamingController):
             _logger.warning("live card registry close failed", exc_info=True)
 
     async def _sweep_stale_cards(self) -> bool:
-        """只恢复启动快照中仍登记、且不属当前进程的遗留投递。"""
+        """只恢复启动快照中仍登记、且不属当前进程的遗留投递。
+
+        单条登记跨进程累计失败 3 次即出列，避免无效消息 id 反复请求飞书；
+        进程内的重试次数由调用方限制。
+        """
         try:
             with self._live_cards_lock:
                 snapshot = self._read_live_cards()
@@ -192,6 +206,7 @@ class StreamCardController(StreamingController):
                     {
                         "tag": "markdown",
                         "content": "⚠️ 本轮因网关重启中断，卡片已停止更新。",  # noqa: RUF001
+                        "i18n_content": _t("card_interrupted_restart"),
                     }
                 ]
             },
@@ -206,8 +221,18 @@ class StreamCardController(StreamingController):
             try:
                 await self._client.patch_card_message(message_id, card)
             except Exception:
-                _logger.warning("stale card close failed: id=%s", message_id, exc_info=True)
                 recovered = False
+                attempts = int(record.get("attempts", 0)) + 1 if isinstance(record, dict) else 1
+                _logger.warning("stale card close failed (attempt %d/3): id=%s", attempts, message_id)
+                _logger.debug("stale card close error", exc_info=True)
+                with self._live_cards_lock:
+                    data = self._read_live_cards()
+                    if data.get(message_id) == record:
+                        if attempts >= 3:
+                            data.pop(message_id, None)
+                        elif isinstance(record, dict):
+                            data[message_id] = {**record, "attempts": attempts}
+                        self._write_live_cards(data)
                 continue
             with self._live_cards_lock:
                 data = self._read_live_cards()
@@ -250,7 +275,7 @@ class StreamCardController(StreamingController):
                 kind = DeliveryKind.CLOSED
             else:
                 kind = DeliveryKind.WRITABLE
-            _logger.info(
+            _logger.debug(
                 "delivery_resolved: id=%s key=%s owner=%s decision=%s",
                 message_id or "",
                 session_key or "",
@@ -364,7 +389,6 @@ class StreamCardController(StreamingController):
         chat_type: str = "",
         anchor_id: str | None = None,
         session_key: str | None = None,
-        sticky: str = "",
     ) -> str | None:
         """注册、转移和创建共享入口，创建前就完成所有权转移。"""
         if not self.enabled or not self._chat_type_allowed(chat_type):
@@ -400,8 +424,6 @@ class StreamCardController(StreamingController):
             session = CardSession(message_id, chat_id, loop)
             session.synthetic = synthetic
             self._register_session(session, anchor_id=anchor_id, session_key=session_key)
-            if sticky:
-                session.segment_state.add_notice(sticky, sticky=True)
             _logger.info(
                 "session_created: msg=%s chat=%s anchor=%s key=%s synthetic=%s",
                 message_id,
@@ -645,7 +667,6 @@ class StreamCardController(StreamingController):
                 message_id=message_id,
                 chat_id=old.chat_id,
                 session_key=session_key,
-                sticky="↪ 已重定向当前运行 · 正在按你的修正调整…",
             )
             _logger.info("delivery_switched: old=%s new=%s key=%s", old.message_id, new_id, session_key)
 

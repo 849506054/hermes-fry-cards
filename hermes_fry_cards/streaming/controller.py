@@ -142,7 +142,7 @@ class StreamingController:
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
             )
-            notices = [s for s in session.active_segments() if s.type in (SegmentType.STICKY, SegmentType.NOTICE)]
+            notices = [s for s in session.active_segments() if s.type in (SegmentType.NOTICE,)]
             # 提示与正文同落点：工具面板之后、loading 之前（正文就是这样插进来的）。
             # 插到 body 开头会让重定向提示停在工具调用框上方，等首段正文替换元素时再跳下来。
             elements = card["body"]["elements"]
@@ -339,7 +339,7 @@ class StreamingController:
                     new_el_estimates[seg.el_id] = estimated
                     new_el_total += estimated
                     action = build_add_segment_action(seg, all_steps, text_size=self._cfg.body_text_size)
-                    if seg.type in (SegmentType.STICKY, SegmentType.NOTICE):
+                    if seg.type in (SegmentType.NOTICE,):
                         next_created = next((s for s in segments[i + 1 :] if s.created), None)
                         if next_created:
                             action["params"]["target_element_id"] = next_created.el_id
@@ -457,7 +457,7 @@ class StreamingController:
                         sequence=session.sequence,
                     )
                     seg.dirty = False
-                elif seg.type in (SegmentType.ANSWER, SegmentType.STICKY, SegmentType.NOTICE):
+                elif seg.type in (SegmentType.ANSWER, SegmentType.NOTICE):
                     content = seg.text
                     if session.image_resolver:
                         content = session.image_resolver.resolve_images(content)
@@ -695,8 +695,15 @@ class StreamingController:
         """按 tool step 边界拆分过大的 dirty tool segment."""
         start = seg.tool_offset
         end = tool_segment_end(seg, all_steps)
-        estimate = estimate_tool_elements(start, end, all_steps)
-        delta = estimate - seg.element_estimate
+        # 工具面板是共享元素，增量必须以「已入账的面板总量」为基准。
+        # 工具段的 element_estimate 恒为 0（共享面板的估算只记在 session 上），
+        # 拿它当基准会把整块面板重复计入，约每 17 步就触发一次拆卡。
+        panel_start = min(
+            (s.tool_offset for s in segment_state.segments[session.split_index :] if s.type == SegmentType.TOOL),
+            default=start,
+        )
+        estimate = estimate_tool_elements(panel_start, end, all_steps)
+        delta = estimate - session.tool_panel_estimate
         if (
             delta <= 0
             or session.element_count + pending_delta + delta + FOOTER_RESERVE <= ELEMENT_THRESHOLD
@@ -704,19 +711,21 @@ class StreamingController:
         ):
             return None
 
-        split_offset = find_tool_split_offset(
-            base_count=session.element_count + pending_delta - seg.element_estimate,
-            seg=seg,
-            all_steps=all_steps,
-        )
+        base_count = session.element_count + pending_delta - session.tool_panel_estimate
+        split_offset = None
+        for candidate in range(end - 1, start, -1):
+            panel_estimate = estimate_tool_elements(panel_start, candidate, all_steps)
+            if base_count + panel_estimate + FOOTER_RESERVE <= ELEMENT_THRESHOLD:
+                split_offset = candidate
+                break
         if split_offset is None:
             return None
 
-        old_estimate = estimate_tool_elements(seg.tool_offset, split_offset, all_steps)
+        old_estimate = estimate_tool_elements(panel_start, split_offset, all_steps)
         actions.append(
             build_tool_update_action(
                 element_id=seg.el_id,
-                steps=all_steps[seg.tool_offset : split_offset],
+                steps=all_steps[panel_start:split_offset],
             )
         )
         updated_tool_segs.append(seg)

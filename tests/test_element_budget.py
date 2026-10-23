@@ -13,10 +13,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from hermes_fry_cards import controller as controller_module
 from hermes_fry_cards.controller import StreamCardController
 from hermes_fry_cards.feishu import FeishuClient
 from hermes_fry_cards.streaming.segment_helper import estimate_tool_elements
 from hermes_fry_cards.streaming.session import CardSession, SessionState
+
+
+@pytest.fixture(autouse=True)
+def isolated_profile(tmp_path, monkeypatch):
+    """状态登记写临时目录，禁止落到真实 profile。"""
+    monkeypatch.setattr(controller_module, "hermes_home", lambda: tmp_path)
 
 
 def _make_session(msg_id: str = "msg_budget") -> CardSession:
@@ -94,6 +101,34 @@ async def test_panel_update_after_split_carries_only_current_card_steps() -> Non
     payload = json.dumps(calls[-1].args[1], ensure_ascii=False)
     assert "f2" in payload and "f3" in payload
     assert "f0" not in payload and "f1" not in payload
+
+
+@pytest.mark.asyncio
+async def test_tool_panel_holds_most_capacity_before_split() -> None:
+    """面板估算不能重复计入：一张卡应装到接近 180 才拆，而不是一半容量就拆。"""
+    ctrl = _setup_ctrl()
+    session = _make_session()
+    session.state = SessionState.STREAMING
+    session.card_id = "card_budget"
+    session.card_msg_id = "msg_budget_card"
+    session.element_count = 1
+    ctrl._sessions[session.message_id] = session
+
+    for step in range(1, 31):
+        session.tool_use.record_start("read", f"f{step}")
+        session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
+        await ctrl._do_flush(session)
+
+    assert ctrl._client.cardkit_create.await_count == 0
+    assert session.element_count > 140
+
+    for step in range(31, 41):
+        session.tool_use.record_start("read", f"f{step}")
+        session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
+        await ctrl._do_flush(session)
+
+    # 接近硬上限时仍要主动拆卡，避免把「不早拆」修成「不拆」。
+    assert ctrl._client.cardkit_create.await_count == 1
 
 
 @pytest.mark.asyncio
