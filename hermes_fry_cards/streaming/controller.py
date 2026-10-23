@@ -42,6 +42,7 @@ from .segment_helper import (
     estimate_segment_elements,
     estimate_tool_elements,
     find_tool_split_offset,
+    panel_steps_start,
     tool_segment_end,
 )
 from .segments import Segment, SegmentState, SegmentType
@@ -256,7 +257,28 @@ class StreamingController:
                 continue
 
             if not seg.created:
-                estimated = estimate_segment_elements(seg, all_steps)
+                # 新卡首个 TOOL 段会整体替换共享面板（而不是在旧面板上叠加）：
+                # 容量判断按「替换后的面板估算」算，并先扣掉本卡已入账的面板量，
+                # 否则会把旧面板和新面板各算一遍，拆出来的卡只有 loading 图标（#41）。
+                panel_replaces = (
+                    seg.type == SegmentType.TOOL
+                    and not session.tool_panel_created
+                    and i == next(
+                        (j for j in range(session.split_index, len(segments)) if segments[j].type == SegmentType.TOOL),
+                        None,
+                    )
+                )
+                if panel_replaces:
+                    estimated = estimate_tool_elements(
+                        panel_steps_start(segments, session.split_index, seg.tool_offset),
+                        seg.tool_end_offset if seg.tool_end_offset else len(all_steps),
+                        all_steps,
+                    )
+                    new_el_total -= session.tool_panel_estimate
+                    if new_el_total < 0:
+                        new_el_total = 0
+                else:
+                    estimated = estimate_segment_elements(seg, all_steps)
                 if (
                     seg.type == SegmentType.TOOL
                     and session.element_count + new_el_total + estimated + FOOTER_RESERVE > ELEMENT_THRESHOLD
@@ -266,10 +288,18 @@ class StreamingController:
                         base_count=session.element_count + new_el_total,
                         seg=seg,
                         all_steps=all_steps,
+                        panel_start=panel_steps_start(segments, session.split_index, seg.tool_offset),
                     )
                     if split_offset is not None:
                         segment_state.split_tool_segment(i, split_offset)
-                        estimated = estimate_segment_elements(seg, all_steps)
+                        if panel_replaces:
+                            estimated = estimate_tool_elements(
+                                panel_steps_start(segments, session.split_index, seg.tool_offset),
+                                seg.tool_end_offset if seg.tool_end_offset else len(all_steps),
+                                all_steps,
+                            )
+                        else:
+                            estimated = estimate_segment_elements(seg, all_steps)
                 if (
                     session.element_count + new_el_total + estimated + FOOTER_RESERVE > ELEMENT_THRESHOLD
                     and session.element_count + new_el_total > 1
@@ -293,15 +323,18 @@ class StreamingController:
                         session.tool_panel_created = True
                         tool_panel_element_id = TOOL_PANEL_ELEMENT_ID
                         seg.created = True
-                        # 用所有工具步骤更新面板
+                        # 本卡面板从本卡首个工具段开始（拆卡后不重发旧卡步骤）
+                        panel_start = panel_steps_start(segments, session.split_index, seg.tool_offset)
+                        panel_end = seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
                         actions.append(build_tool_update_action(
                             element_id=TOOL_PANEL_ELEMENT_ID,
-                            steps=all_steps[seg.tool_offset:seg.tool_end_offset if seg.tool_end_offset else len(all_steps)],
+                            steps=all_steps[panel_start:panel_end],
                         ))
                         updated_tool_segs.append(seg)
-                        # 初始化工具面板总估算（首次创建，与 dirty 分支统一用全部步骤）
-                        estimate = estimate_tool_elements(0, len(all_steps), all_steps)
-                        session.tool_panel_estimate = estimate
+                        # 面板子元素计入卡片元素总数。这里只登记「新面板估算」，
+                        # session.tool_panel_estimate 由 _do_batch_update 成功后再推进 ——
+                        # 提前赋值会让它算出的增量恒为 0（#41）。
+                        estimate = estimate_tool_elements(panel_start, panel_end, all_steps)
                         new_el_estimates[TOOL_PANEL_ELEMENT_ID] = estimate
                         new_el_total += estimate
                     else:
@@ -340,8 +373,10 @@ class StreamingController:
                 )
                 actions.append(build_reasoning_finalized_action(seg))
             elif seg.type == SegmentType.TOOL and seg.dirty:
-                # 合并面板：用所有工具步骤更新（不只是当前 segment）
-                start, end = 0, len(all_steps)
+                # 合并面板：本卡所有工具段共用一个面板，渲染区间从本卡首个工具段起，
+                # 拆卡后不把旧卡的步骤重发到新卡（否则新卡立刻再撞元素上限，#41）。
+                start = panel_steps_start(segments, session.split_index, seg.tool_offset)
+                end = len(all_steps)
                 rollover = await self._maybe_rollover_tool_segment(
                     session=session,
                     segment_state=segment_state,
@@ -376,10 +411,11 @@ class StreamingController:
                     build_tool_update_action(element_id=shared_el_id, steps=all_steps[start:end])
                 )
                 updated_tool_segs.append(seg)
-                # 工具面板元素增量 = 当前总估算 - 上次记录的总估算（非当前段差值）
+                # 工具面板元素增量 = 当前总估算 - 上次记录的总估算（非当前段差值）。
+                # session.tool_panel_estimate 只在批更新成功后推进（见 _do_batch_update），
+                # 这里提前赋值会把它算出的增量清零（#41）。
                 if shared_el_id not in new_el_estimates:
                     delta = estimate - session.tool_panel_estimate
-                    session.tool_panel_estimate = estimate
                     new_el_estimates[shared_el_id] = estimate
                     new_el_total += delta
                 else:
@@ -613,17 +649,24 @@ class StreamingController:
         session.tool_panel_created = False
         session.tool_panel_estimate = 0
         session.split_disabled = False
+        # 已创建的 segment 留在封印后的旧卡上；新卡只承接未创建的那些。
+        # split_index 必须前移：完成态按 active_segments()（segments[split_index:]）重建，
+        # 不前移会把旧卡内容再渲染一遍，元素数再次超限（#41）。
+        split_at = next(
+            (i for i in range(seal_start_idx, len(segments)) if not segments[i].created),
+            len(segments),
+        )
+        session.split_index = split_at
         # 未创建 segment 迁移到新卡，标记 dirty 以便下一轮 flush 重新 add。
-        # 已创建 segment 保留在封印后的旧卡上，无需重置。
-        for seg in segments[seal_start_idx:]:
-            if not seg.created:
-                seg.created = False
-                seg.dirty = True
+        for seg in segments[split_at:]:
+            seg.created = False
+            seg.dirty = True
         _logger.info(
-            "CardKit force-split on element limit: msg=%s old_card=%s sealed=%d new_card=%s",
+            "CardKit force-split on element limit: msg=%s old_card=%s sealed=%d split_idx=%d new_card=%s",
             session.message_id[:12],
             old_card_id[:12],
             len(seal_segments),
+            split_at,
             new_card_id[:12],
         )
 
@@ -644,8 +687,12 @@ class StreamingController:
         """按 tool step 边界拆分过大的 dirty tool segment."""
         start = seg.tool_offset
         end = tool_segment_end(seg, all_steps)
-        estimate = estimate_tool_elements(start, end, all_steps)
-        delta = estimate - seg.element_estimate
+        # 工具面板是共享元素，增量必须以「本卡已入账的面板总量」为基准。
+        # 工具段的 element_estimate 恒为 0（共享面板的估算只记在 session 上），
+        # 拿它当基准会把整块面板重复计入，约每 17 步就触发一次拆卡（#41）。
+        panel_start = panel_steps_start(segment_state.segments, session.split_index, start)
+        estimate = estimate_tool_elements(panel_start, end, all_steps)
+        delta = estimate - session.tool_panel_estimate
         if (
             delta <= 0
             or session.element_count + pending_delta + delta + FOOTER_RESERVE <= ELEMENT_THRESHOLD
@@ -654,18 +701,25 @@ class StreamingController:
             return None
 
         split_offset = find_tool_split_offset(
-            base_count=session.element_count + pending_delta - seg.element_estimate,
+            base_count=session.element_count + pending_delta - session.tool_panel_estimate,
             seg=seg,
             all_steps=all_steps,
+            panel_start=panel_start,
         )
         if split_offset is None:
-            return None
+            # 面板已装不下哪怕 1 个新 step：按 step 边界强制拆，本卡至少保留 1 个 step，
+            # 否则拆出来的首段是空面板，拆卡也降不下来。
+            nxt = start + 1
+            tail_estimate = estimate_tool_elements(nxt, end, all_steps)
+            if session.element_count + pending_delta - session.tool_panel_estimate + tail_estimate <= ELEMENT_THRESHOLD:
+                return None
+            split_offset = nxt
 
-        old_estimate = estimate_tool_elements(seg.tool_offset, split_offset, all_steps)
+        old_estimate = estimate_tool_elements(panel_start, split_offset, all_steps)
         actions.append(
             build_tool_update_action(
                 element_id=seg.el_id,
-                steps=all_steps[seg.tool_offset:split_offset],
+                steps=all_steps[panel_start:split_offset],
             )
         )
         updated_tool_segs.append(seg)
