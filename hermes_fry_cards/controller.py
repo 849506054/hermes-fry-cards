@@ -677,7 +677,7 @@ class StreamCardController(StreamingController):
         session = self._resolve_session(None, session_key)
         if session is None or session.segment_state is None:
             return False
-        session.segment_state.add_notice(text)
+        session.segment_state.add_notice(text, bottom=True)
         self._schedule_flush(session)
         _logger.info(
             "busy_receipt_merged: incoming=%s owner=%s key=%s", message_id or "", session.message_id, session_key

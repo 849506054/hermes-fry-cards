@@ -22,6 +22,7 @@ class Segment:
     """单个内容段 — reasoning / answer / tool."""
 
     __slots__ = (
+        "bottom_notice",
         "created",
         "dirty",
         "el_id",
@@ -49,6 +50,7 @@ class Segment:
         self.start_time: float = 0.0
         self.elapsed_ms: float = 0.0
         self.reasoning_finalized: bool = False
+        self.bottom_notice: bool = False
 
 
 class SegmentState:
@@ -79,15 +81,21 @@ class SegmentState:
         # 20 轮工具调用就能产生 20 个 answer 段把卡片元素推向飞书 200 硬上限。
         self.max_answer_segments = max_answer_segments
 
-    def add_notice(self, text: str) -> Segment:
-        """提示与正文分别保存，普通通知占一个独立槽位。"""
+    def add_notice(self, text: str, *, bottom: bool = False) -> Segment:
+        """提示与正文分别保存，普通通知占一个独立槽位。
+
+        bottom=True 时元素落在卡片末尾（loading 之前），用于正在进行的轮次里
+        写入忙碌回执，避免提示跑到工具面板上方。后台回执保持默认的顶部位置。
+        """
         for segment in self.segments:
             if segment.type == SegmentType.NOTICE:
                 segment.text = text
+                segment.bottom_notice = bottom
                 segment.dirty = True
                 return segment
         segment = Segment(SegmentType.NOTICE, "notice")
         segment.text = text
+        segment.bottom_notice = bottom
         self.segments.insert(0, segment)
         return segment
 

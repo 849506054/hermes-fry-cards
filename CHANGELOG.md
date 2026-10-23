@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.4.6] - 2026-10-23
+
+### 提示
+
+- 忙碌回执写进正在跑的卡片时落在卡片末尾（loading 之前），不再插到工具面板上方；后台回执保持原来的位置。
+
+---
+
 ## [0.5.4.5] - 2026-10-23
 
 ### 拆卡

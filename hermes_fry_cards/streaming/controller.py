@@ -339,7 +339,7 @@ class StreamingController:
                     new_el_estimates[seg.el_id] = estimated
                     new_el_total += estimated
                     action = build_add_segment_action(seg, all_steps, text_size=self._cfg.body_text_size)
-                    if seg.type in (SegmentType.NOTICE,):
+                    if seg.type in (SegmentType.NOTICE,) and not seg.bottom_notice:
                         next_created = next((s for s in segments[i + 1 :] if s.created), None)
                         if next_created:
                             action["params"]["target_element_id"] = next_created.el_id

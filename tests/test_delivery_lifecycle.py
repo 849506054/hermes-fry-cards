@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from hermes_fry_cards.cardkit.builder import build_background_card
+from hermes_fry_cards.cardkit.builder import LOADING_ELEMENT_ID, build_background_card
 from hermes_fry_cards.controller import StreamCardController
 from hermes_fry_cards.feishu import FeishuClient
 from hermes_fry_cards.streaming.session import SessionState
@@ -284,3 +284,17 @@ async def test_background_notice_streams_before_existing_answer(ctrl):
     assert addition["params"]["elements"][0]["element_id"] == "notice"
     assert any(call.args[1:3] == ("notice", "receipt") for call in ctrl._client.cardkit_stream_element.await_args_list)
     assert await ctrl.on_completed_wait(message_id="A", answer="answer")
+
+
+@pytest.mark.asyncio
+async def test_busy_notice_lands_below_existing_content(ctrl):
+    """忙碌回执写入正在跑的卡时落在卡片末尾，不跑到工具面板上方。"""
+    current = register(ctrl)
+    await ctrl._do_create_card(current)
+    assert ctrl.on_answer(message_id="A", text="answer")
+    await ctrl._do_flush(current)
+    assert ctrl.on_busy_ack(session_key="key", text="busy") is True
+    await ctrl._do_flush(current)
+    actions = ctrl._client.cardkit_batch_update.await_args.args[1]
+    addition = next(action for action in actions if action["action"] == "add_elements")
+    assert addition["params"]["target_element_id"] == LOADING_ELEMENT_ID

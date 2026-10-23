@@ -44,6 +44,14 @@ def test_busy_redirect_gate_uses_upstream_configuration() -> None:
     assert asyncio.run(run(runner, MagicMock(), "sk", False)) is False
 
 
+def test_busy_redirect_gate_falls_through_when_ack_enabled() -> None:
+    runner = MagicMock()
+    runner._busy_steer_ack_enabled.return_value = True
+    body = injector._busy_ack_gate_hook("    ")
+    run = _run_hook(body, "self, event, session_key, is_redirect_mode", "    return False\n")
+    assert asyncio.run(run(runner, MagicMock(), "sk", True)) is False
+
+
 def test_redirect_signal_uses_real_anchor() -> None:
     with patch.object(hooks, "on_turn_redirected") as redirected:
         asyncio.run(_run_hook(injector._turn_redirected_hook("    "), "session_key, anchor")("sk", "real-anchor"))
