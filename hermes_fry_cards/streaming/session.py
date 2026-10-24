@@ -12,7 +12,7 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 from .flush import CARDKIT_MS, FlushController
-from .segments import Segment, SegmentState
+from .segments import POST_TURN_NOTICE_KINDS, Segment, SegmentState
 from .tooluse import ToolUseTracker
 from .unavailable_guard import UnavailableGuard
 
@@ -148,3 +148,20 @@ class CardSession:
         if self.segment_state is None:
             return []
         return [slot.text for slot in self.segment_state.notices]
+
+    def split_notices(self) -> tuple[list[str], list[str]]:
+        """按展示位拆分提示（#43 反馈）：(顶部=完成后回执, 底部=进行中提示)."""
+        if self.segment_state is None:
+            return [], []
+        return self.segment_state.split_notices()
+
+    def clear_progress_notices(self) -> None:
+        """清掉进行中提示（忙碌/重定向），保留完成后的回执.
+
+        #43 反馈：重定向换卡封旧卡时调用——提示随新卡走，旧卡正文不再复述。
+        """
+        if self.segment_state is None:
+            return
+        self.segment_state.notices = [
+            slot for slot in self.segment_state.notices if slot.kind in POST_TURN_NOTICE_KINDS
+        ]

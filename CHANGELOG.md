@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 归属解析沿用 `_sessions` / `_session_keys`：`message_id` → `session_key` → 唯一活跃卡；多卡且无标识时放弃，让 Hermes 照常发原文。
   - 重定向沿用 `on_interrupted` + `_interrupt_map` 换卡，旧卡收尾、新卡接手。
   - 新增 `BUSY_ACK` / `REDIRECT` 两个可选注入点：旧版 Hermes 缺锚点时跳过注入，`verify` 不报错。
+  - **通知区展示位分区**（#43 反馈）：提示直接渲染 Hermes 原文，不再套「💡 提示」标签；忙碌回执 / 重定向这类「本轮进行中」的提示落卡片底部（footer 之前），后台回执这类「完成后」的通知留在顶部。
+  - **合成轮次 id 识别**（#43 反馈）：后台完成回执的 `["completion", ...]` 序列 id 不再按真实消息 reply（99992354 失败后标 FAILED），识别后卡片直接投聊天（send_card_to_chat），会话键保留原 id。
+  - **连续打断换卡**（#43 反馈）：新增可选注入点 `REDIRECT_RESOLVED`，挂在 `_steer` 解包后、忙碌回执 30s 防抖之前——同一回合连续第二次打断时回执被防抖吞掉，原 REDIRECT 锚点走不到，旧卡会停在半截；现在判定一成立就换卡，与回执锚点幂等。
+  - **网关流消费者投递标记**（#43 反馈）：答案增量进卡后把 `has_durably_delivered_text` 谓词挂到 Hermes 的 stream consumer 上，按 fry 卡片健康状态回答，消除 `Normal final-send NOT suppressed ... streamed=False` 重复投递警告；封卡失败时补标文本回退，最终回复仍由网关补发。
 
 ### 修复 / Fixed
 - **工具面板增量恒为 0**（#41）：`_do_flush` 提前推进 `session.tool_panel_estimate`，批更新前的
@@ -48,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 测试 / Tests
 - 新增 `tests/test_element_budget.py`（#41 状态级回归）与 `tests/test_notice_in_card.py`（#43）。
+- `test_notice_in_card.py` 补充：提示分区（busy/redirect 底部、background 顶部）、合成 id 建会话、
+  流消费者投递标记、重定向封卡清提示、空文案换卡；`test_patcher_real_v022.py` 补充
+  `REDIRECT_RESOLVED` 在 0.22.0 / 0.22.5 真实源码上落在防抖之前的回归；`test_patcher.py` 补充
+  answer 钩子挂载流消费者标记。全量 912 passed（Windows 本机不含依赖 Hermes 源码的
+  `test_clarify_buttons.py`）。
 
 ---
 

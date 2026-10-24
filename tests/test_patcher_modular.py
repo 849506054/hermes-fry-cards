@@ -93,6 +93,7 @@ MODULAR_SOURCES = {
             )
 
         async def _handle_active_session_busy_message(self, event, session_key):
+            effective_mode, redirected = _steer.effective_mode, _steer.redirected
             message = "Queued for the next turn"
             try:
                 await adapter._send_with_retry(
@@ -225,6 +226,7 @@ def test_modular_022_apply_installs_tool_hook_in_progress_module(modular_022_cop
     # #43：忙碌回执入卡 / 重定向换卡（可选锚点）
     assert "HERMES_LARK_BUSY_ACK_BEGIN" in contents["busy"]
     assert "HERMES_LARK_REDIRECT_BEGIN" in contents["busy"]
+    assert "HERMES_LARK_REDIRECT_RESOLVED_BEGIN" in contents["busy"]
     for begin, _end in [*MARKERS, (MK_GROUP_BOUNDARY, MK_GROUP_BOUNDARY_END)]:
         total = sum(content.count(begin) for content in contents.values())
         assert total == 1, f"{begin} installed {total}x"
@@ -324,6 +326,8 @@ def test_modular_marker_distribution(modular_copy: dict[str, Path]) -> None:
     # #43：忙碌回执入卡 / 重定向换卡（可选锚点）
     assert "HERMES_LARK_BUSY_ACK_BEGIN" in contents["busy"]
     assert "HERMES_LARK_REDIRECT_BEGIN" in contents["busy"]
+    # 重定向判定点（防抖前换卡，#43 反馈）
+    assert "HERMES_LARK_REDIRECT_RESOLVED_BEGIN" in contents["busy"]
 
 
 def test_modular_followup_done_seals_card_before_merge(modular_copy: dict[str, Path]) -> None:

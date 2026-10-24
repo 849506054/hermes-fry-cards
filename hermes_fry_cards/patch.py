@@ -439,6 +439,33 @@ def on_answer_delta(*, ctrl: Any, message_id: str, text: str, session_key: str |
     return bool(ctrl.on_answer(message_id=message_id, text=text, session_key=session_key))
 
 
+def mark_stream_delivered(consumer: Any, message_id: str | None) -> None:
+    """把「最终回复已由 fry 卡片流式投递」告知网关的流消费者（#43 反馈）.
+
+    答案增量被插件接走后，Hermes 的 stream consumer 全程空转，
+    ``_run_agent_mark_streamed_delivery`` 判 ``streamed=False`` 打
+    "Normal final-send NOT suppressed" 重复投递警告。这里给消费者挂
+    ``has_durably_delivered_text`` 谓词（0.21+ 抑制判定的官方查询点，
+    ``getattr`` 鸭子类型读取）：按 fry 卡片的健康状态回答。旧版 mono
+    Hermes 只查 ``final_response_sent``（不可伪造，会触发 stale-finalize
+    改写路径），不去碰——mono 侧本无该警告，最终投递由 already_sent 抑制。
+    """
+    if consumer is None:
+        return
+    if getattr(consumer, "_fry_delivery_predicate", None) is None:
+        def _delivered(_final_text: str) -> bool:
+            try:
+                ctrl = get_controller()
+            except Exception:
+                return False
+            return bool(ctrl.stream_card_healthy(getattr(consumer, "_fry_msg_id", None)))
+
+        consumer._fry_delivery_predicate = _delivered
+        consumer.has_durably_delivered_text = _delivered
+    # 重定向换卡后 event_message_id 变化：每次增量都刷新归属
+    consumer._fry_msg_id = message_id
+
+
 @_safe_hook(default_return=False, log_level="debug")
 def on_thinking_delta(*, ctrl: Any, message_id: str, text: str, session_key: str | None = None) -> bool:
     """[注入点 5] _interim_assistant_cb — thinking.delta."""

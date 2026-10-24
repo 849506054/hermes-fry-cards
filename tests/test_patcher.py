@@ -367,6 +367,31 @@ class TestGeneratedAnswerHook:
 
         assert result == "native"
 
+    def test_consumed_delta_marks_stream_consumer_delivered(self) -> None:
+        """#43 反馈：增量进卡后把投递事实挂到网关流消费者，抑制判定不再空转."""
+        callback = _build_answer_hook_runner(use_turn_context=True)
+        consumer = MagicMock()
+        ctx = MagicMock()
+        ctx.event_message_id = "modern-message"
+        ctx._run_still_current.return_value = True
+        ctx.stream_consumer_holder = [consumer]
+
+        with patch("hermes_fry_cards.patch.on_answer_delta", return_value=True):
+            callback("delta", ctx)
+
+        assert consumer._fry_msg_id == "modern-message"
+        assert callable(consumer.has_durably_delivered_text)
+
+    def test_consumed_delta_without_consumer_is_silent(self) -> None:
+        callback = _build_answer_hook_runner(use_turn_context=True)
+        ctx = MagicMock()
+        ctx.event_message_id = "modern-message"
+        ctx._run_still_current.return_value = True
+        ctx.stream_consumer_holder = [None]
+
+        with patch("hermes_fry_cards.patch.on_answer_delta", return_value=True):
+            callback("delta", ctx)  # 不抛即通过
+
 
 class TestGeneratedToolHook:
     def test_turn_callbacks_scope_consumes_tool_event_before_ctx_binding(self) -> None:

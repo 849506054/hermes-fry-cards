@@ -144,27 +144,29 @@ def notice_element_id(index: int) -> str:
     return _NOTICE_ELEMENT_ID if index == 0 else f"{_NOTICE_ELEMENT_ID}_{index}"
 
 
-def build_notice_elements(texts: list[str] | None) -> list[dict]:
-    """通知区元素列表：每条提示一个元素，id 按序号派生，保证卡内唯一."""
+def build_notice_elements(texts: list[str] | None, *, offset: int = 0) -> list[dict]:
+    """通知区元素列表：每条提示一个元素，id 按序号派生，保证卡内唯一.
+
+    ``offset``：顶部区与底部区共存时，底部元素 id 接在顶部序号之后派生，
+    避免两个区撞同一个 ``fry_notice``（#43 反馈）。
+    """
     return [
-        build_notice_element(text, element_id=notice_element_id(index))
+        build_notice_element(text, element_id=notice_element_id(offset + index))
         for index, text in enumerate(texts or [])
     ]
 
 
 def build_notice_element(text: str, *, element_id: str = _NOTICE_ELEMENT_ID) -> dict:
-    """通知区的单条提示（Hermes 原文，只加状态标签）.
+    """通知区的单条提示（Hermes 原文，原样渲染）.
 
-    文案不新增：``text`` 是 Hermes 合成的那条原文，这里原样写入；只有标签走 i18n。
+    文案不新增也不包装（#43 反馈）：忙碌回执 / 重定向文案本身已是完整一句话，
+    再套「💡 提示」标签反而像一段新内容。原样写入；视觉区分由位置（底部通知位）
+    承担，不写进 content。
     """
     return {
         "tag": "markdown",
         "element_id": element_id,
-        "content": f"💡 **{_T['notice'][0]}**\n{text}",
-        "i18n_content": {
-            "zh_cn": f"💡 **{_T['notice'][1]}**\n{text}",
-            "en_us": f"💡 **{_T['notice'][0]}**\n{text}",
-        },
+        "content": text,
     }
 
 
@@ -758,10 +760,6 @@ def build_streaming_card_v2(
             _build_reasoning_panel(" ", expanded=True, element_id=REASONING_ELEMENT_ID)
         )
 
-    if notice:
-        # 通知区：流式态只显示最新一条（Hermes 原文），随完成态卡片顶部完整呈现（#43）
-        elements.append(build_notice_element(notice))
-
     if show_streaming_element:
         elements.append(_streaming_element(text_size=text_size))
 
@@ -771,6 +769,11 @@ def build_streaming_card_v2(
             elements.append(_build_tool_panel(tool_steps, elapsed_ms, running=True))
         else:
             elements.append(build_streaming_tool_use_pending_panel())
+
+    if notice:
+        # 通知区：流式态只显示最新一条（Hermes 原文），落卡片底部（loading 之前），
+        # 不和工具输出混在一起（#43 反馈）；完成态按提示种类分区呈现。
+        elements.append(build_notice_element(notice))
 
     elements.append(_loading_element())
 
@@ -815,11 +818,16 @@ def build_complete_card(
     show_tool_use: bool = True,
     width_mode: str = "default",
     notices: list[str] | None = None,
+    progress_notices: list[str] | None = None,
 ) -> dict[str, Any]:
     """完成态流式卡片 — 推理+工具合并成底部统一面板，答案在上面.
 
     统一面板内部按 segments 的**真实发生顺序**交错渲染：
     💭 思考1 → 🔧 工具组1 → 💭 思考2 → 🔧 工具组2 …（对齐工作流时间线）。
+
+    通知区分两个展示位（#43 反馈）：``notices``（后台回执等完成后通知）在正文
+    顶部；``progress_notices``（忙碌回执 / 重定向等本轮进行中的提示）在卡片
+    底部（footer 之前），不与工具输出混排。元素 id 跨区连续派生，保证唯一。
     """
     elements: list[dict] = []
     has_answer = False
@@ -953,6 +961,10 @@ def build_complete_card(
 
     if not has_answer:
         elements.append({"tag": "markdown", "content": _T["done"][0], "text_size": body_text_size})
+
+    # 进行中的提示（忙碌回执 / 重定向）落底部：正文之后、footer 之前（#43 反馈）。
+    # 元素 id 接在顶部提示序号之后派生，两个区不撞 id。
+    elements.extend(build_notice_elements(progress_notices, offset=len(notices or [])))
 
     if footer_enabled:
         elements.extend(

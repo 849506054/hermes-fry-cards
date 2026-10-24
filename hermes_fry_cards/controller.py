@@ -54,6 +54,19 @@ _NOTICE_RESTART_EN = "⚠️ The gateway restarted during this turn; this card s
 _NOTICE_RESTART_ZH = "⚠️ 网关在本轮处理中重启，卡片已停止更新。"
 
 
+def _is_synthetic_turn_id(message_id: str) -> bool:
+    """是否为网关合成轮次的消息 id（#43 反馈）.
+
+    后台完成回执等合成事件用序列化序列当 id（``["completion", <task>, <ts>]``），
+    不是飞书 open_message_id：拿它 reply 必然 99992354 target_message_gone。
+    这类轮次的卡片改走 send_card_to_chat。
+    """
+    if not isinstance(message_id, str):
+        return True
+    cleaned = message_id.strip()
+    return cleaned.startswith('["') or cleaned.startswith("['")
+
+
 class StreamCardController(StreamingController):
     """流式卡片控制器 — 管理多条消息的卡片生命周期."""
 
@@ -369,7 +382,7 @@ class StreamCardController(StreamingController):
         session = self._notice_session(message_id, session_key)
         if session is None or session.segment_state is None:
             return False
-        session.segment_state.add_notice(text)
+        session.segment_state.add_notice(text, kind="busy")
         self._schedule_flush(session)
         _logger.info(
             "busy_receipt_merged: incoming=%s owner=%s key=%s",
@@ -401,7 +414,7 @@ class StreamCardController(StreamingController):
                 _logger.info("redirect_notice_pending: key=%s", session_key)
                 return True
             return False
-        session.segment_state.add_notice(text)
+        session.segment_state.add_notice(text, kind="redirect")
         self._schedule_flush(session)
         _logger.info(
             "redirect_notice_merged: incoming=%s owner=%s key=%s",
@@ -519,7 +532,7 @@ class StreamCardController(StreamingController):
             pending = self._pending_notices.pop(session_key, [])
             if session.segment_state is not None:
                 for text in pending:
-                    session.segment_state.add_notice(text)
+                    session.segment_state.add_notice(text, kind="redirect")
 
     def _chat_type_allowed(self, chat_type: str) -> bool:
         """聊天类型是否允许发流式卡片.
@@ -549,14 +562,37 @@ class StreamCardController(StreamingController):
 
         message_id 缺失时（后台通知/clarify 恢复等合成轮次）降级为 synthetic
         会话：卡片直接 send_card_to_chat，不再放弃卡片回退纯文本。
+        合成 id（如后台完成回执的 ``["completion", ...]`` 序列，#43 反馈）同样走
+        synthetic 投递：它不是飞书 open_message_id，reply 必然 99992354。
 
-        返回实际创建的 message_id（合成轮次为 ``syn-*``），失败返回 None。
+        返回实际创建的 message_id（无 id 的合成轮次为 ``syn-*``），失败返回 None。
         排队续轮的收尾钩子需要它把卡片归属传给完成钩子（#35）。
         """
         if not self.enabled:
             return None
         synthetic = False
-        if not message_id:
+        if message_id and not isinstance(message_id, str):
+            # 防御：合成事件可能直接传序列对象，_sessions 以它作键会 unhashable
+            import uuid as _uuid
+
+            _logger.info(
+                "on_message_started: non-str message_id %r, degrading to syn-*",
+                message_id,
+            )
+            message_id = "syn-" + _uuid.uuid4().hex[:16]
+            synthetic = True
+            anchor_id = None
+        elif message_id and _is_synthetic_turn_id(message_id):
+            # 合成 id 保留原值作会话键（完成回调按它找会话），但卡片不能 reply 它
+            if not chat_id or not session_key:
+                _logger.warning(
+                    "on_message_started: synthetic turn id without chat/session_key, chat=%s",
+                    chat_id[:12] if chat_id else "",
+                )
+                return None
+            synthetic = True
+            anchor_id = None
+        elif not message_id:
             if not chat_id or not session_key:
                 _logger.warning("on_message_started: missing message_id, chat=%s", chat_id[:12])
                 return None
@@ -615,6 +651,22 @@ class StreamCardController(StreamingController):
             self._text_fallback_needed.discard(key)
             self._text_fallback_aliases.pop(key, None)
         return True
+
+    def stream_card_healthy(self, message_id: str | None) -> bool:
+        """fry 卡片是否仍在健康承载这轮回复（网关最终投递抑制判定用）.
+
+        #43 反馈：答案增量被插件接走后 Hermes 自己的 stream consumer 全程空转，
+        ``_run_agent_mark_streamed_delivery`` 判 streamed=False 打重复投递警告。
+        ``mark_stream_delivered`` 把本方法作为 ``has_durably_delivered_text`` 谓词
+        挂到消费者上：卡活着（流式/收尾中且有卡）→ True 让网关走抑制分支；
+        卡挂了 → False，最终文本仍由网关投递。
+        """
+        if not self.enabled or not message_id:
+            return False
+        session = self._resolve_session(message_id, None)
+        if session is None or session.state.is_terminal:
+            return False
+        return session.has_card or session.state in (SessionState.IDLE, SessionState.CREATING)
 
     def on_thinking(self, *, message_id: str, text: str, session_key: str | None = None) -> bool:
         """思考内容增量."""
@@ -791,6 +843,9 @@ class StreamCardController(StreamingController):
         if old_session is not None:
             old_session.state = SessionState.ABORTED
             old_session.flush.mark_completed()
+            # #43 反馈：进行中的提示（忙碌/重定向）随新卡走，旧卡正文不复述——
+            # 否则同一句话在旧卡的完成态和新卡上各出现一遍。完成后的后台回执保留。
+            old_session.clear_progress_notices()
             _logger.info(
                 "interrupt_abort_old: msg=%s -> msg=%s",
                 old_message_id[:12],
@@ -889,6 +944,7 @@ class StreamCardController(StreamingController):
         """消息处理完成，并等待卡片真正收尾后返回是否已发送."""
         if not self.enabled:
             return False
+        requested_id = message_id
         session = self._completion_session(message_id, session_key)
         if session is None:
             return False
@@ -928,6 +984,17 @@ class StreamCardController(StreamingController):
         completed = await self._complete_session_wait(session)
         if completed:
             self._maybe_send_completion_notice(session, is_error=is_error)
+        else:
+            # 封卡失败（重试 3 次后仍不成）：标记文本回退，撤销 already_sent，
+            # 让网关把最终回复按纯文本补发——流式抑制标记可能已把 already_sent
+            # 置位（见 mark_stream_delivered），不撤销用户就什么都收不到。
+            self._mark_text_fallback_needed(session)
+            if requested_id and requested_id != session.message_id:
+                # 完成回调按原始 id 查询回退标志（重定向后二者可能不同）
+                self._text_fallback_needed.add(requested_id)
+                self._text_fallback_aliases[requested_id] = {
+                    requested_id, session.message_id,
+                }
         return completed
 
     def _maybe_send_completion_notice(self, session: CardSession, *, is_error: bool) -> None:
@@ -1011,7 +1078,7 @@ class StreamCardController(StreamingController):
             return False
         session = self._notice_session(reply_to_message_id)
         if session is not None and session.chat_id == chat_id and session.segment_state is not None:
-            session.segment_state.add_notice(content)
+            session.segment_state.add_notice(content, kind="background")
             self._schedule_flush(session)
             _logger.info("background_receipt_merged: id=%s chat=%s", session.message_id, chat_id[:12])
             return True

@@ -29,7 +29,8 @@ _T: dict[str, tuple[str, str]] = {
     "thinking_panel": ("Thinking", "思考中"),
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),
-    # 通知区（#43）：Hermes 原文由 _content_t 选取语言后原样写入，标签双语。
+    # 通知区（#43）：提示渲染 Hermes 原文，不再套「💡 提示」标签（#43 反馈），
+    # 下列词条仅供外部引用/排查保留。
     "notice": ("Notice", "提示"),
     "notice_redirect": ("Redirected", "已重定向"),
     "notice_background": ("Background task", "后台任务"),

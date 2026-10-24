@@ -299,3 +299,43 @@ def test_v0225_remove_restores_busy_module(real_v0225: dict[str, Path]) -> None:
     patcher.apply()
     patcher.remove()
     assert real_v0225["busy"].read_text(encoding="utf-8") == original
+
+
+def _assert_redirect_resolved_before_debounce(busy_lines: list[str], busy_file: Path) -> None:
+    """REDIRECT_RESOLVED 必须赶在 30s 防抖之前：连续第二次打断才有卡可换（#43 反馈）."""
+    from hermes_fry_cards.patcher import MK_REDIRECT_RESOLVED
+
+    resolved = next(
+        i for i, line in enumerate(busy_lines) if MK_REDIRECT_RESOLVED in line
+    )
+    steer_unpack = next(
+        i for i, line in enumerate(busy_lines)
+        if "effective_mode, redirected = _steer.effective_mode" in line
+    )
+    debounce = next(
+        i for i, line in enumerate(busy_lines)
+        if "busy_ack_ts if _busy_state else 0" in line
+    )
+    assert steer_unpack < resolved < debounce, (
+        f"{busy_file.name}: hook must sit between the _steer unpack and the ack debounce"
+    )
+    body = "\n".join(busy_lines[resolved:debounce])
+    assert "redirected=bool(redirected)" in body
+    assert "text=''" in body
+
+
+def test_v022_redirect_resolved_anchors_before_debounce(real_v022: dict[str, Path]) -> None:
+    Patcher(modular_paths=real_v022).apply()
+    _assert_redirect_resolved_before_debounce(
+        real_v022["busy"].read_text(encoding="utf-8").splitlines(),
+        real_v022["busy"],
+    )
+
+
+def test_v0225_redirect_resolved_anchors_before_debounce(real_v0225: dict[str, Path]) -> None:
+    """0.22.3+ 宿主拆进 `_busy_interrupt_and_ack`，锚点跟着搬，仍在防抖之前."""
+    Patcher(modular_paths=real_v0225).apply()
+    _assert_redirect_resolved_before_debounce(
+        real_v0225["busy"].read_text(encoding="utf-8").splitlines(),
+        real_v0225["busy"],
+    )

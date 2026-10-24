@@ -53,8 +53,10 @@ class Segment:
 class NotificationSlot:
     """一条待渲染到卡片通知区的提示（Hermes 原文）.
 
-    不占卡片元素：流式态由 loading 图标淡出表示，完成态由 builder 统一渲染在
-    完成态卡片顶部。``kind`` 仅用于日志，不参与文案。
+    不占卡片元素：流式态由 loading 图标淡出表示，完成态由 builder 统一渲染。
+    ``kind`` 决定完成态的展示位（#43 反馈）：
+    - ``busy`` / ``redirect``：本轮仍在进行的提示 → 卡片底部（footer 之前）；
+    - ``background``：完成后的后台回执 → 卡片顶部。
     """
 
     __slots__ = ("kind", "text")
@@ -62,6 +64,11 @@ class NotificationSlot:
     def __init__(self, text: str, kind: str = "notice") -> None:
         self.text = text
         self.kind = kind
+
+
+# 完成后到达、展示在卡片顶部的提示种类；其余（忙碌/重定向等本轮进行中的
+# 提示）一律落底部，避免和工具输出混在一起（#43 反馈）。
+POST_TURN_NOTICE_KINDS = frozenset({"background"})
 
 
 class SegmentState:
@@ -94,18 +101,18 @@ class SegmentState:
         # 20 轮工具调用就能产生 20 个 answer 段把卡片元素推向飞书 200 硬上限。
         self.max_answer_segments = max_answer_segments
 
-    def add_notice(self, text: str) -> None:
+    def add_notice(self, text: str, kind: str = "notice") -> None:
         """记录一条状态提示（Hermes 原文），随完成态卡片一起渲染.
 
         #43：忙碌回执 / 重定向 / 后台回执由 Hermes 自己合成文案，插件只负责把它
-        写进当前卡片的通知槽，不另写文案、不另发纯文本。展示位置与 i18n 标签
-        由 builder 决定（``NotificationSlot``）。
+        写进当前卡片的通知槽，不另写文案、不另发纯文本。``kind`` 决定完成态展示位，
+        展示位置与渲染由 builder 决定（``NotificationSlot``）。
         """
         cleaned = text.strip()
         if not cleaned:
             return
         if not any(slot.text == cleaned for slot in self.notices):
-            self.notices.append(NotificationSlot(cleaned))
+            self.notices.append(NotificationSlot(cleaned, kind))
 
     def _new_reasoning(self, text: str) -> Segment:
         c = self._counter
@@ -302,3 +309,14 @@ class SegmentState:
     def has_dirty(self) -> bool:
         """是否有需要 flush 的脏段."""
         return any(seg.dirty for seg in self.segments)
+
+    def split_notices(self) -> tuple[list[str], list[str]]:
+        """按展示位拆分提示（#43 反馈）：(顶部=完成后回执, 底部=进行中提示).
+
+        后台回执这类「回合结束后」的通知放顶部；忙碌回执 / 重定向这类
+        「本轮还在进行」的提示落底部（footer 之前），不和工具输出混在一起。
+        各自保持到达顺序。
+        """
+        top = [slot.text for slot in self.notices if slot.kind in POST_TURN_NOTICE_KINDS]
+        bottom = [slot.text for slot in self.notices if slot.kind not in POST_TURN_NOTICE_KINDS]
+        return top, bottom

@@ -41,6 +41,7 @@ _HOOK_NAMES = [
     "BUSY_ACK",
     "REDIRECT",
     "COMPRESSION",
+    "REDIRECT_RESOLVED",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -63,10 +64,13 @@ MK_CLARIFY, MK_CLARIFY_END = MARKERS[15]
 MK_BUSY_ACK, MK_BUSY_ACK_END = MARKERS[16]
 MK_REDIRECT, MK_REDIRECT_END = MARKERS[17]
 MK_COMPRESSION, MK_COMPRESSION_END = MARKERS[18]
+MK_REDIRECT_RESOLVED, MK_REDIRECT_RESOLVED_END = MARKERS[19]
 
 # 可选注入点：锚点不存在时跳过而不让整次安装失败（#43 提示入卡与压缩封卡）。
 # 旧版 Hermes 或精简布局可能缺失部分回调，缺失时插件退回既有行为。
-OPTIONAL_HOOKS: frozenset[str] = frozenset({"busy_ack", "redirect", "compression"})
+OPTIONAL_HOOKS: frozenset[str] = frozenset(
+    {"busy_ack", "redirect", "compression", "redirect_resolved"}
+)
 _OPTIONAL_MARKERS: frozenset[str] = frozenset(
     f"# {PREFIX}_{name.upper()}_BEGIN" for name in OPTIONAL_HOOKS
 )
@@ -319,6 +323,38 @@ def _redirect_hook(indent: str) -> str:
             "            text=message,",
             "        )",
             *_hook_exception_lines("redirect"),
+        ],
+    )
+
+
+def _redirect_resolved_hook(indent: str) -> str:
+    """重定向判定点换卡：赶在忙碌回执 30s 防抖之前（#43 反馈）.
+
+    连续第二次打断时 Hermes 的回执被防抖吞掉（``busy_ack_ts`` 30s 内直接
+    return），REDIRECT 锚点（回执发送前）永远走不到，旧卡停在半截、新消息
+    没有卡。这个锚点挂在 ``_steer`` 解包之后、防抖之前：重定向判定一成立就
+    换卡（旧卡收尾、新卡接手），与回执锚点幂等（都走 ``on_interrupted``，
+    旧卡已终态/新卡已存在时均为 no-op）。非重定向模式（steer/queue）传空
+    文案，插件侧 no-op。
+    """
+    return _make_hook(
+        indent,
+        MK_REDIRECT_RESOLVED,
+        MK_REDIRECT_RESOLVED_END,
+        [
+            "try:",
+            "    if event.source.platform.value.lower() in ('feishu', 'lark'):",
+            "        from hermes_fry_cards.patch import on_turn_redirected",
+            "        on_turn_redirected(",
+            "            new_message_id=event.message_id,",
+            "            chat_id=event.source.chat_id,",
+            "            chat_type=getattr(event.source, 'chat_type', '') or '',",
+            "            session_key=session_key,",
+            "            anchor_id=self._reply_anchor_for_event(event),",
+            "            redirected=bool(redirected),",
+            "            text='',",
+            "        )",
+            *_hook_exception_lines("redirect_resolved"),
         ],
     )
 
@@ -622,6 +658,16 @@ def _answer_hook(indent: str) -> str:
             "        except NameError:",
             "            _lark_session_key = None",
             "    if text and _lark_run_current() and on_answer_delta(message_id=_lark_message_id, text=text, session_key=_lark_session_key):",
+            "        try:",
+            "            # 增量由 fry 卡片接管：把投递事实挂到网关流消费者上，",
+            "            # 最终 send 的抑制判定按卡片健康状态走 True 分支（#43 反馈），",
+            "            # 不再打 streamed=False 的重复投递警告。",
+            "            from hermes_fry_cards.patch import mark_stream_delivered",
+            "            _lark_sc_holder = getattr(ctx, 'stream_consumer_holder', None)",
+            "            if _lark_sc_holder is not None:",
+            "                mark_stream_delivered(_lark_sc_holder[0], _lark_message_id)",
+            "        except Exception:",
+            "            pass",
             "        try:",
             "            _lark_stts_consumer = _stts_consumer_ref",
             "        except NameError:",
@@ -953,6 +999,7 @@ _HOOK_FNS = {
     "clarify": _clarify_hook,
     "busy_ack": _busy_ack_hook,
     "redirect": _redirect_hook,
+    "redirect_resolved": _redirect_resolved_hook,
     "compression": _compression_hook,
     "group_boundary": _group_boundary_hook,
 }
@@ -1293,6 +1340,9 @@ class Patcher:
                 # #43 可选锚点：旧版 Hermes 缺任一回调时跳过注入（见 _inject_sites 的 optional 处理）
                 ("busy_ack", "busy ack", _find_busy_ack_site),
                 ("redirect", "redirect", _find_redirect_site),
+                # 重定向判定点（回执防抖之前）：连续第二次打断的回执被防抖吞掉时
+                # 仍能换卡（#43 反馈）
+                ("redirect_resolved", "redirect resolved", _find_redirect_resolved_site),
             ],
             # 0.22+ 独立 progress 模块的宿主（tool 注入点按 progress_callback 归属动态挂载）。
             "progress": [],
@@ -1681,6 +1731,26 @@ def _find_redirect_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] |
     分流（重定向才换卡，其余并入当前卡），所以两种形态共用一个锚点。
     """
     return _find_busy_notice_site(tree, lines)
+
+
+_REDIRECT_RESOLVED_ANCHOR = "effective_mode, redirected = _steer.effective_mode, _steer.redirected"
+
+
+def _find_redirect_resolved_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """重定向判定点：``_steer`` 解包语句之后、回执防抖之前（#43 反馈）.
+
+    连续第二次打断的回执被 30s 防抖吞掉，REDIRECT 锚点（发送前）走不到；
+    这里挂在解包后立即换卡。宿主随版本在两个忙碌函数间迁移（0.22.0 在
+    ``_handle_active_session_busy_message``，0.22.3+ 拆进
+    ``_busy_interrupt_and_ack``），按 ``_BUSY_ACK_HOSTS`` 顺序试。
+    """
+    for host in _BUSY_ACK_HOSTS:
+        hit = _find_call_line_in_function(tree, lines, host, _REDIRECT_RESOLVED_ANCHOR)
+        if hit is None:
+            continue
+        end_idx = _statement_end_after(tree, hit[0] + 1)
+        return end_idx, _safe_indent(lines, end_idx) or hit[1]
+    return None
 
 
 def _find_busy_notice_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:

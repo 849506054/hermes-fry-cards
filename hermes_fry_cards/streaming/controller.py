@@ -97,6 +97,11 @@ def _sync_notice_elements(session: CardSession) -> list[str]:
     return notices
 
 
+def _split_notice_slots(session: CardSession) -> tuple[list[str], list[str]]:
+    """通知区按展示位拆分（#43 反馈）：(顶部=完成后的回执, 底部=进行中提示)."""
+    return session.split_notices()
+
+
 async def _resolve_answer_images(
     segments: list[Segment],
     resolver: ImageResolver,
@@ -1072,7 +1077,10 @@ class StreamingController:
             )
 
         # 完成态通知区每条提示占一个元素：先记账再判断，避免低估撞 300305
-        notices = _sync_notice_elements(session)
+        _sync_notice_elements(session)
+        # 展示位拆分（#43 反馈）：后台回执等完成后通知在顶部，忙碌/重定向等
+        # 进行中提示落底部（footer 之前）。记账仍按总条数。
+        top_notices, progress_notices = _split_notice_slots(session)
         card = build_complete_card(
             segments=active_segments,
             all_tool_steps=all_tool_steps,
@@ -1089,7 +1097,8 @@ class StreamingController:
             body_text_size=self._cfg.body_text_size,
             show_tool_use=self._cfg.show_tool_use,
             width_mode=self._cfg.width_mode,
-            notices=notices,
+            notices=top_notices,
+            progress_notices=progress_notices,
         )
 
         streaming_closed = False

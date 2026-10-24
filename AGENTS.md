@@ -50,7 +50,11 @@ gateway/run.py (Hermes)
        ├─ on_message_completed_wait → controller.on_completed_wait()
        ├─ on_message_aborted    → controller.on_aborted()
        ├─ on_session_aborted    → controller.on_session_aborted() (busy-session /stop)
-       └─ on_background_deliver → controller.on_background_deliver()
+       ├─ on_background_deliver → controller.on_background_deliver()
+       ├─ on_busy_ack           → controller.on_busy_ack() (busy receipt into notice slot, #43)
+       ├─ on_turn_redirected    → patch.on_turn_redirected() (redirect: switch cards; else merge notice, #43)
+       ├─ on_turn_redirected (REDIRECT_RESOLVED, optional) → same, injected after the _steer unpack BEFORE the 30s busy-ack debounce so a second consecutive interrupt still switches cards (#43)
+       └─ on_session_compressed → controller.on_compression() (optional, seal card on context compaction)
 
 cron/scheduler.py (Hermes)
   └─ CronPatcher (patcher.py) injects on_cron_deliver into _deliver_result
@@ -126,4 +130,7 @@ Studio (studio/ — visual config workbench, stdlib http.server + native JS only
 - The follow-up drain hooks manage card lifecycle for Hermes's queued follow-up messages (triggered when `busy_text_mode: queue` or `busy_input_mode: queue`). `on_queued_followup_boundary` is injected at `was_interrupted = result.get("interrupted")` in `_run_agent` — it finalizes the current card and sets `response_previewed`/`already_sent` on the result dict before the drain loop processes the queued message. `on_queued_followup_result` is injected at `return _preserve_queued_followup_history_offset(...)` and uses `setdefault` to carry the deepest `_hermes_lark_completion_id` back through the recursive merge chain.
 - The COMPLETE hook uses `_lark_completion_id = agent_result.get('_hermes_lark_completion_id') or event.message_id` — in follow-up scenarios the deepest message_id propagates up via `on_queued_followup_result`, ensuring the correct card session is finalized. Non-follow-up scenarios fall back to `event.message_id`.
 - The background deliver hook (`on_background_deliver`) is injected in `_run_background_task` after `adapter.extract_images(response)`. It uses `ReplyMessage` API with `event_message_id` as anchor, so cards land in the correct topic. On success, `text_content` is cleared to avoid duplicate text delivery, while images and media files continue through the original Hermes loops. On failure, the original Hermes delivery logic runs as fallback.
+- Notices (#43) render Hermes's text raw — no `💡 提示` label. Zones: in-progress notices (kind `busy`/`redirect`) go to the card BOTTOM (streaming: before loading; completed: before footer), post-turn receipts (kind `background`) stay at the TOP. `on_interrupted` clears the old card's progress notices on redirect so the sentence is not rendered twice.
+- Synthetic turn ids (background completion receipts, e.g. `["completion", <task>, <ts>]`) are detected in `on_message_started` (`_is_synthetic_turn_id`) and treated like `syn-*` turns: the card is sent via `send_card_to_chat` instead of `reply_card_by_id` (which would fail 99992354); the id is kept as the session key.
+- The answer hook marks Hermes's stream consumer via `patch.mark_stream_delivered` when a delta is consumed: it installs `has_durably_delivered_text` (the duck-typed query point in `_run_agent_stream_confirmed_final_delivery`) backed by `controller.stream_card_healthy`, so `_run_agent_mark_streamed_delivery` takes the suppression branch instead of logging the "Normal final-send NOT suppressed" duplicate-risk warning. `on_completed_wait` marks the text fallback when sealing fails so the gateway's `already_sent` is undone and the final text still delivers.
 - Commit messages: body should use bullet list format (unnumbered `- item`).

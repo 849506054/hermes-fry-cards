@@ -46,10 +46,8 @@ def test_complete_card_renders_notices_above_body() -> None:
     card = build_complete_card(segments=[], all_tool_steps=[], notices=[BUSY_TEXT, REDIRECT_TEXT])
     elements = card["body"]["elements"]
     assert elements[0]["element_id"] == "fry_notice"
-    assert BUSY_TEXT in elements[0]["content"]
-    assert REDIRECT_TEXT in elements[1]["content"]
-    # 文案就是 Hermes 原文，不做改写
-    assert "Queued for the next turn" in elements[0]["content"]
+    assert elements[0]["content"] == BUSY_TEXT
+    assert elements[1]["content"] == REDIRECT_TEXT
 
 
 def test_complete_card_without_notices_has_no_notice_elements() -> None:
@@ -57,10 +55,12 @@ def test_complete_card_without_notices_has_no_notice_elements() -> None:
     assert not [el for el in card["body"]["elements"] if el.get("element_id") == "fry_notice"]
 
 
-def test_notice_element_keeps_original_text_in_both_locales() -> None:
-    element = build_notice_element(BUSY_TEXT)
-    assert BUSY_TEXT in element["i18n_content"]["zh_cn"]
-    assert BUSY_TEXT in element["i18n_content"]["en_us"]
+def test_notice_element_renders_raw_text_without_label() -> None:
+    """#43 反馈：重定向/忙碌文案本身是完整一句话，不再套「💡 提示」标签."""
+    element = build_notice_element(REDIRECT_TEXT)
+    assert element["content"] == REDIRECT_TEXT
+    assert "💡" not in element["content"]
+    assert "提示" not in element["content"]
 
 
 # ── 忙碌回执 ────────────────────────────────────────────────────────────────
@@ -216,6 +216,7 @@ async def test_background_receipt_only_merges_into_same_chat() -> None:
 
 @pytest.mark.asyncio
 async def test_completed_card_includes_notice_slot() -> None:
+    """进行中的提示（忙碌回执）落完成态卡片底部（footer 之前，#43 反馈）."""
     ctrl = _setup_ctrl()
     ctrl._client = _mock_client()
     session = _streaming(ctrl, "msg_done", key="key_done")
@@ -229,12 +230,15 @@ async def test_completed_card_includes_notice_slot() -> None:
     assert ok is True
     card = ctrl._client.cardkit_update.call_args.args[1]
     bodies = card["body"]["elements"]
-    assert bodies[0]["element_id"] == "fry_notice"
-    assert BUSY_TEXT in bodies[0]["content"]
+    notice_positions = [i for i, el in enumerate(bodies) if el.get("element_id") == "fry_notice"]
+    assert notice_positions, "提示必须出现在完成态卡片上"
+    # 底部通知位：在答案正文之后（不在卡顶）
+    assert notice_positions[0] > 0
+    assert bodies[notice_positions[0]]["content"] == BUSY_TEXT
 
 
 def test_streaming_card_carries_latest_notice_after_redirect() -> None:
-    """重定向后新卡建立时带上提示，新卡里也能看到."""
+    """重定向后新卡建立时带上提示；提示落卡片底部（loading 之前，#43 反馈）."""
     from hermes_fry_cards.cardkit.builder import build_streaming_card_v2
     from hermes_fry_cards.streaming.controller import _latest_notice
 
@@ -243,7 +247,12 @@ def test_streaming_card_carries_latest_notice_after_redirect() -> None:
     assert _latest_notice(session) == REDIRECT_TEXT
 
     card = build_streaming_card_v2(notice=_latest_notice(session))
-    assert card["body"]["elements"][0]["element_id"] == "fry_notice"
+    elements = card["body"]["elements"]
+    assert elements[-1]["element_id"] == "loading_icon"
+    assert elements[-2]["element_id"] == "fry_notice"
+    assert elements[-2]["content"] == REDIRECT_TEXT
+    # 不在卡片顶部（工具输出之上）
+    assert elements[0]["element_id"] != "fry_notice"
 
 
 # ── 通知区元素记账（#43 评审） ──────────────────────────────────────────────
@@ -387,3 +396,204 @@ def test_on_session_compressed_skips_when_no_active_session() -> None:
 
     with patch.object(patch_mod, "get_controller", return_value=ctrl):
         assert on_session_compressed(session_key="non_existent") is False
+
+
+# ── 提示分区：进行中提示落底部，后台回执在顶部（#43 反馈） ──────────────────
+
+
+def test_notice_kinds_split_bottom_and_top() -> None:
+    """忙碌/重定向是进行中提示（底部），后台回执是完成后通知（顶部）."""
+    state = SegmentState()
+    state.add_notice(BUSY_TEXT, kind="busy")
+    state.add_notice(REDIRECT_TEXT, kind="redirect")
+    state.add_notice("后台任务完成", kind="background")
+
+    top, bottom = state.split_notices()
+    assert top == ["后台任务完成"]
+    assert bottom == [BUSY_TEXT, REDIRECT_TEXT]
+
+
+def test_complete_card_renders_progress_notices_at_bottom() -> None:
+    card = build_complete_card(
+        segments=[],
+        all_tool_steps=[],
+        notices=["后台任务完成"],
+        progress_notices=[BUSY_TEXT, REDIRECT_TEXT],
+    )
+    elements = card["body"]["elements"]
+    ids = [el.get("element_id") for el in elements]
+    assert ids.index("fry_notice") < ids.index("fry_notice_1") < ids.index("fry_notice_2")
+    assert elements[ids.index("fry_notice")]["content"] == "后台任务完成"
+    assert elements[ids.index("fry_notice_1")]["content"] == BUSY_TEXT
+    assert elements[ids.index("fry_notice_2")]["content"] == REDIRECT_TEXT
+    # 底部通知位在顶部回执之后，且都在卡内（无 id 冲突；正文/表格元素无 id，不计）
+    notice_ids = [i for i in ids if i]
+    assert len(set(notice_ids)) == len(notice_ids)
+
+
+@pytest.mark.asyncio
+async def test_busy_receipt_lands_at_bottom_of_completed_card() -> None:
+    """忙碌回执的 kind=busy：完成态重建时落底部通知位."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_kind_busy", key="key_kind_busy")
+    session.segment_state.on_answer_delta("answer text")
+    ctrl.on_busy_ack(text=BUSY_TEXT, message_id="msg_kind_busy", session_key="key_kind_busy")
+    session.create_task = None
+    session.card_id = "card_kind_busy"
+    session.state = SessionState.STREAMING
+
+    assert await ctrl._do_complete_card(session) is True
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    bodies = card["body"]["elements"]
+    notice = next(el for el in bodies if el.get("element_id") == "fry_notice")
+    assert notice["content"] == BUSY_TEXT
+    # 不在正文最顶上（答案之后才是通知位）
+    assert bodies[0].get("element_id") != "fry_notice"
+
+
+@pytest.mark.asyncio
+async def test_background_receipt_stays_at_top_of_completed_card() -> None:
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_kind_bg", key="key_kind_bg")
+    session.segment_state.on_answer_delta("answer text")
+    session.segment_state.add_notice("后台任务完成", kind="background")
+    session.create_task = None
+    session.card_id = "card_kind_bg"
+    session.state = SessionState.STREAMING
+
+    assert await ctrl._do_complete_card(session) is True
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    assert card["body"]["elements"][0]["content"] == "后台任务完成"
+
+
+# ── 重定向封卡清提示（#43 反馈：同一句话不在旧卡正文复述） ──────────────────
+
+
+def test_interrupt_clears_progress_notices_on_old_card() -> None:
+    ctrl = _setup_ctrl()
+    old = _streaming(ctrl, "msg_old_notice", key="key_old_notice")
+    old.segment_state.add_notice(BUSY_TEXT, kind="busy")
+    old.segment_state.add_notice("后台任务完成", kind="background")
+    ctrl._complete_session = lambda s: s.__setattr__("state", SessionState.ABORTED)  # type: ignore[method-assign]
+
+    ctrl.on_interrupted(
+        old_message_id="msg_old_notice",
+        new_message_id="msg_new_notice",
+        chat_id="chat_1",
+        session_key="key_old_notice",
+    )
+    # 进行中提示随新卡走，旧卡只保留完成后的回执
+    assert [slot.text for slot in old.segment_state.notices] == ["后台任务完成"]
+
+
+def test_clear_progress_notices_keeps_background_receipts() -> None:
+    session = _make_session("msg_clear")
+    session.segment_state.add_notice(BUSY_TEXT, kind="busy")
+    session.segment_state.add_notice("后台任务完成", kind="background")
+
+    session.clear_progress_notices()
+    assert [slot.text for slot in session.segment_state.notices] == ["后台任务完成"]
+
+
+# ── 合成轮次 id（后台完成回执的 ["completion", ...] 序列，#43 反馈） ─────────
+
+
+def test_synthetic_completion_id_creates_send_to_chat_session() -> None:
+    """合成 id 不是飞书 open_message_id：建会话但卡片直接投聊天，不 reply."""
+    ctrl = _setup_ctrl()
+    synthetic_id = '["completion","proc_684099a22fe4",1792773079.3370965]'
+
+    started = ctrl.on_message_started(
+        message_id=synthetic_id,
+        chat_id="chat_bg",
+        session_key="key_syn",
+    )
+    assert started == synthetic_id
+    session = ctrl._sessions[synthetic_id]
+    assert session.synthetic is True
+    assert session.anchor_id is None
+
+
+def test_synthetic_completion_id_is_detected() -> None:
+    from hermes_fry_cards.controller import _is_synthetic_turn_id
+
+    assert _is_synthetic_turn_id('["completion","proc_x",1.0]') is True
+    assert _is_synthetic_turn_id('["background","task",1.0]') is True
+    assert _is_synthetic_turn_id("om_x100b628cf392e4a") is False
+    assert _is_synthetic_turn_id("syn-abc123") is False
+
+
+# ── 网关流消费者投递标记（#43 反馈：streamed=False 重复投递警告） ────────────
+
+
+def test_mark_stream_delivered_reports_healthy_card() -> None:
+    from unittest.mock import patch
+
+    import hermes_fry_cards.patch as patch_mod
+    from hermes_fry_cards.patch import mark_stream_delivered
+
+    ctrl = _setup_ctrl()
+    _streaming(ctrl, "msg_mark", key="key_mark")
+
+    class _Consumer:
+        pass
+
+    consumer = _Consumer()
+    with patch.object(patch_mod, "get_controller", return_value=ctrl):
+        mark_stream_delivered(consumer, "msg_mark")
+        assert consumer.has_durably_delivered_text("final answer") is True
+
+        session = ctrl._sessions["msg_mark"]
+        session.state = SessionState.FAILED
+        assert consumer.has_durably_delivered_text("final answer") is False
+
+
+def test_mark_stream_delivered_survives_card_loss() -> None:
+    from unittest.mock import patch
+
+    import hermes_fry_cards.patch as patch_mod
+    from hermes_fry_cards.patch import mark_stream_delivered
+
+    ctrl = _setup_ctrl()
+
+    class _Consumer:
+        pass
+
+    consumer = _Consumer()
+    with patch.object(patch_mod, "get_controller", return_value=ctrl):
+        mark_stream_delivered(consumer, "msg_gone")
+        assert consumer.has_durably_delivered_text("final answer") is False
+
+
+def test_mark_stream_delivered_ignores_missing_consumer() -> None:
+    from hermes_fry_cards.patch import mark_stream_delivered
+
+    mark_stream_delivered(None, "msg_any")  # 不抛即通过
+
+
+# ── 连续第二次打断：REDIRECT_RESOLVED 锚点在回执防抖之前换卡（#43 反馈） ────
+
+
+def test_on_turn_redirected_with_empty_text_still_switches_cards() -> None:
+    """防抖场景没有提示文案：redirected=True 也要完成换卡."""
+    from unittest.mock import patch
+
+    import hermes_fry_cards.patch as patch_mod
+    from hermes_fry_cards.patch import on_turn_redirected
+
+    ctrl = _setup_ctrl()
+    old = _streaming(ctrl, "msg_old_2nd", key="key_2nd")
+    ctrl._complete_session = lambda s: s.__setattr__("state", SessionState.ABORTED)  # type: ignore[method-assign]
+
+    with patch.object(patch_mod, "get_controller", return_value=ctrl):
+        on_turn_redirected(
+            new_message_id="msg_new_2nd",
+            chat_id="chat_1",
+            session_key="key_2nd",
+            redirected=True,
+            text="",
+        )
+    assert old.state == SessionState.ABORTED
+    assert "msg_new_2nd" in ctrl._sessions
