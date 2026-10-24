@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.8] - 2026-10-24
+
+v0.5.7 实测反馈两连修：#43 第二轮（连续打断、合成 id 回执、提示分区渲染）与 #46（长任务把飞书客户端渲染打满直至被系统杀掉）。
+
+### 新增 / Added
+- **连续打断换卡**（#43 反馈）：新增可选注入点 `REDIRECT_RESOLVED`，挂在 `_steer` 解包后、忙碌回执 30s 防抖之前——同一回合连续第二次打断时回执被防抖吞掉，原 REDIRECT 锚点走不到，旧卡会停在半截；现在判定一成立就换卡，与回执锚点幂等。
+- **合成轮次 id 识别**（#43 反馈）：后台完成回执的 `["completion", ...]` 序列 id 不再按真实消息 reply（99992354 失败后标 FAILED），识别后卡片直接投聊天（send_card_to_chat），会话键保留原 id。
+- **网关流消费者投递标记**（#43 反馈）：答案增量进卡后把 `has_durably_delivered_text` 谓词挂到 Hermes 的 stream consumer 上，按 fry 卡片健康状态回答，消除 `Normal final-send NOT suppressed ... streamed=False` 重复投递警告；封卡失败时补标文本回退，最终回复仍由网关补发。
+- **节流暴露为配置**（#46）：新增 `streaming.flush_interval_ms`（默认 100，向 50~2000 收口），此前 `CARDKIT_MS = 0.100` 硬编码无出口；安卓设备为主的部署可设 300~500。studio 状态面板同步展示。
+- **按载荷自适应降频**（#46，默认开启的保护网）：每次 flush 载荷 >16KB 节流窗口放大到 ≥300ms、>40KB ≥500ms，卡片拆小后自动回落；永不低于用户配置的基准。
+- **工具面板只渲染最近 30 步**（#46）：header 保留总步数，更早的折叠成一行「…另有 N 步工具调用」；估算端按同一上限截取，长任务里卡片体积有上界，同时缓解 300305 与拆卡压力。
+
+### 修复 / Fixed
+- **提示区展示位分区**（#43 反馈）：提示直接渲染 Hermes 原文，不再套「💡 提示」标签；忙碌回执 / 重定向这类「本轮进行中」的提示落卡片底部（footer 之前），后台回执这类「完成后」的通知留在顶部。
+- **重定向封卡清提示**（#43 反馈）：`on_interrupted` 收尾旧卡时清掉进行中提示，同一句话不再在新旧两卡各出现一遍；完成后的后台回执保留。
+
+### 测试 / Tests
+- `test_notice_in_card.py` 补充：提示分区（busy/redirect 底部、background 顶部）、合成 id 建会话、
+  流消费者投递标记、重定向封卡清提示、空文案换卡；`test_patcher_real_v022.py` 补充
+  `REDIRECT_RESOLVED` 在 0.22.0 / 0.22.5 真实源码上落在防抖之前的回归；`test_patcher.py` 补充
+  answer 钩子挂载流消费者标记。
+- #46：自适应降频分档与边界（`test_flush.py`）、`flush_interval_ms` 配置收口（`test_config.py`）、
+  面板截断 + 估算一致（`test_cardkit.py`）、节流接线与载荷降频集成（`test_controller.py`）；
+  rollover 记账回归改用带输出的 exec 步骤（轻步骤面板截断后有界、不再拆卡）。
+- 全量 **936 passed**，ruff / mypy 相对上一版零新增。
+
+---
+
 ## [0.5.7] - 2026-10-23
 
 修复工具面板元素记账（#41），长工具轮次不再静默撞 200 元素上限后整轮回落纯文本；忙碌回执 / 重定向 / 后台回执改为写进当前卡片（#43）。
@@ -16,23 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 归属解析沿用 `_sessions` / `_session_keys`：`message_id` → `session_key` → 唯一活跃卡；多卡且无标识时放弃，让 Hermes 照常发原文。
   - 重定向沿用 `on_interrupted` + `_interrupt_map` 换卡，旧卡收尾、新卡接手。
   - 新增 `BUSY_ACK` / `REDIRECT` 两个可选注入点：旧版 Hermes 缺锚点时跳过注入，`verify` 不报错。
-  - **通知区展示位分区**（#43 反馈）：提示直接渲染 Hermes 原文，不再套「💡 提示」标签；忙碌回执 / 重定向这类「本轮进行中」的提示落卡片底部（footer 之前），后台回执这类「完成后」的通知留在顶部。
-  - **合成轮次 id 识别**（#43 反馈）：后台完成回执的 `["completion", ...]` 序列 id 不再按真实消息 reply（99992354 失败后标 FAILED），识别后卡片直接投聊天（send_card_to_chat），会话键保留原 id。
-  - **连续打断换卡**（#43 反馈）：新增可选注入点 `REDIRECT_RESOLVED`，挂在 `_steer` 解包后、忙碌回执 30s 防抖之前——同一回合连续第二次打断时回执被防抖吞掉，原 REDIRECT 锚点走不到，旧卡会停在半截；现在判定一成立就换卡，与回执锚点幂等。
-  - **网关流消费者投递标记**（#43 反馈）：答案增量进卡后把 `has_durably_delivered_text` 谓词挂到 Hermes 的 stream consumer 上，按 fry 卡片健康状态回答，消除 `Normal final-send NOT suppressed ... streamed=False` 重复投递警告；封卡失败时补标文本回退，最终回复仍由网关补发。
 
 ### 修复 / Fixed
-- **长任务把飞书客户端卡死**（#46）：50+ 工具步的长任务里，10 Hz × 几十 KB 的整卡重绘
-  把飞书客户端渲染打满直至被系统杀掉（实测主要发生在安卓端，iOS / 桌面端正常；
-  服务端无法识别渲染端类型，无法按客户端分默认值），服务端全程无报错。三处配合治理：
-  - **节流暴露为配置**：新增 `streaming.flush_interval_ms`（默认 100，向 50~2000 收口），
-    此前 `CARDKIT_MS = 0.100` 硬编码无出口；安卓设备为主的部署可设 300~500。
-  - **节流暴露为配置**：新增 `streaming.flush_interval_ms`（默认 100，向 50~2000 收口），
-    此前 `CARDKIT_MS = 0.100` 硬编码无出口；移动端用户可设 300~500。
-  - **按载荷自适应降频**（默认开启的保护网）：每次 flush 载荷 >16KB 节流窗口放大到
-    ≥300ms、>40KB ≥500ms，卡片拆小后自动回落；永不低于用户配置的基准。
-  - **工具面板只渲染最近 30 步**：header 保留总步数，更早的折叠成一行「…另有 N 步工具调用」；
-    估算端按同一上限截取，长任务里卡片体积有上界，同时缓解 300305 与拆卡压力。
 - **工具面板增量恒为 0**（#41）：`_do_flush` 提前推进 `session.tool_panel_estimate`，批更新前的
   快照读到的已是新值，增量永远为 0，面板元素从不进 `element_count`，`ELEMENT_THRESHOLD` 主动拆卡
   一次也不触发。改为只在 `_do_batch_update` 成功后推进。
@@ -63,14 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 测试 / Tests
 - 新增 `tests/test_element_budget.py`（#41 状态级回归）与 `tests/test_notice_in_card.py`（#43）。
-- `test_notice_in_card.py` 补充：提示分区（busy/redirect 底部、background 顶部）、合成 id 建会话、
-  流消费者投递标记、重定向封卡清提示、空文案换卡；`test_patcher_real_v022.py` 补充
-  `REDIRECT_RESOLVED` 在 0.22.0 / 0.22.5 真实源码上落在防抖之前的回归；`test_patcher.py` 补充
-  answer 钩子挂载流消费者标记。全量 912 passed（Windows 本机不含依赖 Hermes 源码的
-  `test_clarify_buttons.py`）。
-- #46：自适应降频分档与边界（`test_flush.py`）、`flush_interval_ms` 配置收口（`test_config.py`）、
-  面板截断 + 估算一致（`test_cardkit.py`）、节流接线与载荷降频集成（`test_controller.py`）；
-  rollover 记账回归改用带输出的 exec 步骤（轻步骤面板截断后有界、不再拆卡）。全量 936 passed。
+- 真实 Hermes v0.22.0 / v0.22.5 源码上的锚点与 `apply` → `remove` 回归。
 
 ---
 
