@@ -26,6 +26,11 @@ LOADING_ELEMENT_ID = "loading_icon"
 _LOADING_ELEMENT_ID = LOADING_ELEMENT_ID  # 兼容旧私有引用
 _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 
+# 工具面板最多渲染的步骤数（#46）：50+ 步长任务时整卡 JSON 随步数线性膨胀
+# （实测 50 步 ≈ 37KB），10 Hz 整卡重绘会卡死飞书客户端。header 保留总步数，
+# 更早的步骤折叠成一行摘要；估算端（segment_helper.estimate_tool_elements）按同一上限取值。
+MAX_TOOL_PANEL_STEPS = 30
+
 
 def _truncate_model(name: str) -> str:
     """截断模型名：or/lc/LongCat-2.0 → ⇲LongCat-2.0（保留最后一段）.
@@ -272,7 +277,23 @@ def _build_tool_panel(
         zh_parts.append(f"({_format_elapsed(elapsed_ms)})")
 
     children: list[dict] = []
-    for s in steps:
+    # 面板只渲染最近 N 步（#46）：全部步骤都进面板时卡片体积随任务长度无界增长，
+    # 10 Hz 整卡重绘会把飞书客户端渲染打满。header 保留总步数，更早的折叠成一行摘要。
+    shown = steps
+    omitted = 0
+    if len(steps) > MAX_TOOL_PANEL_STEPS:
+        omitted = len(steps) - MAX_TOOL_PANEL_STEPS
+        shown = steps[-MAX_TOOL_PANEL_STEPS:]
+        tpl_en, tpl_zh = _T["tool_omitted"]
+        summary_en = tpl_en.format(omitted)
+        summary_zh = tpl_zh.format(omitted)
+        children.append({
+            "tag": "markdown",
+            "content": summary_en,
+            "i18n_content": _i18n(summary_en, summary_zh),
+            "text_size": "notation",
+        })
+    for s in shown:
         children.extend(_build_tool_step_elements(s))
 
     panel = _collapsible_panel(

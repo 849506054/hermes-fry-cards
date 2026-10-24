@@ -689,3 +689,31 @@ class TestReloadCache:
     def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
         cfg = Config(home=tmp_path)
         assert cfg._reload() == {}
+
+
+class TestFlushIntervalMs:
+    def test_default_100(self) -> None:
+        cfg = _make_config({"streaming": {}})
+        assert cfg.flush_interval_ms == 100
+
+    def test_missing_section_defaults(self) -> None:
+        cfg = _make_config({})
+        assert cfg.flush_interval_ms == 100
+
+    def test_override(self) -> None:
+        cfg = _make_config({"streaming": {"flush_interval_ms": 300}})
+        assert cfg.flush_interval_ms == 300
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [(10, 50), (9999, 2000), (250.0, 250), ("400", 400)],
+        ids=["clamp-low", "clamp-high", "float", "string"],
+    )
+    def test_clamps_and_coercion(self, raw: Any, expected: int) -> None:
+        cfg = _make_config({"streaming": {"flush_interval_ms": raw}})
+        assert cfg.flush_interval_ms == expected
+
+    @pytest.mark.parametrize("raw", ["abc", None, [300]], ids=["str", "none", "list"])
+    def test_invalid_falls_back_to_default(self, raw: Any) -> None:
+        cfg = _make_config({"streaming": {"flush_interval_ms": raw}})
+        assert cfg.flush_interval_ms == 100

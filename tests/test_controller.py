@@ -1215,6 +1215,22 @@ async def test_create_card_replies_to_anchor_id() -> None:
     assert ctrl._client.reply_card_by_id.call_args.args[0] == "quoted"
 
 
+@pytest.mark.asyncio
+async def test_create_card_applies_configured_flush_throttle() -> None:
+    """节流基准取 streaming.flush_interval_ms（毫秒→秒），默认 100ms（#46）."""
+    ctrl = _setup_ctrl()
+    ctrl._cfg._raw = {
+        "streaming": {"enabled": True, "flush_interval_ms": 300},
+        "feishu": {"app_id": "app", "app_secret": "secret"},
+    }
+    session = _make_session("msg_throttle")
+
+    await ctrl._do_create_card(session)
+
+    assert session.flush.throttle_ms == pytest.approx(0.3)
+    assert session.flush._base_throttle_ms == pytest.approx(0.3)
+
+
 def _capture_split_calls(
     ctrl: StreamCardController,
     *,
@@ -1570,6 +1586,33 @@ class TestDoFlush:
         ctrl._client.cardkit_update.assert_not_called()
         ctrl._client.cardkit_batch_update.assert_called_once()
         assert ctrl._client.cardkit_stream_element.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_big_payload_widens_throttle_after_flush(self) -> None:
+        """>16KB 载荷的 flush 把节流窗口放大到 ≥300ms（#46 自适应降频）."""
+        ctrl = _setup_ctrl()
+        session = _make_session("msg_big_payload")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_big_payload"
+        session.segment_state.on_answer_delta("答" * 17_000)  # >16KB 的流式文本
+        ctrl._sessions["msg_big_payload"] = session
+
+        await ctrl._do_flush(session)
+
+        assert session.flush.throttle_ms >= 0.300
+
+    @pytest.mark.asyncio
+    async def test_small_payload_keeps_configured_throttle(self) -> None:
+        ctrl = _setup_ctrl()
+        session = _make_session("msg_small_payload")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_small_payload"
+        session.segment_state.on_answer_delta("hello")
+        ctrl._sessions["msg_small_payload"] = session
+
+        await ctrl._do_flush(session)
+
+        assert session.flush.throttle_ms < 0.300
 
     @pytest.mark.asyncio
     async def test_split_flushes_pending_actions_then_moves_to_next_card(self) -> None:

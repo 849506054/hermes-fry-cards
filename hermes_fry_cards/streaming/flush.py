@@ -10,9 +10,17 @@ from collections.abc import Awaitable, Callable
 _logger = logging.getLogger("hermes_fry_cards")
 
 
-CARDKIT_MS = 0.100  # CardKit 流式 API 的刷新间隔
+CARDKIT_MS = 0.100  # CardKit 流式 API 的默认刷新间隔（可被 streaming.flush_interval_ms 覆盖）
 LONG_GAP_MS = 2.000  # 超过此间隔 → 认为是长时间空闲
 BATCH_AFTER_GAP_MS = 0.300  # 长时间空闲后等待这个时间再 flush
+
+# 按载荷自适应降频（#46）：每次 flush 推的是结构性变更 + 全量步骤面板，
+# 载荷随工具步数线性膨胀，10 Hz × 几十 KB 的整卡重绘会把飞书客户端
+# 渲染线程打满直至被系统杀掉。节流与体积无关 → 按最近一次 flush 载荷分档放大窗口。
+PAYLOAD_LARGE_BYTES = 16_000  # ≤16KB 维持配置节流；16–40KB 降到 ≥300ms
+PAYLOAD_HUGE_BYTES = 40_000  # >40KB 降到 ≥500ms
+ADAPTIVE_LARGE_MS = 0.300
+ADAPTIVE_HUGE_MS = 0.500
 
 
 class FlushController:
@@ -23,6 +31,7 @@ class FlushController:
 
     def __init__(self, throttle_ms: float = CARDKIT_MS, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._throttle_ms = throttle_ms
+        self._base_throttle_ms = throttle_ms
         self._flush_in_progress = False
         self._needs_reflush = False
         self._pending_timer: asyncio.TimerHandle | None = None
@@ -98,6 +107,21 @@ class FlushController:
 
     def set_throttle(self, ms: float) -> None:
         self._throttle_ms = ms
+        self._base_throttle_ms = ms
+
+    def adapt_payload_size(self, size_bytes: int) -> None:
+        """按最近一次 flush 载荷调整节流窗口（#46）.
+
+        分档：≤16KB 维持配置值；16–40KB ≥300ms；>40KB ≥500ms。永不低于
+        ``set_throttle`` 设定的基准（用户显式调慢时以其为准）。卡片拆小后
+        载荷回落，窗口自动恢复，无需手工干预。
+        """
+        if size_bytes > PAYLOAD_HUGE_BYTES:
+            self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_HUGE_MS)
+        elif size_bytes > PAYLOAD_LARGE_BYTES:
+            self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_LARGE_MS)
+        else:
+            self._throttle_ms = self._base_throttle_ms
 
     def set_card_message_ready(self, ready: bool) -> None:
         """设置卡片消息已就绪，初始化时间戳."""

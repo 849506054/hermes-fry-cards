@@ -256,14 +256,18 @@ async def test_rollover_counts_panel_once_not_per_segment() -> None:
 
     steps_to_split = None
     for idx in range(1, 41):
-        _add_steps(session, f"f{idx}_", 1)
+        # exec 带输出 → 7 元素/步（read 的 no_result 不渲染 result_block，输出不上秤）。
+        # #46 面板截断后轻步骤面板有界、不再触发拆卡，rollover 记账用重步骤验证。
+        session.tool_use.record_start("exec", f"f{idx}_0")
+        session.tool_use.record_end("exec", output="out" * 32)
+        session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
         await _flush(ctrl, session)
         if session.split_index > 0:
             steps_to_split = idx
             break
 
     assert steps_to_split is not None, "接近元素上限时必须主动拆卡"
-    # 每步约 3 个元素，180 阈值下约 55 步才会接近；以面板总量为基准时
-    # 不可能在 20 步内拆卡（重复计入时的表现）。
+    # 每步约 7 个元素（title+detail+output），180 阈值下约 25 步接近；
+    # 以面板总量为基准时不可能在 20 步内拆卡（重复计入时的表现）。
     assert steps_to_split > 20, f"panel counted twice: split at step {steps_to_split}"
     assert session.element_count <= ELEMENT_THRESHOLD + 10

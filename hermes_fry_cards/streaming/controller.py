@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
@@ -30,7 +31,6 @@ from ..feishu import (
     FeishuAPIError,
 )
 from .diagnostics import compact_ids, extract_missing_element_id, segment_state_for_log, summarize_actions
-from .flush import CARDKIT_MS
 from .image import ImageResolver
 from .segment_helper import (
     ELEMENT_THRESHOLD,
@@ -210,7 +210,8 @@ class StreamingController:
             # 流式建卡时已带上最新一条提示（_latest_notice），记账同步这一格
             session.notice_element_count = 1 if _latest_notice(session) else 0
             session.element_count += session.notice_element_count
-            session.flush.set_throttle(CARDKIT_MS)
+            # 配置基准节流（毫秒→秒）；载荷自适应降频（#46）以它为下限
+            session.flush.set_throttle(self._cfg.flush_interval_ms / 1000.0)
 
             if session.image_resolver is None and self._client:
                 session.image_resolver = ImageResolver(
@@ -269,6 +270,8 @@ class StreamingController:
         assert self._client is not None
         segments = segment_state.segments
         all_steps = session.tool_use.build_display_steps()
+        # 本次 flush 的近似载荷（字节）：batch actions + 流式文本，供自适应降频分档（#46）
+        payload_bytes = 0
 
         # ── 步骤 0: answer 段动态重估 ──
         # answer 元素在服务端会随内容膨胀（表格展开为单元格、完成态长文切块），
@@ -471,10 +474,12 @@ class StreamingController:
                     seg.created = True
                     seg.dirty = False
 
-        if actions and not await self._do_batch_update(
-            session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,
-        ):
-            return
+        if actions:
+            payload_bytes += len(json.dumps(actions, ensure_ascii=False, default=str))
+            if not await self._do_batch_update(
+                session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+            ):
+                return
 
         # ── 步骤 2: stream_element 刷脏文本 ──
         for seg in segments[session.split_index:]:
@@ -483,6 +488,7 @@ class StreamingController:
             try:
                 if seg.type == SegmentType.REASONING:
                     content = optimize_markdown_style(seg.text) or " "
+                    payload_bytes += len(content.encode("utf-8"))
                     session.sequence += 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=reasoning len=%d",
@@ -503,6 +509,7 @@ class StreamingController:
                         content = session.image_resolver.resolve_images(content)
                     content = prepare_streaming_markdown(content) or " "
                     content = clamp_utf8(content, preserve_tail=False)
+                    payload_bytes += len(content.encode("utf-8"))
                     session.sequence += 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=answer len=%d",
@@ -519,6 +526,9 @@ class StreamingController:
                     seg.dirty = False
             except Exception as e:
                 _logger.debug("CardKit stream element failed: %s el=%s", e, seg.el_id, exc_info=True)
+
+        # 载荷自适应降频（#46）：按本 flush 实际推送量调整下一轮节流窗口
+        session.flush.adapt_payload_size(payload_bytes)
 
     async def _do_batch_update(
         self,

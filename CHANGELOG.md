@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **网关流消费者投递标记**（#43 反馈）：答案增量进卡后把 `has_durably_delivered_text` 谓词挂到 Hermes 的 stream consumer 上，按 fry 卡片健康状态回答，消除 `Normal final-send NOT suppressed ... streamed=False` 重复投递警告；封卡失败时补标文本回退，最终回复仍由网关补发。
 
 ### 修复 / Fixed
+- **长任务把飞书客户端卡死**（#46）：50+ 工具步的长任务里，10 Hz × 几十 KB 的整卡重绘
+  把飞书客户端（尤其移动端）渲染打满直至被系统杀掉，服务端全程无报错。三处配合治理：
+  - **节流暴露为配置**：新增 `streaming.flush_interval_ms`（默认 100，向 50~2000 收口），
+    此前 `CARDKIT_MS = 0.100` 硬编码无出口；移动端用户可设 300~500。
+  - **按载荷自适应降频**（默认开启的保护网）：每次 flush 载荷 >16KB 节流窗口放大到
+    ≥300ms、>40KB ≥500ms，卡片拆小后自动回落；永不低于用户配置的基准。
+  - **工具面板只渲染最近 30 步**：header 保留总步数，更早的折叠成一行「…另有 N 步工具调用」；
+    估算端按同一上限截取，长任务里卡片体积有上界，同时缓解 300305 与拆卡压力。
 - **工具面板增量恒为 0**（#41）：`_do_flush` 提前推进 `session.tool_panel_estimate`，批更新前的
   快照读到的已是新值，增量永远为 0，面板元素从不进 `element_count`，`ELEMENT_THRESHOLD` 主动拆卡
   一次也不触发。改为只在 `_do_batch_update` 成功后推进。
@@ -57,6 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `REDIRECT_RESOLVED` 在 0.22.0 / 0.22.5 真实源码上落在防抖之前的回归；`test_patcher.py` 补充
   answer 钩子挂载流消费者标记。全量 912 passed（Windows 本机不含依赖 Hermes 源码的
   `test_clarify_buttons.py`）。
+- #46：自适应降频分档与边界（`test_flush.py`）、`flush_interval_ms` 配置收口（`test_config.py`）、
+  面板截断 + 估算一致（`test_cardkit.py`）、节流接线与载荷降频集成（`test_controller.py`）；
+  rollover 记账回归改用带输出的 exec 步骤（轻步骤面板截断后有界、不再拆卡）。全量 936 passed。
 
 ---
 

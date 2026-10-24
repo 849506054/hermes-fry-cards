@@ -294,6 +294,47 @@ class TestBuildToolPanel:
         assert "3.0s" in title
 
 
+class TestToolPanelStepCap:
+    """工具面板只渲染最近 N 步（#46）：长任务卡片体积必须有上界."""
+
+    @staticmethod
+    def _steps(count: int) -> list[dict]:
+        return [
+            {**_STEP_SUCCESS, "name": f"tool_{idx}", "title": f"Tool {idx}", "detail": "", "output": ""}
+            for idx in range(count)
+        ]
+
+    def test_under_cap_renders_every_step(self) -> None:
+        panel = _build_tool_panel(self._steps(20))
+        assert len(panel["elements"]) == 20
+        assert all("另有" not in str(el.get("content", "")) for el in panel["elements"])
+
+    def test_over_cap_keeps_last_30_with_summary(self) -> None:
+        from hermes_fry_cards.cardkit.builder import MAX_TOOL_PANEL_STEPS
+
+        panel = _build_tool_panel(self._steps(50))
+        # 摘要 1 行 + 最近 30 步各 1 个标题元素（无 detail/output）
+        assert len(panel["elements"]) == MAX_TOOL_PANEL_STEPS + 1
+        summary = panel["elements"][0]
+        assert "另有 20 步工具调用" in summary["i18n_content"]["zh_cn"]
+        assert "20 earlier tool steps" in summary["content"]
+        # 保留的是最近的步骤（最后一步是 Tool 49）
+        assert "Tool 49" in str(panel["elements"][-1])
+
+    def test_header_still_shows_total_steps(self) -> None:
+        panel = _build_tool_panel(self._steps(50))
+        # header 计总步数（"50 steps"），面板体积有界但总数不丢
+        assert "50" in panel["header"]["title"]["content"]
+
+    def test_estimation_matches_capped_rendering(self) -> None:
+        """估算端与渲染端按同一上限取值，长任务里估算不再无界增长."""
+        from hermes_fry_cards.streaming.segment_helper import estimate_tool_elements
+
+        steps = self._steps(50)
+        # 两个都超过 30 步的区间：估算收敛到同一上限值（含摘要行）
+        assert estimate_tool_elements(0, 50, steps) == estimate_tool_elements(5, 50, steps)
+
+
 # --- Footer ---
 
 

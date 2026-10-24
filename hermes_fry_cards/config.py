@@ -266,6 +266,23 @@ class Config:
             return 3
 
     @property
+    def flush_interval_ms(self) -> int:
+        """流式卡片刷新节流间隔（毫秒，``streaming.flush_interval_ms``）.
+
+        每次 flush 推送整卡结构性变更，默认 100ms（10 Hz）。长任务轮次里卡片
+        载荷随工具步数线性膨胀，移动端渲染能力弱，可调到 300~500 缓解客户端
+        卡顿（#46）。另有按载荷的自适应降频兜底（flush.py），本配置是基准窗口。
+
+        允许 50~2000，越界值按边界处理；非法值回落默认 100。
+        """
+        sec = self._streaming_sec()
+        value = sec.get("flush_interval_ms", 100)
+        try:
+            return max(50, min(2000, int(value)))
+        except (TypeError, ValueError):
+            return 100
+
+    @property
     def unified_panel_min_duration(self) -> float:
         """统一面板最小展示耗时阈值（秒）.
 

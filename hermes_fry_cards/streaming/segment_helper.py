@@ -6,6 +6,7 @@ from typing import Any
 
 from ..cardkit.builder import (
     _LOADING_ELEMENT_ID,
+    MAX_TOOL_PANEL_STEPS,
     _build_reasoning_panel,
     _build_tool_panel,
     _format_elapsed,
@@ -89,9 +90,16 @@ def tool_segment_end(seg: Segment, all_steps: list[ToolDisplayStep]) -> int:
 
 
 def estimate_tool_elements(start: int, end: int, all_steps: list[ToolDisplayStep]) -> int:
-    """估算 tool panel 在 [start, end) step 区间内的元素数."""
+    """估算 tool panel 在 [start, end) step 区间内的元素数.
+
+    渲染端只保留最近 ``MAX_TOOL_PANEL_STEPS`` 步（#46，更早的折叠成一行摘要），
+    估算按同一上限截取，否则长任务轮次里估算随步数无界增长，会过早触发拆卡。
+    """
     steps = all_steps[start:end]
     count = 3  # panel/header 基础元素
+    if len(steps) > MAX_TOOL_PANEL_STEPS:
+        count += 1  # 「…另有 N 步」摘要行
+        steps = steps[-MAX_TOOL_PANEL_STEPS:]
     for step in steps:
         count += 3  # title: div + standard_icon + lark_md
         if step.get("detail"):

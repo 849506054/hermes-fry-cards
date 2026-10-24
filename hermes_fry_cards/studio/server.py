@@ -214,6 +214,7 @@ _STREAMING_SCALARS: dict[str, str] = {
     "chat_types": "chat_types",
     "panel_expanded": "bool",
     "width_mode": "width",
+    "flush_interval_ms": "flushms",
 }
 _HEADER_KEYS = {"enabled": "bool", "min_duration": "dur"}
 _FOOTER_KEYS = {
@@ -264,6 +265,9 @@ def _validate_scalar(v: Any, name: str, kind: str) -> Any:
         return _expect_range(v, name, 0, 600)
     if kind == "panels":
         _expect_range(v, name, 1, 50)
+        return int(v)
+    if kind == "flushms":
+        _expect_range(v, name, 50, 2000)
         return int(v)
     raise ValueError(f"未知校验类型: {kind}")
 
@@ -730,6 +734,7 @@ def collect_state(home: Path | None = None) -> dict[str, Any]:
         "completion_notice": cfg.completion_notice,
         "completion_notice_text": cfg.completion_notice_text,
         "width_mode": cfg.width_mode,
+        "flush_interval_ms": cfg.flush_interval_ms,
         "header": {"enabled": cfg.header_enabled, "min_duration": cfg.header_min_duration},
         "footer": {
             "enabled": cfg.footer_enabled,

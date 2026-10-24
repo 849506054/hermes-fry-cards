@@ -90,7 +90,8 @@ Streaming card runtime (streaming/)
   ├─ segments.py — SegmentState: flat segment list (reasoning / answer / tool), same-type appends, cross-type creates new
   ├─ segment_helper.py — CardKit action builders, element estimates, and tool split point selection
   ├─ text.py — reasoning tag parsing and final answer text cleanup
-  ├─ flush.py — FlushController: throttles CardKit updates (100ms)
+  ├─ flush.py — FlushController: throttles CardKit updates (base = streaming.flush_interval_ms, default 100ms;
+  │              adaptive down-throttle by last flush payload: >16KB → ≥300ms, >40KB → ≥500ms, never below base, #46)
   ├─ tooluse.py — ToolUseTracker: tool call lifecycle tracking with icon/status mapping
   ├─ image.py — ImageResolver: async download + re-upload markdown images as Feishu img_key
   └─ unavailable_guard.py — UnavailableGuard: auto-terminates on message delete/recall
@@ -122,6 +123,7 @@ Studio (studio/ — visual config workbench, stdlib http.server + native JS only
 - The interrupt hook is injected at the `"Restart typing indicator"` comment in `_run_agent`. It fires when `was_interrupted and next_message_id` are both truthy. The `_interrupt_map` redirects completion from `old_id` to the new session, handling nested interrupts (A→B→C).
 - The completion hook installed into `gateway/run.py` is async: `on_message_completed_wait` awaits queued CardKit creation/finalization before setting `already_sent`. Upgrades must rerun `uninstall` + `install` so older sync completion hooks are removed from Hermes gateway.
 - The `_thinking_hook` has a `not already_streamed` guard (patcher.py:103) — thinking deltas are skipped once answer streaming has begun.
+- Tool panel renders only the last `MAX_TOOL_PANEL_STEPS` (30) steps (#46): header keeps the total count, older steps collapse into a one-line summary. `estimate_tool_elements` applies the same cap so split/rollover accounting stays consistent — light-step panels become bounded and stop splitting; heavy-step panels still split via the (uncapped-below-30) threshold math.
 - The NORMALIZE hook (`on_feishu_normalize`) is injected at `source = event.source` in `_handle_message`, before any other processing. It detects Feishu quoted messages with a false `thread_id` (set by the Feishu adapter but absent in raw event) and clears it, preventing `_reply_anchor_for_event` from returning the wrong ID.
 - The `anchor_id` mechanism: for Feishu quoted messages, `_reply_anchor_for_event(event)` returns `reply_to_message_id` instead of `event.message_id`. The START hook passes both — `message_id` for session identity and streaming callback lookup, `anchor_id` for card delivery (reply target). Sessions are registered under both keys.
 - Reasoning display depends on upstream providing `<thinking>`/`<thought>`/`<antthinking>` tags or `Reasoning:\n` prefix in text. Native API reasoning blocks (Anthropic extended thinking, DeepSeek reasoning_content) are available via `on_reasoning_delta` hook when `display.platforms.feishu.show_reasoning` is enabled.
