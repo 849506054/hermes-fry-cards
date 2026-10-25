@@ -31,6 +31,143 @@ _CARD_CREATION_WAIT_SEC = 10.0
 # 单条登记连续 N 个进程都封不掉就出列，避免无效消息 id 反复请求飞书。
 _STALE_SWEEP_MAX_ATTEMPTS = 2
 _LIVE_CARD_MAX_CLOSE_ATTEMPTS = 3
+# 后台完成回执里命令的显示上限：超长命令行截断，卡片上只留一眼能认出的那一段。
+_BACKGROUND_COMMAND_MAX_CHARS = 40
+
+
+def _unwrap_important_text(text: str) -> str:
+    """去掉 ``[IMPORTANT: ...]`` 包裹后取首行（回执没有可用字段时的兜底文案）."""
+    body = (text or "").strip()
+    if body.startswith("[IMPORTANT:"):
+        body = body[len("[IMPORTANT:"):].lstrip()
+        if body.endswith("]"):
+            body = body[:-1].rstrip()
+    first = body.splitlines()[0].strip() if body.strip() else ""
+    return first or body
+
+
+def background_completion_text(
+    text: str,
+    *,
+    command: str | None = None,
+    started_at: float | str | None = None,
+    exit_code: int | str | None = None,
+    now: float | None = None,
+) -> str:
+    """后台完成回执的用户文案（注入块的 ``text`` 是给模型看的内部文案）.
+
+    ``text`` 形如 ``[IMPORTANT: Background process proc_x completed normally
+    (exit code 0).\\nCommand: ...\\nOutput: ...]``，那是模型侧的合成消息，直接甩给
+    用户既长又看不懂。有 ``command`` 时自己拼一句：``✅ 后台任务已完成 — `命令`
+    (12s)``（命令超 40 字截断加省略号，时长 = now - started_at 取整秒）；字段缺失
+    时回退到去包裹后的首行。``exit_code`` 只进日志，回执文案统一一句完成提示。
+    """
+    cmd = " ".join(str(command or "").split())
+    if len(cmd) > _BACKGROUND_COMMAND_MAX_CHARS:
+        cmd = cmd[:_BACKGROUND_COMMAND_MAX_CHARS] + "…"
+    if not cmd:
+        return _unwrap_important_text(text)
+
+    elapsed_s: int | None = None
+    if started_at is not None:
+        try:
+            elapsed = float(now if now is not None else time.time()) - float(started_at)
+        except (TypeError, ValueError):
+            elapsed = -1.0
+        if elapsed >= 0:
+            elapsed_s = int(round(elapsed))
+
+    line = f"✅ 后台任务已完成 — `{cmd}`"
+    if elapsed_s is not None:
+        line += f" ({elapsed_s}s)"
+    _logger.debug(
+        "background_completion_text: cmd=%r exit=%s elapsed=%s", cmd, exit_code, elapsed_s
+    )
+    return line
+
+
+# ── 后台回执「已并入卡片」登记（#issue turn_busy 重复纯文本） ────────────────
+# 回执并进卡片后，网关 _run_process_watcher 的 turn_busy 分支还会补发一条简洁纯文本，
+# 用户看到卡外多一条。这里登记「这条完成回执已经由卡片接管」，注入点据此跳过那条纯文本。
+# 键取进程会话 id（最可靠）、会话键与启动时刻三者之一；查不到就返回 False，照常发。
+_BUSY_RECEIPT_SUPPRESS_TTL = 600.0  # 10 分钟窗口：完成回执的重复投递都发生在这段时间内
+_merged_busy_receipts: dict[str, float] = {}  # 键 → 登记时刻（monotonic）
+_merged_busy_receipts_lock = threading.Lock()
+
+
+def _busy_receipt_keys(
+    *,
+    session_id: str | None = None,
+    session_key: str | None = None,
+    started_at: float | str | None = None,
+) -> list[str]:
+    """回执登记键：进程会话 id / 会话键 / 启动时刻，能拿到哪个用哪个."""
+    keys: list[str] = []
+    sid = str(session_id or "").strip()
+    if sid:
+        keys.append(f"sid:{sid}")
+    skey = str(session_key or "").strip()
+    if skey:
+        keys.append(f"skey:{skey}")
+    if started_at is not None:
+        try:
+            keys.append(f"start:{float(started_at):.3f}")
+        except (TypeError, ValueError):
+            pass
+    return keys
+
+
+def remember_merged_busy_receipt(
+    *,
+    session_id: str | None = None,
+    session_key: str | None = None,
+    started_at: float | str | None = None,
+) -> None:
+    """登记「这条后台完成回执已经由卡片投递」，供注入点跳过网关的纯文本补发."""
+    keys = _busy_receipt_keys(
+        session_id=session_id, session_key=session_key, started_at=started_at
+    )
+    if not keys:
+        return
+    now = time.monotonic()
+    with _merged_busy_receipts_lock:
+        for key, stamp in list(_merged_busy_receipts.items()):
+            if now - stamp > _BUSY_RECEIPT_SUPPRESS_TTL:
+                _merged_busy_receipts.pop(key, None)
+        for key in keys:
+            _merged_busy_receipts[key] = now
+
+
+def busy_receipt_suppressed(
+    *,
+    session_id: str | None = None,
+    session_key: str | None = None,
+    started_at: float | str | None = None,
+    now: float | None = None,
+) -> bool:
+    """该后台完成回执是否已由卡片投递（True = 注入点跳过网关的纯文本补发）.
+
+    拿不到任何可匹配的键、或登记已过期，一律返回 False：网关照常发纯文本，
+    功能无损。
+    """
+    keys = _busy_receipt_keys(
+        session_id=session_id, session_key=session_key, started_at=started_at
+    )
+    if not keys:
+        return False
+    current = time.monotonic() if now is None else now
+    with _merged_busy_receipts_lock:
+        for key in keys:
+            stamp = _merged_busy_receipts.get(key)
+            if stamp is not None and current - stamp <= _BUSY_RECEIPT_SUPPRESS_TTL:
+                return True
+    return False
+
+
+def clear_merged_busy_receipts() -> None:
+    """清空登记表（测试与配置重载用）."""
+    with _merged_busy_receipts_lock:
+        _merged_busy_receipts.clear()
 
 
 def _interrupted_card() -> dict[str, Any]:
@@ -77,6 +214,10 @@ class StreamCardController(StreamingController):
         self._sessions: dict[str, CardSession] = {}
         self._session_keys: dict[str, CardSession] = {}
         self._interrupt_map: dict[str, str] = {}
+        # 同一次打断的重复注入去重：(old_message_id, new_message_id) → monotonic 时刻。
+        # REDIRECT 与 REDIRECT_RESOLVED 两个注入点对同一事件各调一次，间隔只有几毫秒；
+        # 两次调用的 old_message_id 可能都指向刚建好的新会话（同 id），幂等判据分不出来。
+        self._interrupt_dedup: dict[str, float] = {}
         # #43：重定向提示早于新卡登记时按 session_key 暂存，注册时补写
         self._pending_notices: dict[str, list[str]] = {}
         self._initialized = False
@@ -841,13 +982,52 @@ class StreamCardController(StreamingController):
         anchor_id: str | None = None,
         session_key: str | None = None,
     ) -> None:
-        """用户发送新消息导致前一条消息被中断 — abort A + create B."""
+        """用户发送新消息导致前一条消息被中断 — abort A + create B（幂等）."""
         if not self.enabled:
             return
 
+        # ── 去重：同一次打断的两个注入点在毫秒级内先后到达 ──
+        _now = time.monotonic()
+        # 去重键只用 new_message_id：第二个注入点的 old_message_id 可能已经被换成
+        # 刚建好的新会话（日志里 old==new），用 (old, new) 会漏判。
+        _dedup_key = new_message_id
+        _last = self._interrupt_dedup.get(_dedup_key)
+        if _last is not None and _now - _last < 2.0:
+            _logger.info(
+                "interrupt_duplicate_skipped: old=%s new=%s dt=%.3fs",
+                old_message_id, new_message_id, _now - _last,
+            )
+            return
+        self._interrupt_dedup[_dedup_key] = _now
+        if len(self._interrupt_dedup) > 64:
+            _cut = _now - 10.0
+            self._interrupt_dedup = {k: v for k, v in self._interrupt_dedup.items() if v >= _cut}
+
         old_session = self._get_active_session(old_message_id)
         session_key = session_key or (old_session.session_key if old_session is not None else None)
-        if old_session is not None:
+
+        # ── 幂等：同一次打断只处理一次（#issue 一次重定向两张卡） ──
+        # 重定向有两个注入点（REDIRECT 回执前 / REDIRECT_RESOLVED 防抖前），同一次
+        # 打断会各调一次。第二次若照旧按 old_message_id 解析，很容易拿到 anchor 别名
+        # 指向的「新会话」并把它 abort 掉，于是同一个 new_message_id 又建出一张卡，
+        # 提示写进随后被丢弃的那个会话。先认领已建的新卡：先按 new_message_id，
+        # 再按 session_key，命中非终态会话就直接复用。
+        # 同 id 中断（重试/重生成同一条消息）是「换掉这张卡」，不属于重复触发。
+        existing = None
+        if new_message_id != old_message_id:
+            existing = self._sessions.get(new_message_id)
+            if existing is not None and existing.state.is_terminal:
+                existing = None
+            if existing is None and session_key:
+                key_session = self._session_keys.get(session_key)
+                if (
+                    key_session is not None
+                    and not key_session.state.is_terminal
+                    and key_session is not old_session
+                ):
+                    existing = key_session
+
+        if old_session is not None and old_session is not existing:
             old_session.state = SessionState.ABORTED
             old_session.flush.mark_completed()
             # #43 反馈：进行中的提示（忙碌/重定向）随新卡走，旧卡正文不复述——
@@ -860,11 +1040,23 @@ class StreamCardController(StreamingController):
             )
             self._complete_session(old_session)
 
-        # 若该聊天类型被过滤（如群聊不发卡片），新消息 B 不创建卡片会话，
-        # 但中断映射仍记录，保证旧会话完成/回落逻辑一致。
-        new_card_allowed = self._chat_type_allowed(chat_type)
-        existing = self._sessions.get(new_message_id)
-        if existing is None or existing.state.is_terminal:
+        if existing is not None:
+            self._reuse_interrupted_session(
+                existing,
+                new_message_id=new_message_id,
+                anchor_id=anchor_id,
+                session_key=session_key,
+            )
+            _logger.info(
+                "interrupt_reused: msg=%s old=%s key=%s (duplicate interrupt, no new card)",
+                new_message_id[:12],
+                old_message_id[:12],
+                (session_key or "")[:12],
+            )
+        else:
+            # 若该聊天类型被过滤（如群聊不发卡片），新消息 B 不创建卡片会话，
+            # 但中断映射仍记录，保证旧会话完成/回落逻辑一致。
+            new_card_allowed = self._chat_type_allowed(chat_type)
             loop = self._get_loop()
             if loop is not None and new_card_allowed:
                 reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
@@ -890,6 +1082,31 @@ class StreamCardController(StreamingController):
         for key, val in list(self._interrupt_map.items()):
             if val == old_message_id and key != old_message_id:
                 self._interrupt_map[key] = new_message_id
+
+    def _reuse_interrupted_session(
+        self,
+        session: CardSession,
+        *,
+        new_message_id: str,
+        anchor_id: str | None,
+        session_key: str | None,
+    ) -> None:
+        """把已建的新会话登记到这次打断的 message / anchor / session_key 键上.
+
+        只补登记、不抢键：``anchor_id`` 已经指向别的活跃卡时保持原样，避免把一个
+        正在跑的会话从它自己的键上顶掉（那正是重复建卡的成因）。
+        """
+        if self._sessions.get(new_message_id) is not session:
+            self._sessions[new_message_id] = session
+        if session_key and self._session_keys.get(session_key) is not session:
+            session.session_key = session.session_key or session_key
+            self._session_keys[session_key] = session
+        reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
+        if reply_anchor_id and reply_anchor_id != session.message_id:
+            holder = self._sessions.get(reply_anchor_id)
+            if holder is None or holder is session or holder.state.is_terminal:
+                session.anchor_id = reply_anchor_id
+                self._sessions[reply_anchor_id] = session
 
     def on_clarify_enter(
         self,
@@ -1097,6 +1314,10 @@ class StreamCardController(StreamingController):
         chat_id: str,
         session_key: str | None = None,
         text: str,
+        command: str | None = None,
+        started_at: float | str | None = None,
+        exit_code: int | str | None = None,
+        session_id: str | None = None,
     ) -> bool:
         """run_notifications 的 watch/completion 通知接管（#47）.
 
@@ -1108,20 +1329,38 @@ class StreamCardController(StreamingController):
           旧消息——evt 里的 message_id 是任务的触发消息，投递时刻已过期 #52694）
         都不行（禁用 / 无 chat_id / 投递失败）→ 返回 False，Hermes 走原注入
         路径发纯文本，功能无损降级。
+
+        ``text`` 是模型侧的内部文案（``[IMPORTANT: ...]``），卡片上换成
+        ``background_completion_text`` 拼的用户文案；``command`` / ``started_at`` /
+        ``exit_code`` 由注入块从 evt 透传，缺字段时回退到去包裹后的首行。
+        ``session_id`` 是网关的进程会话 id，只用于登记「回执已由卡片投递」，让
+        turn_busy 分支不再补发一条纯文本（见 ``remember_merged_busy_receipt``）。
         """
         if not self.enabled or not text.strip() or not chat_id:
             return False
+        display_text = background_completion_text(
+            text, command=command, started_at=started_at, exit_code=exit_code
+        )
         session = self._notice_session(None, session_key)
         if session is not None and session.chat_id == chat_id and session.segment_state is not None:
-            session.segment_state.add_notice(text, kind="background")
+            session.segment_state.add_notice(display_text, kind="background")
             self._schedule_flush(session)
+            remember_merged_busy_receipt(
+                session_id=session_id, session_key=session_key, started_at=started_at
+            )
             _logger.info(
                 "background_completion_merged: id=%s chat=%s",
                 session.message_id,
                 chat_id[:12],
             )
             return True
-        return await self._deliver_background_static(chat_id, text)
+        delivered = await self._deliver_background_static(chat_id, display_text)
+        if delivered:
+            # 独立静态卡本身就是回执：网关再补一条纯文本同样重复。
+            remember_merged_busy_receipt(
+                session_id=session_id, session_key=session_key, started_at=started_at
+            )
+        return delivered
 
     async def _deliver_background_static(
         self,

@@ -14,7 +14,7 @@ from functools import wraps
 from inspect import iscoroutinefunction
 from typing import Any
 
-from .controller import get_controller
+from .controller import busy_receipt_suppressed, get_controller
 
 _logger = logging.getLogger("hermes_fry_cards")
 
@@ -689,6 +689,10 @@ async def on_background_completion(
     chat_id: str = "",
     session_key: str | None = None,
     text: str = "",
+    command: str | None = None,
+    started_at: float | str | None = None,
+    exit_code: int | str | None = None,
+    session_id: str | None = None,
     **kwargs: Any,
 ) -> bool:
     """[可选注入点] run_notifications 的 watch/completion 通知接管（#47）.
@@ -696,6 +700,10 @@ async def on_background_completion(
     该路径把完成通知合成内部消息注入，纯文本气泡直达，不经过卡片管线。
     返回 True 表示 fry 已接管本次投递（并入活跃卡通知区或独立静态卡），
     注入点应跳过 Hermes 的合成消息注入；False 时 Hermes 照常注入，无损降级。
+
+    ``text`` 是给模型看的内部文案；``command`` / ``started_at`` / ``exit_code``
+    从 evt 透传给控制器，用来拼一句用户看得懂的回执。``session_id`` 是网关的
+    进程会话 id，只用于登记「回执已由卡片投递」（见 ``suppress_busy_receipt``）。
     """
     try:
         ctrl = ctrl or get_controller()
@@ -705,9 +713,52 @@ async def on_background_completion(
             chat_id=chat_id,
             session_key=session_key,
             text=text,
+            command=command,
+            started_at=started_at,
+            exit_code=exit_code,
+            session_id=session_id,
         ))
     except Exception as exc:
         _logger.warning("on_background_completion error: %s", exc, exc_info=True)
+        return False
+
+
+def suppress_busy_receipt(
+    *,
+    session_id: str | None = None,
+    session_key: str | None = None,
+    started_at: float | str | None = None,
+    platform_name: str = "",
+    chat_id: str = "",
+) -> bool:
+    """[可选注入点] 后台完成回执已由卡片投递时，跳过网关 turn_busy 的纯文本补发.
+
+    发起轮还在跑时 ``_run_process_watcher`` 会额外发一条 concise 纯文本回执
+    （``_send_watcher_message``）；插件已经把回执并进那张活跃卡，这条纯文本就是
+    卡片外多出来的那一条。返回 True 让注入块 ``break`` 掉本次发送。
+
+    判据只有「这条回执是否已由卡片接管」：拿不到键（``session_id`` /
+    ``session_key`` / ``started_at`` 全缺）、登记过期或插件禁用，一律 False——
+    网关照常发，功能无损。
+    """
+    try:
+        if str(platform_name or "").lower() not in {"", "feishu", "lark"}:
+            return False
+        ctrl = get_controller()
+        if not ctrl.enabled:
+            return False
+        suppressed = busy_receipt_suppressed(
+            session_id=session_id, session_key=session_key, started_at=started_at
+        )
+        if suppressed:
+            _logger.info(
+                "busy_receipt_suppressed: sid=%s chat=%s",
+                str(session_id or "-")[:12],
+                str(chat_id or "-")[:12],
+            )
+        return suppressed
+    except Exception as exc:
+        _logger.warning("suppress_busy_receipt error: %s", exc, exc_info=True)
         return False
 
 

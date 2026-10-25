@@ -34,12 +34,17 @@ def _streaming(ctrl, message_id: str, *, chat_id: str = "chat_1", key: str | Non
 
 
 def test_add_notice_dedupes_and_ignores_blank() -> None:
+    """单槽位：同文案重复调用是 no-op，空文案忽略，不同文案替换前一条."""
     state = SegmentState()
     state.add_notice(BUSY_TEXT)
     state.add_notice(f"  {BUSY_TEXT}  ")
     state.add_notice("   ")
     assert [slot.text for slot in state.notices] == [BUSY_TEXT]
     assert isinstance(state.notices[0], NotificationSlot)
+
+    # 不同文案：后到的覆盖先到的，槽里始终只有一条
+    state.add_notice(REDIRECT_TEXT)
+    assert [slot.text for slot in state.notices] == [REDIRECT_TEXT]
 
 
 def test_complete_card_renders_notices_above_body() -> None:
@@ -216,11 +221,10 @@ async def test_background_receipt_only_merges_into_same_chat() -> None:
 
 @pytest.mark.asyncio
 async def test_completed_card_includes_notice_slot() -> None:
-    """进行中的提示（忙碌回执）落完成态卡片底部（footer 之前，#43 反馈）."""
+    """本轮没有正文：那条提示要出现在完成态卡片上，且只有一条（不会被吞掉）."""
     ctrl = _setup_ctrl()
     ctrl._client = _mock_client()
     session = _streaming(ctrl, "msg_done", key="key_done")
-    session.segment_state.on_answer_delta("answer text")
     session.segment_state.add_notice(BUSY_TEXT)
     session.create_task = None
     session.card_id = "card_done"
@@ -230,11 +234,9 @@ async def test_completed_card_includes_notice_slot() -> None:
     assert ok is True
     card = ctrl._client.cardkit_update.call_args.args[1]
     bodies = card["body"]["elements"]
-    notice_positions = [i for i, el in enumerate(bodies) if el.get("element_id") == "fry_notice"]
-    assert notice_positions, "提示必须出现在完成态卡片上"
-    # 底部通知位：在答案正文之后（不在卡顶）
-    assert notice_positions[0] > 0
-    assert bodies[notice_positions[0]]["content"] == BUSY_TEXT
+    notices = [el for el in bodies if str(el.get("element_id", "")).startswith("fry_notice")]
+    assert len(notices) == 1, "通知槽单槽位：卡上最多一个提示元素"
+    assert notices[0]["content"] == BUSY_TEXT
 
 
 def test_streaming_card_carries_latest_notice_after_redirect() -> None:
@@ -274,7 +276,7 @@ def test_three_notices_have_three_distinct_ids() -> None:
 
 
 def test_notice_elements_are_counted_in_element_budget() -> None:
-    """每条提示占一个元素，必须计入 element_count，否则接近上限时会少算."""
+    """通知槽最多一条提示、只占一个元素，记账按这一格累加（不能按旧的多条累加）."""
     from hermes_fry_cards.streaming.controller import _sync_notice_elements
 
     session = _make_session("msg_notice_budget")
@@ -285,9 +287,9 @@ def test_notice_elements_are_counted_in_element_budget() -> None:
     session.segment_state.add_notice(REDIRECT_TEXT)
 
     notices = _sync_notice_elements(session)
-    assert notices == [BUSY_TEXT, REDIRECT_TEXT]
-    assert session.notice_element_count == 2
-    assert session.element_count == 12
+    assert notices == [REDIRECT_TEXT]
+    assert session.notice_element_count == 1
+    assert session.element_count == 11
 
 
 def test_notice_element_sync_is_idempotent() -> None:
@@ -306,11 +308,13 @@ def test_notice_element_sync_is_idempotent() -> None:
 
 @pytest.mark.asyncio
 async def test_completed_card_element_count_matches_rendered_elements() -> None:
-    """完成态：记账的元素数不小于卡片实际元素数（含通知区）."""
+    """完成态：记账的元素数不小于卡片实际元素数（通知区那一条也要计入）.
+
+    单槽位下通知区最多一个元素；本轮没有正文时它留在卡上，记账必须把它算进去。
+    """
     ctrl = _setup_ctrl()
     ctrl._client = _mock_client()
     session = _streaming(ctrl, "msg_notice_card", key="key_notice_card")
-    session.segment_state.on_answer_delta("answer text")
     session.segment_state.add_notice(BUSY_TEXT)
     session.segment_state.add_notice(REDIRECT_TEXT)
     session.create_task = None
@@ -324,7 +328,9 @@ async def test_completed_card_element_count_matches_rendered_elements() -> None:
     rendered = [
         el for el in card["body"]["elements"] if str(el.get("element_id", "")).startswith("fry_notice")
     ]
-    assert len(rendered) == 2
+    assert len(rendered) == 1
+    assert rendered[0]["content"] == REDIRECT_TEXT
+    assert session.notice_element_count == 1
     assert session.element_count >= len(card["body"]["elements"])
 
 
@@ -402,15 +408,49 @@ def test_on_session_compressed_skips_when_no_active_session() -> None:
 
 
 def test_notice_kinds_split_bottom_and_top() -> None:
-    """忙碌/重定向是进行中提示（底部），后台回执是完成后通知（顶部）."""
+    """单槽位：kind 只决定那一个元素落哪个展示位——后台回执在顶部，进行中提示在底部.
+
+    槽里始终只有一条：后到的提示覆盖先到的，不会出现「顶部 + 底部」两条并存。
+    """
     state = SegmentState()
     state.add_notice(BUSY_TEXT, kind="busy")
+    assert state.split_notices() == ([], [BUSY_TEXT])
+
+    state.add_notice(REDIRECT_TEXT, kind="redirect")
+    assert [slot.text for slot in state.notices] == [REDIRECT_TEXT]
+    assert state.split_notices() == ([], [REDIRECT_TEXT])
+
+    state.add_notice("后台任务完成", kind="background")
+    assert [slot.text for slot in state.notices] == ["后台任务完成"]
+    assert state.split_notices() == (["后台任务完成"], [])
+
+
+def test_later_background_receipt_replaces_redirect_notice() -> None:
+    """反例：同一张卡先来重定向提示、后来后台回执 → 槽里只剩后台回执.
+
+    单槽位跨 kind 覆盖：重定向提示被后台回执顶掉，卡上只画一条（顶部那一条）。
+    """
+    state = SegmentState()
     state.add_notice(REDIRECT_TEXT, kind="redirect")
     state.add_notice("后台任务完成", kind="background")
 
+    assert [slot.text for slot in state.notices] == ["后台任务完成"]
+    assert state.notices[0].kind == "background"
     top, bottom = state.split_notices()
-    assert top == ["后台任务完成"]
-    assert bottom == [BUSY_TEXT, REDIRECT_TEXT]
+    assert (top, bottom) == (["后台任务完成"], [])
+
+    card = build_complete_card(
+        segments=[],
+        all_tool_steps=[],
+        notices=top,
+        progress_notices=bottom,
+    )
+    rendered = [
+        el["content"]
+        for el in card["body"]["elements"]
+        if str(el.get("element_id", "")).startswith("fry_notice")
+    ]
+    assert rendered == ["后台任务完成"]
 
 
 def test_complete_card_renders_progress_notices_at_bottom() -> None:
@@ -433,11 +473,16 @@ def test_complete_card_renders_progress_notices_at_bottom() -> None:
 
 @pytest.mark.asyncio
 async def test_busy_receipt_lands_at_bottom_of_completed_card() -> None:
-    """忙碌回执的 kind=busy：完成态重建时落底部通知位."""
+    """忙碌回执的 kind=busy：本轮没有正文时留卡，且落底部通知位（不在卡顶）.
+
+    单槽位下「有正文」的卡封卡时清空提示，所以底部展示位只在本轮没有正文
+    （只跑了工具 / 被打断）时才可见。
+    """
     ctrl = _setup_ctrl()
     ctrl._client = _mock_client()
     session = _streaming(ctrl, "msg_kind_busy", key="key_kind_busy")
-    session.segment_state.on_answer_delta("answer text")
+    session.tool_use.record_start("read", "f")
+    session.segment_state.on_tool_event(1)
     ctrl.on_busy_ack(text=BUSY_TEXT, message_id="msg_kind_busy", session_key="key_kind_busy")
     session.create_task = None
     session.card_id = "card_kind_busy"
@@ -448,16 +493,16 @@ async def test_busy_receipt_lands_at_bottom_of_completed_card() -> None:
     bodies = card["body"]["elements"]
     notice = next(el for el in bodies if el.get("element_id") == "fry_notice")
     assert notice["content"] == BUSY_TEXT
-    # 不在正文最顶上（答案之后才是通知位）
+    # 不在卡顶（工具面板在前），底部通知位在工具输出之后
     assert bodies[0].get("element_id") != "fry_notice"
 
 
 @pytest.mark.asyncio
 async def test_background_receipt_stays_at_top_of_completed_card() -> None:
+    """后台回执 kind=background：本轮没有正文时留卡，且在卡顶第一个元素."""
     ctrl = _setup_ctrl()
     ctrl._client = _mock_client()
     session = _streaming(ctrl, "msg_kind_bg", key="key_kind_bg")
-    session.segment_state.on_answer_delta("answer text")
     session.segment_state.add_notice("后台任务完成", kind="background")
     session.create_task = None
     session.card_id = "card_kind_bg"
@@ -641,3 +686,450 @@ def test_on_turn_redirected_with_empty_text_still_switches_cards() -> None:
         )
     assert old.state == SessionState.ABORTED
     assert "msg_new_2nd" in ctrl._sessions
+
+
+# ── 提示元素被正文原地接管（#issue：提示没被正文覆盖） ──────────────────────
+
+
+def test_first_answer_adopts_notice_element_in_place() -> None:
+    """提示写着卡上那个元素：首段正文复用同一个 element id，不另起一段."""
+    state = SegmentState()
+    state.add_notice(REDIRECT_TEXT, kind="redirect")
+    state.bind_notice_element("fry_notice", REDIRECT_TEXT)
+
+    state.on_answer_delta("Hello")
+
+    assert [seg.el_id for seg in state.segments] == ["fry_notice"]
+    assert state.segments[0].type == "answer"
+    assert state.segments[0].created is True
+    # 提示已被正文取代：通知槽里不再留它，完成态也就不会再复述一遍
+    assert state.notices == []
+    assert state.adoptable_notice_element_id() is None
+
+
+def test_later_deltas_keep_streaming_into_adopted_element() -> None:
+    state = SegmentState()
+    state.add_notice(BUSY_TEXT, kind="busy")
+    state.bind_notice_element("fry_notice", BUSY_TEXT)
+
+    state.on_answer_delta("Hello")
+    state.on_answer_delta(" world")
+
+    assert len(state.segments) == 1
+    assert state.segments[0].el_id == "fry_notice"
+    assert state.segments[0].text == "Hello world"
+
+
+def test_background_receipt_element_is_not_taken_over() -> None:
+    """后台回执留在通知区顶部，不被正文接管."""
+    state = SegmentState()
+    state.add_notice("后台任务完成", kind="background")
+    state.bind_notice_element("fry_notice", "后台任务完成")
+
+    state.on_answer_delta("Hello")
+
+    assert state.segments[0].el_id != "fry_notice"
+    assert [slot.text for slot in state.notices] == ["后台任务完成"]
+
+
+def test_answer_without_notice_element_keeps_own_segment() -> None:
+    """卡上没有提示元素（如回合中途才到的忙碌回执）时不接管，正文照常新建."""
+    state = SegmentState()
+    state.add_notice(BUSY_TEXT, kind="busy")
+    state.bind_notice_element(None, None)
+
+    state.on_answer_delta("Hello")
+
+    assert state.segments[0].el_id == "answer_0"
+    assert [slot.text for slot in state.notices] == [BUSY_TEXT]
+
+
+def test_adoption_only_applies_to_the_first_answer() -> None:
+    state = SegmentState()
+    state.on_answer_delta("first")
+    state.add_notice(REDIRECT_TEXT, kind="redirect")
+    state.bind_notice_element("fry_notice", REDIRECT_TEXT)
+
+    state.on_tool_event(1)  # 工具调用把回答切成第二段
+    state.on_answer_delta("second")
+
+    assert state.segments[0].el_id == "answer_0"
+    assert "fry_notice" not in [seg.el_id for seg in state.segments]
+
+
+def test_drop_rendered_progress_notices_follows_body_presence() -> None:
+    """封卡摘提示只看本轮有没有正文：有正文清空槽位，没有正文保留那一条.
+
+    单槽位下「画过的那条剔除、没画过的那条保留」不再成立：槽里最多一条，
+    有正文时完成态只显示正文，没有正文时那一条必须留给用户看。
+    """
+    # 有正文：画在提示元素上的后台回执也不复述，槽位清空
+    with_body = SegmentState()
+    with_body.add_notice("后台任务完成", kind="background")
+    with_body.bind_notice_element("fry_notice_live_1", "后台任务完成")
+    with_body.on_answer_delta("answer text")
+    with_body.drop_rendered_progress_notices()
+    assert with_body.notices == []
+    assert with_body.notice_element_id is None
+    assert with_body.notice_element_text is None
+
+    # 没有正文：画在元素上的那一条保留（不能让它随封卡消失）
+    painted_no_body = SegmentState()
+    painted_no_body.add_notice(BUSY_TEXT, kind="busy")
+    painted_no_body.bind_notice_element("fry_notice", BUSY_TEXT)
+    painted_no_body.drop_rendered_progress_notices()
+    assert [slot.text for slot in painted_no_body.notices] == [BUSY_TEXT]
+
+    # 没有正文、提示从未上卡：同样保留（没有元素可替换，摘掉就等于丢掉）
+    unpainted_no_body = SegmentState()
+    unpainted_no_body.add_notice(BUSY_TEXT, kind="busy")
+    unpainted_no_body.drop_rendered_progress_notices()
+    assert [slot.text for slot in unpainted_no_body.notices] == [BUSY_TEXT]
+
+
+@pytest.mark.asyncio
+async def test_do_create_card_binds_notice_element_for_adoption() -> None:
+    """建卡时提示已写进 fry_notice：控制器把该元素登记给段状态，正文才敢原地接管."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    ctrl._client.reply_card_by_id = AsyncMock(return_value="msg_bind_reply")
+    session = _make_session("msg_bind")
+    session.chat_id = "chat_1"
+    # 提示先于建卡到达（重定向开口与建卡并发时的常见顺序）
+    session.segment_state.add_notice(REDIRECT_TEXT, kind="redirect")
+    ctrl._sessions["msg_bind"] = session
+
+    await ctrl._do_create_card(session)
+
+    assert session.segment_state.notice_element_id == "fry_notice"
+    assert session.notice_element_count == 1
+    # 卡片骨架上确实画着这条提示
+    built = ctrl._client.cardkit_create.call_args.args[0]
+    assert [el.get("element_id") for el in built["body"]["elements"]][-2] == "fry_notice"
+
+    session.segment_state.on_answer_delta("Hello")
+    await ctrl._do_flush(session)
+    assert [c.args[1] for c in ctrl._client.cardkit_stream_element.call_args_list] == ["fry_notice"]
+
+
+@pytest.mark.asyncio
+async def test_flush_overwrites_notice_element_instead_of_adding_one() -> None:
+    """整条 flush 路径：正文流式写进 fry_notice，不再新增一个 answer 元素."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_adopt_flush", key="key_adopt_flush")
+    session.segment_state.add_notice(REDIRECT_TEXT, kind="redirect")
+    session.segment_state.bind_notice_element("fry_notice", REDIRECT_TEXT)
+    session.notice_element_count = 1
+    session.element_count = 2
+
+    session.segment_state.on_answer_delta("Hello")
+    await ctrl._do_flush(session)
+
+    streamed = [call.args[1] for call in ctrl._client.cardkit_stream_element.call_args_list]
+    assert streamed == ["fry_notice"]
+    added_ids = [
+        element["element_id"]
+        for call in ctrl._client.cardkit_batch_update.call_args_list
+        for action in call.args[1]
+        if action.get("action") == "add_elements"
+        for element in action["params"]["elements"]
+    ]
+    assert added_ids == []
+
+
+@pytest.mark.asyncio
+async def test_completed_card_drops_adopted_notice_from_body() -> None:
+    """封卡后正文末尾不再残留那条进行中提示."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_adopt_done", key="key_adopt_done")
+    session.segment_state.add_notice(REDIRECT_TEXT, kind="redirect")
+    session.segment_state.bind_notice_element("fry_notice", REDIRECT_TEXT)
+    session.segment_state.on_answer_delta("answer text")
+    session.create_task = None
+    session.element_count = 2
+    session.notice_element_count = 1
+
+    assert await ctrl._do_complete_card(session) is True
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    contents = [el.get("content", "") for el in card["body"]["elements"]]
+    assert REDIRECT_TEXT not in contents
+    assert any("answer text" in text for text in contents)
+
+
+@pytest.mark.asyncio
+async def test_completed_card_keeps_painted_notice_when_no_answer_came() -> None:
+    """本轮没有正文：画在元素上的提示封卡后仍要留着（否则用户什么都看不到）."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_painted_done", key="key_painted_done")
+    session.segment_state.add_notice(BUSY_TEXT, kind="busy")
+    session.segment_state.bind_notice_element("fry_notice", BUSY_TEXT)
+    session.create_task = None
+    session.element_count = 2
+    session.notice_element_count = 1
+
+    assert await ctrl._do_complete_card(session) is True
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    contents = [el.get("content", "") for el in card["body"]["elements"]]
+    assert BUSY_TEXT in contents
+
+
+# ── on_interrupted 幂等（#issue：一次重定向两张卡） ─────────────────────────
+
+
+def test_duplicate_interrupt_keeps_one_new_session() -> None:
+    """REDIRECT / REDIRECT_RESOLVED 两个注入点各调一次：只建一张新卡，且不被 abort."""
+    ctrl = _setup_ctrl()
+    old = _streaming(ctrl, "msg_dup_old", key="key_dup")
+    ctrl._complete_session = lambda s: s.__setattr__("state", SessionState.ABORTED)  # type: ignore[method-assign]
+
+    for _ in range(2):
+        ctrl.on_interrupted(
+            old_message_id="msg_dup_old",
+            new_message_id="msg_dup_new",
+            chat_id="chat_1",
+            session_key="key_dup",
+            anchor_id="msg_dup_old",  # 新卡挂在旧消息上 → 旧消息键也指向新会话
+        )
+
+    survivors = {id(s): s for s in ctrl._sessions.values() if s.message_id == "msg_dup_new"}
+    assert len(survivors) == 1
+    survivor = ctrl._sessions["msg_dup_new"]
+    assert survivor is next(iter(survivors.values()))
+    assert survivor.state is not SessionState.ABORTED
+    assert old.state == SessionState.ABORTED
+    # 提示落在留存的那张卡上
+    ctrl.on_redirected_notice(text=REDIRECT_TEXT, message_id="msg_dup_new", session_key="key_dup")
+    assert [slot.text for slot in survivor.segment_state.notices] == [REDIRECT_TEXT]
+
+
+def test_duplicate_interrupt_reuses_session_found_by_key() -> None:
+    """新会话只按 session_key 登记过时，第二次调用按 session_key 认领它，不再新建."""
+    ctrl = _setup_ctrl()
+    old = _streaming(ctrl, "msg_keydup_old", key="key_keydup")
+    pending = _make_session("msg_keydup_new")
+    pending.chat_id = "chat_1"
+    pending.session_key = "key_keydup"
+    pending.state = SessionState.CREATING
+    ctrl._session_keys["key_keydup"] = pending
+    ctrl._complete_session = lambda s: s.__setattr__("state", SessionState.ABORTED)  # type: ignore[method-assign]
+
+    ctrl.on_interrupted(
+        old_message_id="msg_keydup_old",
+        new_message_id="msg_keydup_new",
+        chat_id="chat_1",
+        session_key="key_keydup",
+    )
+
+    assert ctrl._sessions["msg_keydup_new"] is pending
+    assert pending.state is SessionState.CREATING
+    assert old.state == SessionState.ABORTED
+    assert {id(s) for s in ctrl._sessions.values() if s.message_id == "msg_keydup_new"} == {id(pending)}
+
+
+
+# ── 流式期通知槽即时渲染（0.5.9.3） ────────────────────────────────────────
+
+
+def test_notice_slot_target_follows_latest_notice() -> None:
+    """目标文案 = 最新一条提示；画上去之后不再要求重画."""
+    state = SegmentState()
+    assert state.notice_slot_target() is None
+    assert state.needs_notice_slot_paint() is False
+
+    state.add_notice(BUSY_TEXT, kind="busy")
+    assert state.notice_slot_target() == BUSY_TEXT
+    assert state.needs_notice_slot_paint() is True
+
+    state.bind_notice_element("fry_notice", BUSY_TEXT)
+    assert state.needs_notice_slot_paint() is False
+
+    state.add_notice("后台任务完成", kind="background")
+    assert state.notice_slot_target() == "后台任务完成"
+    assert state.needs_notice_slot_paint() is True
+
+
+def test_next_notice_slot_element_id_avoids_body_element() -> None:
+    """中途补画的通知元素 id 与 ``fry_notice`` 分属两个命名空间，不会冲掉正文."""
+    state = SegmentState()
+    first = state.next_notice_slot_element_id()
+    second = state.next_notice_slot_element_id()
+    assert first == "fry_notice_live_1"
+    assert second == "fry_notice_live_2"
+    assert first != "fry_notice"
+
+
+def test_streaming_notice_element_matches_card_skeleton_shape() -> None:
+    """补画的元素与建卡时的提示元素同构（流式元素 + 正文字号 + 固定 id）."""
+    from hermes_fry_cards.cardkit.builder import (
+        build_streaming_card_v2,
+        build_streaming_notice_element,
+    )
+
+    card = build_streaming_card_v2(notice=BUSY_TEXT)
+    painted = build_streaming_notice_element(BUSY_TEXT, element_id="fry_notice")
+    skeleton = card["body"]["elements"][-2]
+    assert skeleton["element_id"] == "fry_notice"
+    assert skeleton["tag"] == painted["tag"]
+    assert skeleton["content"] == painted["content"]
+
+
+@pytest.mark.asyncio
+async def test_flush_paints_receipt_into_live_card_without_notice_element() -> None:
+    """流式期到达的后台回执：flush 当场在 loading 之前补一个通知元素（不新增正文段）."""
+    from hermes_fry_cards.cardkit.builder import LOADING_ELEMENT_ID
+
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_bg_paint", key="key_bg_paint")
+    session.element_count = 1
+    session.segment_state.on_answer_delta("answer text")
+    await ctrl._do_flush(session)  # 先把正文元素建出来
+    ctrl._client.cardkit_batch_update.reset_mock()
+
+    ok = await ctrl.on_background_completion(
+        chat_id="chat_1", session_key="key_bg_paint", text="后台任务完成", session_id="proc_paint",
+    )
+    assert ok is True
+    assert session.segment_state.needs_notice_slot_paint() is True
+
+    await ctrl._do_flush(session)
+
+    actions = ctrl._client.cardkit_batch_update.call_args.args[1]
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["action"] == "add_elements"
+    assert action["params"]["type"] == "insert_before"
+    assert action["params"]["target_element_id"] == LOADING_ELEMENT_ID
+    element = action["params"]["elements"][0]
+    assert element["element_id"] == "fry_notice_live_1"
+    assert element["content"] == "后台任务完成"
+    # 槽位登记推进：下一轮不再重画，也不多建一个元素
+    assert session.segment_state.notice_element_id == "fry_notice_live_1"
+    assert session.segment_state.notice_element_text == "后台任务完成"
+    assert session.segment_state.needs_notice_slot_paint() is False
+    # 回执没有变成正文段
+    assert [seg.el_id for seg in session.segment_state.segments] == ["answer_0"]
+
+
+@pytest.mark.asyncio
+async def test_flush_repaints_existing_notice_element_in_place() -> None:
+    """本卡已有提示元素且未被正文接管 → 原地改文案，不再新增元素."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_bg_repaint", key="key_bg_repaint")
+    session.segment_state.add_notice(BUSY_TEXT, kind="busy")
+    session.segment_state.bind_notice_element("fry_notice", BUSY_TEXT)
+    session.notice_element_count = 1
+    session.element_count = 2
+
+    await ctrl.on_background_completion(
+        chat_id="chat_1", session_key="key_bg_repaint", text="后台任务完成",
+    )
+    await ctrl._do_flush(session)
+
+    actions = ctrl._client.cardkit_batch_update.call_args.args[1]
+    assert len(actions) == 1
+    assert actions[0]["action"] == "partial_update_element"
+    assert actions[0]["params"]["element_id"] == "fry_notice"
+    assert actions[0]["params"]["partial_element"]["content"] == "后台任务完成"
+    assert session.segment_state.notice_element_text == "后台任务完成"
+
+
+@pytest.mark.asyncio
+async def test_notice_slot_paint_failure_keeps_notice_and_clears_binding() -> None:
+    """画不上去不能抛：回执留在通知区，槽位登记清空（下一轮改走新增）."""
+    from hermes_fry_cards.feishu import FeishuAPIError
+
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    ctrl._client.cardkit_batch_update = AsyncMock(
+        side_effect=FeishuAPIError("batch_update: code=300313", code=300313)
+    )
+    session = _streaming(ctrl, "msg_bg_fail", key="key_bg_fail")
+    session.segment_state.add_notice(BUSY_TEXT, kind="busy")
+    session.segment_state.bind_notice_element("fry_notice", BUSY_TEXT)
+    session.element_count = 2
+
+    await ctrl.on_background_completion(
+        chat_id="chat_1", session_key="key_bg_fail", text="后台任务完成",
+    )
+    await ctrl._do_flush(session)  # 不抛
+
+    assert session.segment_state.notice_element_id is None
+    assert session.segment_state.needs_notice_slot_paint() is True
+    assert "后台任务完成" in [slot.text for slot in session.segment_state.notices]
+
+
+@pytest.mark.asyncio
+async def test_completed_card_drops_painted_background_receipt() -> None:
+    """封卡时画在通知槽上的后台回执随正文一起消失（流式可见、封卡被正文覆盖）."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_bg_seal", key="key_bg_seal")
+    session.segment_state.on_answer_delta("answer text")
+    session.segment_state.add_notice("后台任务完成", kind="background")
+    session.segment_state.bind_notice_element("fry_notice_live_1", "后台任务完成")
+    session.create_task = None
+    session.card_id = "card_bg_seal"
+    session.state = SessionState.STREAMING
+
+    ok = await ctrl._do_complete_card(session)
+
+    assert ok is True
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    contents = [el.get("content") for el in card["body"]["elements"] if el.get("content")]
+    assert "后台任务完成" not in contents
+    assert any("answer text" in (c or "") for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_completed_card_keeps_background_receipt_never_painted() -> None:
+    """没落到卡片元素上的回执：本轮没有正文时仍要在完成态通知位出现（否则用户永远看不到）."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_bg_unpainted", key="key_bg_unpainted")
+    session.segment_state.add_notice("后台任务完成", kind="background")
+    session.create_task = None
+    session.card_id = "card_bg_unpainted"
+    session.state = SessionState.STREAMING
+
+    ok = await ctrl._do_complete_card(session)
+
+    assert ok is True
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    contents = [el.get("content") for el in card["body"]["elements"] if el.get("content")]
+    assert "后台任务完成" in contents
+    assert session.notice_element_count == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_card_with_body_renders_no_notice() -> None:
+    """反例：封卡后本轮有正文 → 一条提示都不渲染，完成态卡片只显示正文."""
+    ctrl = _setup_ctrl()
+    ctrl._client = _mock_client()
+    session = _streaming(ctrl, "msg_body_only", key="key_body_only")
+    session.segment_state.on_answer_delta("answer text")
+    session.segment_state.add_notice(BUSY_TEXT, kind="busy")
+    session.segment_state.add_notice("后台任务完成", kind="background")
+    session.create_task = None
+    session.card_id = "card_body_only"
+    session.state = SessionState.STREAMING
+
+    ok = await ctrl._do_complete_card(session)
+
+    assert ok is True
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    elements = card["body"]["elements"]
+    notice_ids = [
+        el.get("element_id") for el in elements if str(el.get("element_id", "")).startswith("fry_notice")
+    ]
+    contents = [el.get("content", "") for el in elements]
+    assert notice_ids == []
+    assert BUSY_TEXT not in contents
+    assert "后台任务完成" not in contents
+    assert any("answer text" in text for text in contents)
+    # 记账也跟着归零，不再多算一格
+    assert session.notice_element_count == 0

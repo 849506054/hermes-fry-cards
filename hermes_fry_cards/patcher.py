@@ -43,6 +43,7 @@ _HOOK_NAMES = [
     "COMPRESSION",
     "REDIRECT_RESOLVED",
     "BG_COMPLETION",
+    "BG_BUSY_SUPPRESS",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -67,11 +68,12 @@ MK_REDIRECT, MK_REDIRECT_END = MARKERS[17]
 MK_COMPRESSION, MK_COMPRESSION_END = MARKERS[18]
 MK_REDIRECT_RESOLVED, MK_REDIRECT_RESOLVED_END = MARKERS[19]
 MK_BG_COMPLETION, MK_BG_COMPLETION_END = MARKERS[20]
+MK_BG_BUSY_SUPPRESS, MK_BG_BUSY_SUPPRESS_END = MARKERS[21]
 
 # 可选注入点：锚点不存在时跳过而不让整次安装失败（#43 提示入卡与压缩封卡）。
 # 旧版 Hermes 或精简布局可能缺失部分回调，缺失时插件退回既有行为。
 OPTIONAL_HOOKS: frozenset[str] = frozenset(
-    {"busy_ack", "redirect", "compression", "redirect_resolved", "bg_completion"}
+    {"busy_ack", "redirect", "compression", "redirect_resolved", "bg_completion", "bg_busy_suppress"}
 )
 _OPTIONAL_MARKERS: frozenset[str] = frozenset(
     f"# {PREFIX}_{name.upper()}_BEGIN" for name in OPTIONAL_HOOKS
@@ -382,14 +384,52 @@ def _bg_completion_hook(indent: str) -> str:
             "try:",
             "    if platform_name in ('feishu', 'lark'):",
             "        from hermes_fry_cards.patch import on_background_completion",
-            "        _lark_evt_key = evt.get('session_key') if isinstance(evt, dict) else None",
+            "        _lark_evt = evt if isinstance(evt, dict) else {}",
+            "        _lark_evt_key = _lark_evt.get('session_key') if _lark_evt else None",
             "        if await on_background_completion(",
             "            chat_id=str(getattr(source, 'chat_id', '') or ''),",
             "            session_key=(str(_lark_evt_key) if _lark_evt_key else None),",
             "            text=synth_text,",
+            "            command=_lark_evt.get('command'),",
+            "            started_at=_lark_evt.get('started_at'),",
+            "            exit_code=_lark_evt.get('exit_code'),",
+            "            session_id=str(_lark_evt.get('session_id') or ''),",
             "        ):",
             "            return True",
             *_hook_exception_lines("bg_completion"),
+        ],
+    )
+
+
+def _bg_busy_suppress_hook(indent: str) -> str:
+    """回执已并入卡片时，跳过 turn_busy 分支的纯文本回执（#issue 卡片外多一条）.
+
+    发起轮还在跑时 ``_run_process_watcher`` 在 ``_send_watcher_message`` 前补发一条
+    concise 纯文本；插件已经把同一条回执并进那张活跃卡，这条纯文本就是卡外多出来的
+    那一条。``suppress_busy_receipt`` 命中即 ``break``（该分支发送后本就 break，等价
+    跳过本条发送）；拿不到键时返回 False，网关照常发，功能无损。
+
+    注入块只用 ``_run_process_watcher`` 里已有的变量：``session_id`` / ``session``
+    （取 ``started_at``）/ ``platform_name`` / ``chat_id`` / ``completion_evt``。
+    """
+    return _make_hook(
+        indent,
+        MK_BG_BUSY_SUPPRESS,
+        MK_BG_BUSY_SUPPRESS_END,
+        [
+            "try:",
+            "    if platform_name in ('feishu', 'lark'):",
+            "        from hermes_fry_cards.patch import suppress_busy_receipt",
+            "        _lark_busy_evt = completion_evt if isinstance(completion_evt, dict) else {}",
+            "        if suppress_busy_receipt(",
+            "            session_id=str(session_id or ''),",
+            "            session_key=str(_lark_busy_evt.get('session_key') or ''),",
+            "            started_at=getattr(session, 'started_at', None),",
+            "            platform_name=platform_name,",
+            "            chat_id=str(chat_id or ''),",
+            "        ):",
+            "            break",
+            *_hook_exception_lines("bg_busy_suppress"),
         ],
     )
 
@@ -1037,6 +1077,7 @@ _HOOK_FNS = {
     "redirect": _redirect_hook,
     "redirect_resolved": _redirect_resolved_hook,
     "bg_completion": _bg_completion_hook,
+    "bg_busy_suppress": _bg_busy_suppress_hook,
     "compression": _compression_hook,
     "group_boundary": _group_boundary_hook,
 }
@@ -1388,6 +1429,7 @@ class Patcher:
             # 0.22+ 的 watch/completion 通知宿主（#47 可选注入点）。
             "notifications": [
                 ("bg_completion", "background completion", _find_bg_completion_site),
+                ("bg_busy_suppress", "background busy receipt suppress", _find_bg_busy_suppress_site),
             ],
         }
         # tool 锚点宿主：与 _verify_modular_target 的解析顺序一致（progress 优先，回退 runner）。
@@ -1789,6 +1831,24 @@ def _find_bg_completion_site(tree: ast.Module, lines: list[str]) -> tuple[int, s
     return _find_call_line_in_function(
         tree, lines, "_inject_watch_notification", "_mark_internal_notification(synth_text)",
     )
+
+
+_BG_BUSY_RECEIPT_ANCHOR = 'self._format_process_final_message(session_id, session, "concise")'
+
+
+def _find_bg_busy_suppress_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """turn_busy 纯文本回执的抑制点：concise 文案合成之后、``_send_watcher_message`` 之前.
+
+    发起轮仍在运行时，``_run_process_watcher`` 会在这条 concise 文案之后补发一条
+    纯文本回执（#112033 的「先给个回执」）；插件已把同一条回执并进活跃卡时这里
+    要能拦住它。锚点取「concise 文案合成」这一行——同函数里还有一条
+    ``notify_mode`` 的文案合成，用 ``"concise"`` 字面量才能唯一命中。
+    """
+    hit = _find_call_line_in_function(tree, lines, "_run_process_watcher", _BG_BUSY_RECEIPT_ANCHOR)
+    if hit is None:
+        return None
+    end_idx = _statement_end_after(tree, hit[0] + 1)
+    return end_idx, _safe_indent(lines, end_idx) or hit[1]
 
 
 def _find_redirect_resolved_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:

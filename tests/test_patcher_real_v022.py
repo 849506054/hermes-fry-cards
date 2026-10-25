@@ -367,3 +367,61 @@ def test_v0225_bg_completion_anchors_before_internal_marker(real_v0225: dict[str
     assert "session_key=(str(_lark_evt_key) if _lark_evt_key else None)" in body
     assert "return True" in body
     assert patcher.is_fully_patched()
+
+
+# ── 真实 run_notifications.py：turn_busy 纯文本回执抑制锚点（0.5.9.3） ──────
+
+_LIVE_NOTIFICATIONS_CANDIDATES = (
+    Path("/opt/hermes/gateway/run_notifications.py"),
+    Path.home() / ".hermes" / "hermes-agent" / "gateway" / "run_notifications.py",
+)
+
+
+def _pristine_notifications(tmp_path: Path) -> Path:
+    """本机安装的 ``run_notifications.py`` 去掉已注入块 → 上游原样副本（缺失则 skip）."""
+    from hermes_fry_cards.patcher import (
+        MARKERS,
+        _remove_block,
+    )
+
+    for candidate in _LIVE_NOTIFICATIONS_CANDIDATES:
+        if not candidate.exists():
+            continue
+        source = candidate.read_text(encoding="utf-8")
+        for begin, end in MARKERS:
+            source = _remove_block(source, begin, end)
+        if "HERMES_LARK" in source:
+            continue
+        destination = tmp_path / "run_notifications.py"
+        destination.write_text(source, encoding="utf-8")
+        return destination
+    pytest.skip("pristine run_notifications.py not available")
+
+
+def test_bg_busy_suppress_anchors_on_real_notifications_module(tmp_path: Path) -> None:
+    """真实源码上：抑制块落在 concise 文案之后、``_send_watcher_message`` 之前."""
+    from hermes_fry_cards.patcher import (
+        MK_BG_BUSY_SUPPRESS,
+        MK_BG_BUSY_SUPPRESS_END,
+        _bg_busy_suppress_hook,
+        _find_bg_busy_suppress_site,
+    )
+
+    source_path = _pristine_notifications(tmp_path)
+    source = source_path.read_text(encoding="utf-8")
+    lines = source.splitlines(keepends=True)
+    site = _find_bg_busy_suppress_site(ast.parse(source), lines)
+    assert site is not None, "concise 回执锚点在真实源码上找不到"
+
+    index, indent = site
+    patched = "".join(lines[:index]) + _bg_busy_suppress_hook(indent) + "".join(lines[index:])
+    ast.parse(patched)  # break 必须落在循环体内，缩进必须成立
+
+    block = patched[patched.index(MK_BG_BUSY_SUPPRESS):patched.index(MK_BG_BUSY_SUPPRESS_END)]
+    assert "suppress_busy_receipt" in block
+    assert patched.index(MK_BG_BUSY_SUPPRESS) > patched.index(
+        'self._format_process_final_message(session_id, session, "concise")'
+    )
+    assert patched.index(MK_BG_BUSY_SUPPRESS) < patched.index(
+        "await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)"
+    )

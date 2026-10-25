@@ -81,10 +81,13 @@ class SegmentState:
     __slots__ = (
         "_completion_answers",
         "_counter",
+        "_notice_live_seq",
         "notices",
         "segments",
         "max_reasoning_panels",
         "max_answer_segments",
+        "notice_element_id",
+        "notice_element_text",
     )
 
     def __init__(self, max_reasoning_panels: int = 3, max_answer_segments: int = 8) -> None:
@@ -92,6 +95,14 @@ class SegmentState:
         self._completion_answers: set[str] = set()
         self.segments: list[Segment] = []
         self.notices: list[NotificationSlot] = []
+        # 建卡时画进卡片、可被首段正文原地接管的提示元素（#issue：提示元素未被正文覆盖）。
+        # ``notice_element_id`` 为元素 id，``notice_element_text`` 为此刻画在它上面的文案；
+        # 两者皆空表示本卡没有提示元素（例如回合中途才到的忙碌回执），此时无从「替换」。
+        self.notice_element_id: str | None = None
+        self.notice_element_text: str | None = None
+        # 流式期中途补画通知时给新元素派 id 用的序号（``fry_notice_live_1`` …）：
+        # 建卡时的提示元素已被正文接管或本卡从未带提示，中途到达的回执只能另起一个。
+        self._notice_live_seq = 0
         # 限制独立 reasoning 面板数量，超出后合并进最后一个 reasoning 面板，
         # 避免「不支持分段思考」的模型频繁切换 thinking/tool 时产生海量面板导致卡片元素溢出。
         self.max_reasoning_panels = max_reasoning_panels
@@ -111,8 +122,118 @@ class SegmentState:
         cleaned = text.strip()
         if not cleaned:
             return
-        if not any(slot.text == cleaned for slot in self.notices):
-            self.notices.append(NotificationSlot(cleaned, kind))
+        # 单槽位：后到的提示覆盖先到的（用户口径）。同一时刻卡上最多一条提示，
+        # 忙碌回执 / 重定向 / 后台回执都走这一格，不做堆叠。
+        if self.notices and self.notices[-1].text == cleaned and self.notices[-1].kind == kind:
+            return
+        self.notices = [NotificationSlot(cleaned, kind)]
+
+    def bind_notice_element(self, element_id: str | None, text: str | None) -> None:
+        """登记建卡时画进卡片的提示元素（``None`` = 这张卡没有提示元素）.
+
+        #issue（提示元素未被正文覆盖）：提示是卡上真实存在的元素，正文到达时要在
+        原地接管它；控制器建卡时把「元素 id + 画的哪条文案」登记到这里，段状态由
+        此知道能不能接管、接管的又是哪一条提示。
+        """
+        self.notice_element_id = element_id or None
+        self.notice_element_text = (text or "").strip() or None
+
+    def notice_slot_target(self) -> str | None:
+        """流式态通知槽此刻应显示的文案：最新到达的那条提示（无提示返回 ``None``）.
+
+        #issue（流式期回执不可见）：提示只是记进了 ``notices``，卡上那个元素一直停在
+        建卡时的文案。控制器每轮 flush 拿这里的目标文案和 ``notice_element_text``
+        对比，不一致就补一次元素更新——回执到达当下即可见，不必等封卡。
+        """
+        return self.notices[-1].text if self.notices else None
+
+    def needs_notice_slot_paint(self) -> bool:
+        """通知槽要不要重画：目标文案与此刻画在元素上的不一致."""
+        target = self.notice_slot_target()
+        return target is not None and target != self.notice_element_text
+
+    def next_notice_slot_element_id(self) -> str:
+        """给通知槽派一个新元素 id（本卡没有可复用的提示元素时）.
+
+        与建卡时的 ``fry_notice`` 分属两个命名空间：正文接管后 ``fry_notice`` 已是正文
+        元素，再往它上面画提示会把正文冲掉。
+        """
+        self._notice_live_seq += 1
+        return f"fry_notice_live_{self._notice_live_seq}"
+
+    def adoptable_notice_element_id(self) -> str | None:
+        """返回可被首段正文原地接管的提示元素 id；不可接管时返回 ``None``.
+
+        只有「本轮进行中」的提示（忙碌回执 / 重定向）会被正文接管：它们只是过程
+        说明，正文一到就该变成正文。后台完成回执属于回合后的通知，保持原样留在
+        通知区顶部。
+        """
+        element_id, painted = self.notice_element_id, self.notice_element_text
+        if not element_id or not painted:
+            return None
+        slot = next((s for s in self.notices if s.text == painted), None)
+        if slot is None or slot.kind in POST_TURN_NOTICE_KINDS:
+            return None
+        # 已经出现过正文就不接管的了：接管只针对「首段 answer」。
+        if any(seg.type == SegmentType.ANSWER and seg.text for seg in self.segments):
+            return None
+        return element_id
+
+    def _new_answer_adopting_notice(self, text: str) -> Segment | None:
+        """首段正文接管卡片提示元素（复用同一 element id）.
+
+        接管后卡上只有一段正文，不会出现「提示一段 + 正文一段」；那条提示同时从
+        通知槽里摘掉，完成态不再复述。
+        """
+        element_id = self.adoptable_notice_element_id()
+        if element_id is None:
+            return None
+        seg = Segment(SegmentType.ANSWER, element_id)
+        seg.text = text
+        seg.start_time = time.time()
+        seg.created = True  # 元素已在卡上（建卡时写的是提示文案），flush 只需流式覆盖
+        seg.element_estimate = 1  # 该元素已由建卡时的提示记账计入
+        self._finalize_prev_reasoning(seg.start_time)
+        self.segments.append(seg)
+        self.notice_element_id = None
+        self.notice_element_text = None
+        self.notices = [slot for slot in self.notices if slot.kind in POST_TURN_NOTICE_KINDS]
+        return seg
+
+    def reassign_element_id(self, seg: Segment) -> None:
+        """给一个待重新创建的 answer 段换一个未占用的 element id.
+
+        接管过提示元素的正文段带着 ``fry_notice`` 这个 id；换卡时新卡可能重新用
+        ``fry_notice`` 承载提示，重新上卡前必须换 id，否则同一张卡里出现两个同 id
+        元素（飞书报 not find / 重复 id）。只在「确实要重新创建这个元素」时调用。
+        """
+        seg.el_id = f"answer_{self._counter}"
+        self._counter += 1
+
+    def drop_rendered_progress_notices(self) -> None:
+        """封卡前摘掉「已经画在卡片提示元素上」的那条提示（含后台完成回执）.
+
+        #issue：这类提示占了卡上那个元素，完成态再渲染一遍就成了正文末尾的残留。
+        用户口径是「流式时显示，封卡后被正文覆盖」——所以只看有没有真的画到卡上，
+        不看种类：画过的那条一律从完成态正文里剔除，位置留给正文。被正文接管的情况
+        下通知槽里早已没有它（no-op）；没被接管（本轮没有正文）时在这里摘掉。
+        从未落到卡片元素上的提示没有元素可替换，仍按原样保留在完成态通知位——否则
+        用户就再也看不到它了。
+        """
+        painted = self.notice_element_text
+        self.notice_element_id = None
+        self.notice_element_text = None
+        # 封卡后卡片上只显示正文：本轮确实有正文时，通知槽里的提示一律不渲染
+        # （单槽位，最多一条）。本轮没有正文（被打断 / 只跑了工具）时保留那一条，
+        # 否则用户什么信息都拿不到。
+        has_body = any(
+            seg.type == SegmentType.ANSWER and (seg.text or "").strip()
+            for seg in self.segments
+        )
+        if has_body:
+            self.notices = []
+        elif painted:
+            self.notices = [slot for slot in self.notices if slot.text == painted]
 
     def _new_reasoning(self, text: str) -> Segment:
         c = self._counter
@@ -191,6 +312,10 @@ class SegmentState:
                     seg.text += text
                     seg.dirty = True
                     return
+        # 首段正文接管卡上的提示元素（#issue）：与其在提示旁边新增一段，不如原地
+        # 把那一段变成正文，封卡后正文末尾不会残留一条进行中提示。
+        if self._new_answer_adopting_notice(text) is not None:
+            return
         self._new_answer(text)
 
     def on_completion_answer(self, text: str, *, replaced: bool = False) -> None:

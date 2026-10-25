@@ -138,6 +138,8 @@ def _build_header(status: str) -> dict[str, Any]:
 
 
 _NOTICE_ELEMENT_ID = "fry_notice"
+# 公开别名：控制器建卡时要把这个 id 登记给段状态（首段正文原地接管提示元素）。
+NOTICE_ELEMENT_ID = _NOTICE_ELEMENT_ID
 
 
 def notice_element_id(index: int) -> str:
@@ -173,6 +175,17 @@ def build_notice_element(text: str, *, element_id: str = _NOTICE_ELEMENT_ID) -> 
         "element_id": element_id,
         "content": text,
     }
+
+
+def build_streaming_notice_element(
+    text: str, *, element_id: str, text_size: str = "normal_v2"
+) -> dict:
+    """流式态通知槽元素（与建卡时写入的提示元素同构）.
+
+    走流式元素形态（固定 id + 正文字号），所以首段正文能在同一个元素上原地覆盖；
+    回合中途到达的回执由控制器用同一形态补画到 loading 之前，视觉位置与建卡时一致。
+    """
+    return _streaming_element(content=text, element_id=element_id, text_size=text_size)
 
 
 def _loading_element() -> dict:
@@ -794,7 +807,13 @@ def build_streaming_card_v2(
     if notice:
         # 通知区：流式态只显示最新一条（Hermes 原文），落卡片底部（loading 之前），
         # 不和工具输出混在一起（#43 反馈）；完成态按提示种类分区呈现。
-        elements.append(build_notice_element(notice))
+        # 用流式元素承载（固定 element_id + 正文字号）：首段正文到达时在同一个元素上
+        # 原地覆盖成正文，不在旁边新增一段（#issue 提示元素未被正文覆盖）。
+        elements.append(
+            build_streaming_notice_element(
+                notice, element_id=_NOTICE_ELEMENT_ID, text_size=text_size
+            )
+        )
 
     elements.append(_loading_element())
 
@@ -1062,13 +1081,15 @@ def build_cron_card(
 
 
 def build_background_card(preview: str, content: str) -> dict[str, Any]:
-    """Background 任务完成推送卡片 — schema 2.0，header + markdown."""
+    """Background 任务完成推送卡片 — schema 2.0，纯正文（无 header）.
+
+    ``preview`` 仅保留参数兼容：卡片不再有标题，「后台任务」这四个字由正文自己带，
+    卡片第一行就是内容本身。``config.summary`` 仍按正文首段生成，供飞书会话列表
+    的摘要行显示。
+    """
     card: dict[str, Any] = {
         "schema": "2.0",
         "config": {"wide_screen_mode": True, "locales": _LOCALES},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"✅ Background: \"{preview}\""},
-        },
         "body": {"elements": []},
     }
     body = content if content.strip() else "(No response generated)"

@@ -226,6 +226,17 @@ class TestNativeTableCards:
         assert len(tables) == 1
         assert tables[0]["rows"] == [{"c0": "1", "c1": "2"}]
 
+    def test_background_card_has_no_header(self) -> None:
+        """后台回执卡不带标题：正文第一行就是内容本身（preview 只留给列表摘要）."""
+        from hermes_fry_cards.cardkit.builder import build_background_card
+
+        card = build_background_card("ls -la", "✅ 后台任务已完成 — `ls -la` (3s)")
+
+        assert "header" not in card
+        assert card["body"]["elements"][0]["content"] == "✅ 后台任务已完成 — `ls -la` (3s)"
+        assert card["config"]["summary"]["content"] == "✅ 后台任务已完成 — `ls -la` (3s)"
+        assert "Background" not in str(card["config"]["summary"])
+
 
 # --- 文本拆分 ---
 
