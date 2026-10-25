@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.5.10] - 2026-10-26
 
 cherry-pick 自本地补丁线 `local/0.5.9.4`（#47 / #49 / #50 实测反馈修复，作者已在部署上验证）：
 
