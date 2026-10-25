@@ -10,12 +10,15 @@ import pytest
 
 from hermes_fry_cards.patcher import (
     MARKERS,
+    MK_BG_BUSY_SUPPRESS,
+    MK_BG_BUSY_SUPPRESS_END,
     MK_CRON_DELIVER,
     MK_FOLLOWUP_COMPLETE,
     MK_FOLLOWUP_COMPLETE_END,
     MK_FOLLOWUP_DONE,
     MK_GROUP_BOUNDARY,
     MK_GROUP_BOUNDARY_END,
+    OPTIONAL_HOOKS,
     CronPatcher,
     Patcher,
     PatcherError,
@@ -109,6 +112,25 @@ MODULAR_SOURCES = {
             return text
 
         class NotificationsMixin:
+            async def _run_process_watcher(self, watcher):
+                while True:
+                    session_id = str(watcher.get("session_id") or "")
+                    session = self._process_registry.get(session_id)
+                    if session is None:
+                        break
+                    if session.exited:
+                        completion_evt = {"session_id": session_id}
+                        synth_text = self._format_process_notification(completion_evt)
+                        turn_busy = await self._launching_turn_active(platform_name, watcher)
+                        delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
+                        if delivered is not False:
+                            if turn_busy:
+                                message_text = self._format_process_final_message(session_id, session, "concise")
+                                await self._send_watcher_message(
+                                    platform_name, chat_id, thread_id, message_text, watcher,
+                                )
+                            break
+
             async def _inject_watch_notification(self, synth_text, evt):
                 source = await self._build_process_event_source(evt)
                 if not source:
@@ -474,6 +496,63 @@ def test_bg_completion_hook_intercepts_before_internal_marker(modular_copy: dict
     assert "injected hook failed: bg_completion" in block
 
 
+def test_bg_completion_hook_passes_evt_display_fields(modular_copy: dict[str, Path]) -> None:
+    """回执文案要用 evt 的 command / started_at / exit_code 自己拼，不再甩内部文案."""
+    patcher = Patcher(modular_paths=modular_copy)
+    patcher.apply()
+    notifications = modular_copy["notifications"].read_text(encoding="utf-8")
+
+    block = notifications[
+        notifications.index("HERMES_LARK_BG_COMPLETION_BEGIN"):
+        notifications.index("HERMES_LARK_BG_COMPLETION_END")
+    ]
+    assert "command=_lark_evt.get('command')," in block
+    assert "started_at=_lark_evt.get('started_at')," in block
+    assert "exit_code=_lark_evt.get('exit_code')," in block
+    # evt 不是 dict 时不能炸（_inject_watch_notification 也接受别的映射实现）
+    assert "_lark_evt = evt if isinstance(evt, dict) else {}" in block
+
+
+def test_bg_busy_suppress_hook_lands_before_concise_receipt(modular_copy: dict[str, Path]) -> None:
+    """turn_busy 纯文本回执的抑制点：concise 文案之后、``_send_watcher_message`` 之前."""
+    patcher = Patcher(modular_paths=modular_copy)
+    patcher.apply()
+    notifications = modular_copy["notifications"].read_text(encoding="utf-8")
+
+    begin = notifications.index(MK_BG_BUSY_SUPPRESS)
+    end = notifications.index(MK_BG_BUSY_SUPPRESS_END)
+    concise = notifications.index('_format_process_final_message(session_id, session, "concise")')
+    send = notifications.index("_send_watcher_message(")
+    assert concise < begin < end < send, "钩子必须落在 concise 文案之后、纯文本发送之前"
+
+    block = notifications[begin:end]
+    assert "from hermes_fry_cards.patch import suppress_busy_receipt" in block
+    assert "session_id=str(session_id or '')" in block
+    assert "started_at=getattr(session, 'started_at', None)" in block
+    assert "platform_name=platform_name" in block
+    assert "break" in block
+    assert "injected hook failed: bg_busy_suppress" in block
+    ast.parse(notifications)
+
+
+def test_bg_busy_suppress_hook_is_optional(modular_copy: dict[str, Path]) -> None:
+    """通知模块没有该锚点时跳过注入，不让整次安装失败（旧布局兼容）."""
+    assert "bg_busy_suppress" in OPTIONAL_HOOKS
+    stripped = modular_copy["notifications"].read_text(encoding="utf-8")
+    stripped = "\n".join(
+        line for line in stripped.splitlines()
+        if '"_concise"' not in line and "concise" not in line
+    ) + "\n"
+    modular_copy["notifications"].write_text(stripped, encoding="utf-8")
+
+    patcher = Patcher(modular_paths=modular_copy)
+    patcher.apply()
+
+    patched = modular_copy["notifications"].read_text(encoding="utf-8")
+    assert MK_BG_BUSY_SUPPRESS not in patched
+    assert patcher.is_fully_patched()
+
+
 def test_optional_hooks_are_skipped_when_anchor_missing(tmp_path: Path) -> None:
     """#43: 旧版 Hermes 的 busy 模块没有回执回调时，跳过注入而不是让安装失败。"""
     paths = {}
@@ -499,3 +578,65 @@ def test_optional_hooks_are_skipped_when_anchor_missing(tmp_path: Path) -> None:
     assert "HERMES_LARK_BUSY_ACK_BEGIN" not in busy
     assert "HERMES_LARK_REDIRECT_BEGIN" not in busy
     assert patcher.is_fully_patched()
+
+
+def test_bg_busy_suppress_block_skips_plain_receipt_at_runtime(modular_copy: dict[str, Path]) -> None:
+    """注入块的行为：命中 → 不发纯文本（break）；未命中 → 照常发一条."""
+    import asyncio
+
+    import hermes_fry_cards.patch as patch_module
+
+    Patcher(modular_paths=modular_copy).apply()
+    source = modular_copy["notifications"].read_text(encoding="utf-8")
+    namespace: dict = {
+        "platform_name": "feishu",
+        "chat_id": "oc_chat",
+        "thread_id": "",
+        "logger": None,
+    }
+    exec(compile(source, "<bg-busy-suppress>", "exec"), namespace)
+    watcher_cls = namespace["NotificationsMixin"]
+
+    sent: list[tuple] = []
+
+    class Session:
+        exited = True
+        started_at = 1000.0
+
+    class Registry:
+        @staticmethod
+        def get(_sid):
+            return Session()
+
+    class Host(watcher_cls):
+        _process_registry = Registry()
+
+        async def _launching_turn_active(self, _platform, _watcher):
+            return True
+
+        async def _enqueue_process_completion_notification(self, _text, _evt):
+            return True
+
+        def _format_process_notification(self, _evt):
+            return "internal"
+
+        def _format_process_final_message(self, _sid, _session, _mode):
+            return "concise receipt"
+
+        async def _send_watcher_message(self, *args, **kwargs):
+            sent.append(args)
+
+    watcher = {"session_id": "proc_runtime"}
+
+    original = patch_module.suppress_busy_receipt
+    try:
+        patch_module.suppress_busy_receipt = lambda **_kwargs: False
+        asyncio.run(Host()._run_process_watcher(watcher))
+        assert len(sent) == 1, "未命中时必须照常发纯文本回执"
+
+        sent.clear()
+        patch_module.suppress_busy_receipt = lambda **_kwargs: True
+        asyncio.run(Host()._run_process_watcher(watcher))
+        assert sent == [], "命中时必须跳过纯文本回执"
+    finally:
+        patch_module.suppress_busy_receipt = original

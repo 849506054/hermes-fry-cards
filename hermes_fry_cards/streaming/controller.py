@@ -10,12 +10,14 @@ from typing import TYPE_CHECKING, Any
 
 from ..cardkit.builder import (
     LOADING_ELEMENT_ID,
+    NOTICE_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
     build_background_card,
     build_complete_card,
     build_cron_card,
     build_overflow_fallback_card,
     build_streaming_card_v2,
+    build_streaming_notice_element,
 )
 from ..cardkit.markdown import (
     clamp_utf8,
@@ -168,6 +170,7 @@ class StreamingController:
             assert self._client is not None
 
             reply_to_message_id = session.anchor_id or session.message_id
+            notice_text = _latest_notice(session)
             card = build_streaming_card_v2(
                 show_tool_use=self._cfg.show_tool_use,
                 show_reasoning=False,
@@ -175,7 +178,7 @@ class StreamingController:
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
-                notice=_latest_notice(session),
+                notice=notice_text,
             )
             card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -208,8 +211,13 @@ class StreamingController:
             self._track_live_card(session)  # #43：卡片建好后登记，网关重启时据此封卡
             session.element_count = 1  # loading element
             # 流式建卡时已带上最新一条提示（_latest_notice），记账同步这一格
-            session.notice_element_count = 1 if _latest_notice(session) else 0
+            session.notice_element_count = 1 if notice_text else 0
             session.element_count += session.notice_element_count
+            # 提示是卡上真实存在的元素：登记给段状态，首段正文到达时原地接管（#issue）
+            if session.segment_state is not None:
+                session.segment_state.bind_notice_element(
+                    NOTICE_ELEMENT_ID if notice_text else None, notice_text
+                )
             # 配置基准节流（毫秒→秒）；载荷自适应降频（#46）以它为下限
             session.flush.set_throttle(self._cfg.flush_interval_ms / 1000.0)
 
@@ -481,6 +489,11 @@ class StreamingController:
             ):
                 return
 
+        # ── 步骤 1.5: 通知槽位同步 — 流式期到达的提示（含后台回执）当场可见 ──
+        # 提示只进 notices 不会自己上屏：建卡之后才到的回执必须补一次元素更新，
+        # 否则要等封卡重建整张卡才出现（#issue 流式期看不到回执）。
+        payload_bytes += await self._sync_notice_slot(session, segment_state)
+
         # ── 步骤 2: stream_element 刷脏文本 ──
         for seg in segments[session.split_index:]:
             if not seg.created or not seg.dirty:
@@ -529,6 +542,79 @@ class StreamingController:
 
         # 载荷自适应降频（#46）：按本 flush 实际推送量调整下一轮节流窗口
         session.flush.adapt_payload_size(payload_bytes)
+
+    async def _sync_notice_slot(self, session: CardSession, segment_state: SegmentState) -> int:
+        """把最新一条提示画到卡片通知槽，返回本次推送的载荷字节数.
+
+        两条路径（#issue 流式期看不到回执）：
+        - 本卡有可复用的提示元素（建卡时带过提示、且没被正文接管）→ 原地改文案
+        - 没有（本卡从未带提示，或 ``fry_notice`` 已被正文接管）→ 在 loading 之前
+          补一个流式提示元素；封卡整卡重建时它随旧卡一起消失，不会残留
+
+        失败只记日志：提示是附带信息，画不上去不能让整轮 flush 或主流程失败。
+        """
+        if not segment_state.needs_notice_slot_paint():
+            return 0
+        target = segment_state.notice_slot_target()
+        if target is None or not session.card_id:
+            return 0
+        assert self._client is not None
+        element_id = segment_state.notice_element_id
+        added = element_id is None
+        try:
+            if added:
+                element_id = segment_state.next_notice_slot_element_id()
+                action: dict[str, Any] = {
+                    "action": "add_elements",
+                    "params": {
+                        "type": "insert_before",
+                        "target_element_id": LOADING_ELEMENT_ID,
+                        "elements": [
+                            build_streaming_notice_element(
+                                target,
+                                element_id=element_id,
+                                text_size=self._cfg.body_text_size,
+                            )
+                        ],
+                    },
+                }
+            else:
+                action = {
+                    "action": "partial_update_element",
+                    "params": {
+                        "element_id": element_id,
+                        "partial_element": {"content": target},
+                    },
+                }
+            session.sequence += 1
+            await self._client.cardkit_batch_update(
+                session.card_id, [action], sequence=session.sequence
+            )
+        except Exception as exc:
+            _logger.warning(
+                "notice slot paint failed: msg=%s el=%s added=%s err=%s",
+                session.message_id[:12],
+                element_id,
+                added,
+                exc,
+            )
+            if not added:
+                # 元素可能已随拆卡/重建消失：清掉登记，下一轮 flush 改走新增路径，
+                # 而不是对着一个不存在的 id 反复失败。
+                segment_state.bind_notice_element(None, None)
+            return 0
+        segment_state.bind_notice_element(element_id, target)
+        if added:
+            session.element_count += 1
+            session.notice_element_count += 1
+        _logger.info(
+            "notice slot painted: msg=%s el=%s added=%s len=%d",
+            session.message_id[:12],
+            element_id,
+            added,
+            len(target),
+        )
+        return len(target.encode("utf-8"))
 
     async def _do_batch_update(
         self,
@@ -721,6 +807,9 @@ class StreamingController:
         session.split_index = split_at
         # 未创建 segment 迁移到新卡，标记 dirty 以便下一轮 flush 重新 add。
         for seg in segments[split_at:]:
+            # 新卡已重新用 fry_notice 承载提示时，接管过正文的段落要换 id 才能重新上卡
+            if session.notice_element_count and seg.el_id == NOTICE_ELEMENT_ID:
+                segment_state.reassign_element_id(seg)
             seg.created = False
             seg.dirty = True
         _logger.info(
@@ -876,6 +965,7 @@ class StreamingController:
             need_tool_panel = session.tool_panel_created or any(
                 s.type == SegmentType.TOOL for s in (session.segment_state.segments[session.split_index:] if session.segment_state else [])
             )
+            notice_text = _latest_notice(session)
             card = build_streaming_card_v2(
                 show_tool_use=need_tool_panel,
                 show_reasoning=False,
@@ -883,7 +973,7 @@ class StreamingController:
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
-                notice=_latest_notice(session),
+                notice=notice_text,
             )
             new_card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -903,6 +993,11 @@ class StreamingController:
                 exc_info=True,
             )
             return None
+        # 新卡同样带着最新一条提示：把该元素登记给段状态，首段正文可原地接管（#issue）
+        if session.segment_state is not None:
+            session.segment_state.bind_notice_element(
+                NOTICE_ELEMENT_ID if notice_text else None, notice_text
+            )
         return new_card_id, new_msg_id
 
     async def _do_split_card(
@@ -951,6 +1046,9 @@ class StreamingController:
         session.split_disabled = False
         session.split_index = split_idx
         for seg in segments[split_idx:]:
+            # 新卡已重新用 fry_notice 承载提示时，接管过正文的段落要换 id 才能重新上卡
+            if session.notice_element_count and seg.el_id == NOTICE_ELEMENT_ID:
+                segment_state.reassign_element_id(seg)
             seg.created = False
         _logger.info(
             "CardKit split: msg=%s old_card=%s sealed=%d split_idx=%d new_card=%s",
@@ -1014,6 +1112,13 @@ class StreamingController:
             session.segment_state = SegmentState(max_reasoning_panels=self._cfg.max_reasoning_panels)
             session.split_index = 0
             session.element_count = 1  # loading element（与拆卡一致）
+            # 新卡同样带着最新一条提示：记账与元素登记一起迁到新段状态（#issue 原地接管）
+            clarify_notice = _latest_notice(session)
+            session.notice_element_count = 1 if clarify_notice else 0
+            session.element_count += session.notice_element_count
+            session.segment_state.bind_notice_element(
+                NOTICE_ELEMENT_ID if clarify_notice else None, clarify_notice
+            )
             session.tool_use = ToolUseTracker()
             session.tool_panel_created = False
             session.tool_panel_estimate = 0
@@ -1086,6 +1191,10 @@ class StreamingController:
                 log_prefix="CardKit",
             )
 
+        # 封卡前摘掉「已经画在卡片提示元素上」的进行中提示（#issue：正文末尾残留）。
+        # 被正文原地接管的提示早已从通知槽摘掉；没被接管的（本轮无正文）在这里摘掉。
+        if session.segment_state is not None:
+            session.segment_state.drop_rendered_progress_notices()
         # 完成态通知区每条提示占一个元素：先记账再判断，避免低估撞 300305
         _sync_notice_elements(session)
         # 展示位拆分（#43 反馈）：后台回执等完成后通知在顶部，忙碌/重定向等

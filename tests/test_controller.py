@@ -15,7 +15,14 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 
 import hermes_fry_cards.controller as controller_module
-from hermes_fry_cards.controller import StreamCardController, get_controller
+from hermes_fry_cards.controller import (
+    StreamCardController,
+    background_completion_text,
+    busy_receipt_suppressed,
+    clear_merged_busy_receipts,
+    get_controller,
+    remember_merged_busy_receipt,
+)
 from hermes_fry_cards.feishu import FeishuAPIError, FeishuClient
 from hermes_fry_cards.streaming.segment_helper import estimate_segment_elements
 from hermes_fry_cards.streaming.segments import Segment, SegmentState
@@ -2746,6 +2753,179 @@ class TestBackgroundCompletion:
 
         assert ok is False
         ctrl._do_background_deliver.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_internal_text_is_replaced_by_user_wording(self) -> None:
+        """注入块传的 text 是给模型看的内部文案，卡片上要给用户看得懂的一句."""
+        ctrl = _setup_ctrl()
+        session = self._live_session(ctrl, "msg_bgc_user", chat_id="chat_bgc", key="key_bgc_user")
+        started = time.time() - 12
+
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_bgc",
+            session_key="key_bgc_user",
+            text=(
+                "[IMPORTANT: Background process proc_x completed normally (exit code 0).\n"
+                "Command: ls -la\nOutput:\na.txt\nb.txt]"
+            ),
+            command="ls -la",
+            started_at=started,
+            exit_code=0,
+        )
+
+        assert ok is True
+        notices = [s.text for s in session.segment_state.notices]
+        assert notices == ["✅ 后台任务已完成 — `ls -la` (12s)"]
+        assert "[IMPORTANT" not in notices[0]
+        assert "Output:" not in notices[0]
+
+    @pytest.mark.asyncio
+    async def test_missing_fields_fall_back_to_unwrapped_first_line(self) -> None:
+        ctrl = _setup_ctrl()
+        session = self._live_session(ctrl, "msg_bgc_plain", chat_id="chat_bgc", key="key_bgc_plain")
+
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_bgc",
+            session_key="key_bgc_plain",
+            text=(
+                "[IMPORTANT: Background process proc_x completed normally (exit code 0).\n"
+                "Command: ls\nOutput:\nfoo]"
+            ),
+        )
+
+        assert ok is True
+        assert [s.text for s in session.segment_state.notices] == [
+            "Background process proc_x completed normally (exit code 0)."
+        ]
+
+
+class TestBusyReceiptSuppress:
+    """turn_busy 纯文本补发的抑制登记（回执已由卡片投递时不重复发）."""
+
+    def setup_method(self) -> None:
+        clear_merged_busy_receipts()
+
+    def teardown_method(self) -> None:
+        clear_merged_busy_receipts()
+
+    def test_unregistered_receipt_is_not_suppressed(self) -> None:
+        assert busy_receipt_suppressed(session_id="proc_unknown") is False
+
+    def test_registered_receipt_is_suppressed_by_session_id(self) -> None:
+        remember_merged_busy_receipt(session_id="proc_a", started_at=1000.0)
+        assert busy_receipt_suppressed(session_id="proc_a") is True
+        # 别的任务不受影响
+        assert busy_receipt_suppressed(session_id="proc_b") is False
+
+    def test_session_key_and_started_at_are_alternative_keys(self) -> None:
+        remember_merged_busy_receipt(session_key="agent:feishu:dm:1", started_at=1000.0)
+        assert busy_receipt_suppressed(session_key="agent:feishu:dm:1") is True
+        assert busy_receipt_suppressed(started_at=1000.0) is True
+        assert busy_receipt_suppressed(started_at=1001.0) is False
+
+    def test_registration_expires_after_ten_minutes(self) -> None:
+        remember_merged_busy_receipt(session_id="proc_ttl")
+        now = time.monotonic()
+        assert busy_receipt_suppressed(session_id="proc_ttl", now=now + 60) is True
+        assert busy_receipt_suppressed(session_id="proc_ttl", now=now + 601) is False
+
+    def test_no_keys_means_no_suppression(self) -> None:
+        """拿不到任何键 → False（网关照常发纯文本，功能无损）."""
+        remember_merged_busy_receipt()
+        assert busy_receipt_suppressed() is False
+        assert busy_receipt_suppressed(session_id="", session_key="", started_at=None) is False
+
+    @pytest.mark.asyncio
+    async def test_merge_into_live_card_registers_receipt(self) -> None:
+        ctrl = _setup_ctrl()
+        session = _make_session("msg_sup_live")
+        session.chat_id = "chat_sup"
+        session.state = SessionState.STREAMING
+        session.card_id = "card_msg_sup_live"
+        session.card_msg_id = "msg_msg_sup_live"
+        ctrl._register_session(session, session_key="key_sup")
+
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_sup",
+            session_key="key_sup",
+            text="后台任务完成",
+            session_id="proc_sup",
+            started_at=1000.0,
+        )
+
+        assert ok is True
+        assert busy_receipt_suppressed(session_id="proc_sup") is True
+
+    @pytest.mark.asyncio
+    async def test_static_card_registers_receipt(self) -> None:
+        ctrl = _setup_ctrl()
+        ctrl._do_background_deliver = AsyncMock()
+
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_sup_static", text="任务完成", session_id="proc_static",
+        )
+
+        assert ok is True
+        assert busy_receipt_suppressed(session_id="proc_static") is True
+
+    @pytest.mark.asyncio
+    async def test_failed_static_card_does_not_register(self) -> None:
+        """投递失败时不能登记：否则网关那条纯文本被吞，用户什么都收不到."""
+        ctrl = _setup_ctrl()
+        ctrl._do_background_deliver = AsyncMock(side_effect=RuntimeError("boom"))
+
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_sup_fail", text="任务完成", session_id="proc_fail",
+        )
+
+        assert ok is False
+        assert busy_receipt_suppressed(session_id="proc_fail") is False
+
+    @pytest.mark.asyncio
+    async def test_blank_text_does_not_register(self) -> None:
+        ctrl = _setup_ctrl()
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_sup_blank", text="   ", session_id="proc_blank",
+        )
+        assert ok is False
+        assert busy_receipt_suppressed(session_id="proc_blank") is False
+
+
+class TestBackgroundCompletionText:
+    """后台完成回执的用户文案（内部 [IMPORTANT: ...] 不直接给用户看）."""
+
+    def test_uses_command_and_whole_seconds(self) -> None:
+        line = background_completion_text(
+            "[IMPORTANT: background process done]",
+            command="ls -la",
+            started_at=100.0,
+            exit_code=0,
+            now=112.4,
+        )
+        assert line == "✅ 后台任务已完成 — `ls -la` (12s)"
+
+    def test_long_command_is_truncated_at_40_chars(self) -> None:
+        line = background_completion_text(
+            "x", command="a" * 60, started_at=10.0, now=11.0,
+        )
+        assert line == f"✅ 后台任务已完成 — `{'a' * 40}…` (1s)"
+
+    def test_missing_started_at_omits_duration(self) -> None:
+        assert background_completion_text("x", command="ls") == "✅ 后台任务已完成 — `ls`"
+
+    def test_falls_back_to_first_line_without_wrapper(self) -> None:
+        text = (
+            "[IMPORTANT: Background process proc_1 completed normally (exit code 0).\n"
+            "Command: ls\nOutput:\ntail]"
+        )
+        assert background_completion_text(text) == (
+            "Background process proc_1 completed normally (exit code 0)."
+        )
+
+    def test_negative_duration_is_omitted(self) -> None:
+        """started_at 晚于 now（时钟回拨/字段错位）时宁可不写时长，也不写负数."""
+        line = background_completion_text("x", command="ls", started_at=200.0, now=100.0)
+        assert line == "✅ 后台任务已完成 — `ls`"
 
 
 # ── _complete_header_enabled: 快回复去 header 阈值 ──────────────────────────

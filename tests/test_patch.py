@@ -35,3 +35,78 @@ class TestCronDeliver:
                 assert on_cron_deliver(chat_id="oc_x", content="done", run_time=incoming) is True
             run_time = datetime.fromisoformat(captured["run_time"])
             assert abs((datetime.now().astimezone() - run_time).total_seconds()) < 120
+
+
+class TestSuppressBusyReceipt:
+    """注入点：回执已由卡片投递 → 跳过网关 turn_busy 的纯文本补发."""
+
+    def setup_method(self) -> None:
+        from hermes_fry_cards.controller import clear_merged_busy_receipts
+
+        clear_merged_busy_receipts()
+
+    def teardown_method(self) -> None:
+        from hermes_fry_cards.controller import clear_merged_busy_receipts
+
+        clear_merged_busy_receipts()
+
+    def _ctrl(self, *, enabled: bool = True) -> MagicMock:
+        ctrl = MagicMock()
+        ctrl.enabled = enabled
+        return ctrl
+
+    def test_hit_returns_true(self) -> None:
+        from hermes_fry_cards.controller import remember_merged_busy_receipt
+        from hermes_fry_cards.patch import suppress_busy_receipt
+
+        remember_merged_busy_receipt(session_id="proc_hit")
+        with patch.object(patch_module, "get_controller", return_value=self._ctrl()):
+            assert suppress_busy_receipt(
+                session_id="proc_hit", platform_name="feishu", chat_id="oc_x"
+            ) is True
+
+    def test_miss_returns_false(self) -> None:
+        from hermes_fry_cards.patch import suppress_busy_receipt
+
+        with patch.object(patch_module, "get_controller", return_value=self._ctrl()):
+            assert suppress_busy_receipt(
+                session_id="proc_miss", platform_name="feishu", chat_id="oc_x"
+            ) is False
+
+    def test_missing_keys_return_false(self) -> None:
+        """注入块拿不到任何键时不能吞掉网关的回执."""
+        from hermes_fry_cards.patch import suppress_busy_receipt
+
+        with patch.object(patch_module, "get_controller", return_value=self._ctrl()):
+            assert suppress_busy_receipt(platform_name="feishu", chat_id="oc_x") is False
+
+    def test_non_feishu_platform_returns_false(self) -> None:
+        from hermes_fry_cards.controller import remember_merged_busy_receipt
+        from hermes_fry_cards.patch import suppress_busy_receipt
+
+        remember_merged_busy_receipt(session_id="proc_tg")
+        with patch.object(patch_module, "get_controller", return_value=self._ctrl()):
+            assert suppress_busy_receipt(
+                session_id="proc_tg", platform_name="telegram", chat_id="1"
+            ) is False
+
+    def test_disabled_plugin_returns_false(self) -> None:
+        from hermes_fry_cards.controller import remember_merged_busy_receipt
+        from hermes_fry_cards.patch import suppress_busy_receipt
+
+        remember_merged_busy_receipt(session_id="proc_off")
+        with patch.object(patch_module, "get_controller", return_value=self._ctrl(enabled=False)):
+            assert suppress_busy_receipt(
+                session_id="proc_off", platform_name="feishu", chat_id="oc_x"
+            ) is False
+
+    def test_controller_error_is_swallowed(self) -> None:
+        """插件侧异常不能影响网关主流程."""
+        from hermes_fry_cards.patch import suppress_busy_receipt
+
+        with patch.object(
+            patch_module, "get_controller", side_effect=RuntimeError("boom")
+        ):
+            assert suppress_busy_receipt(
+                session_id="proc_err", platform_name="feishu", chat_id="oc_x"
+            ) is False
