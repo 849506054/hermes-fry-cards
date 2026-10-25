@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.5.9] - 2026-10-25
+
+v0.5.8 实测反馈两连修：合成轮次的 `streamed=False` 抑制误报（#48）与后台完成通知接管（#47，0.5.8 release notes「尚未覆盖」项正式落地）。
 
 ### 新增 / Added
 - **后台完成通知接管**（#47）：新增可选注入点 `BG_COMPLETION`，挂在 `gateway/run_notifications.py`
