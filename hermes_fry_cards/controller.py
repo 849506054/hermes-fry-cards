@@ -652,7 +652,11 @@ class StreamCardController(StreamingController):
             self._text_fallback_aliases.pop(key, None)
         return True
 
-    def stream_card_healthy(self, message_id: str | None) -> bool:
+    def stream_card_healthy(
+        self,
+        message_id: str | None = None,
+        session_key: str | None = None,
+    ) -> bool:
         """fry 卡片是否仍在健康承载这轮回复（网关最终投递抑制判定用）.
 
         #43 反馈：答案增量被插件接走后 Hermes 自己的 stream consumer 全程空转，
@@ -660,10 +664,13 @@ class StreamCardController(StreamingController):
         ``mark_stream_delivered`` 把本方法作为 ``has_durably_delivered_text`` 谓词
         挂到消费者上：卡活着（流式/收尾中且有卡）→ True 让网关走抑制分支；
         卡挂了 → False，最终文本仍由网关投递。
+
+        ``session_key``（#48）：合成轮次没有 event_message_id，按 session_key
+        兜底解析活跃卡（syn-* 会话注册时已同步进 ``_session_keys``）。
         """
-        if not self.enabled or not message_id:
+        if not self.enabled or (not message_id and not session_key):
             return False
-        session = self._resolve_session(message_id, None)
+        session = self._resolve_session(message_id, session_key)
         if session is None or session.state.is_terminal:
             return False
         return session.has_card or session.state in (SessionState.IDLE, SessionState.CREATING)
@@ -1082,10 +1089,51 @@ class StreamCardController(StreamingController):
             self._schedule_flush(session)
             _logger.info("background_receipt_merged: id=%s chat=%s", session.message_id, chat_id[:12])
             return True
+        return await self._deliver_background_static(chat_id, content, reply_to_message_id)
+
+    async def on_background_completion(
+        self,
+        *,
+        chat_id: str,
+        session_key: str | None = None,
+        text: str,
+    ) -> bool:
+        """run_notifications 的 watch/completion 通知接管（#47）.
+
+        该路径把完成通知合成内部消息注入，纯文本气泡直达，不经过卡片管线
+        （无 START 钩子可拦）。接管规则：
+        - 该会话此刻有活跃卡（按 session_key，其次唯一活跃卡）→ 按 #43 通知
+          分区并入（kind=background，完成后通知置顶）
+        - 无活跃卡 → 复用合成轮次的静态卡路径（send_card_to_chat，不 reply
+          旧消息——evt 里的 message_id 是任务的触发消息，投递时刻已过期 #52694）
+        都不行（禁用 / 无 chat_id / 投递失败）→ 返回 False，Hermes 走原注入
+        路径发纯文本，功能无损降级。
+        """
+        if not self.enabled or not text.strip() or not chat_id:
+            return False
+        session = self._notice_session(None, session_key)
+        if session is not None and session.chat_id == chat_id and session.segment_state is not None:
+            session.segment_state.add_notice(text, kind="background")
+            self._schedule_flush(session)
+            _logger.info(
+                "background_completion_merged: id=%s chat=%s",
+                session.message_id,
+                chat_id[:12],
+            )
+            return True
+        return await self._deliver_background_static(chat_id, text)
+
+    async def _deliver_background_static(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to_message_id: str | None = None,
+    ) -> bool:
+        """无活跃卡时的静态卡投递；终端码只留一行 warning（#43/#47 共用）."""
         try:
             await self._do_background_deliver(
                 chat_id,
-                preview,
+                content[:80],
                 content,
                 reply_to_message_id=reply_to_message_id,
             )

@@ -104,6 +104,25 @@ MODULAR_SOURCES = {
                 pass
             return True
     """,
+    "notifications": """
+        def _mark_internal_notification(text):
+            return text
+
+        class NotificationsMixin:
+            async def _inject_watch_notification(self, synth_text, evt):
+                source = await self._build_process_event_source(evt)
+                if not source:
+                    return None
+                platform_name = source.platform.value
+                try:
+                    synth_text = _mark_internal_notification(synth_text)
+                    metadata = {}
+                    synth_event = MessageEvent(text=synth_text, source=source, internal=True)
+                    await admit_internal_event(adapter, synth_event)
+                    return True
+                except Exception as e:
+                    return False
+    """,
 }
 
 # Hermes 0.22 微模块重构（#38）：progress_callback 从 run_turn_runner.py 迁移至独立的
@@ -227,6 +246,7 @@ def test_modular_022_apply_installs_tool_hook_in_progress_module(modular_022_cop
     assert "HERMES_LARK_BUSY_ACK_BEGIN" in contents["busy"]
     assert "HERMES_LARK_REDIRECT_BEGIN" in contents["busy"]
     assert "HERMES_LARK_REDIRECT_RESOLVED_BEGIN" in contents["busy"]
+    assert "HERMES_LARK_BG_COMPLETION_BEGIN" in contents["notifications"]
     for begin, _end in [*MARKERS, (MK_GROUP_BOUNDARY, MK_GROUP_BOUNDARY_END)]:
         total = sum(content.count(begin) for content in contents.values())
         assert total == 1, f"{begin} installed {total}x"
@@ -328,6 +348,8 @@ def test_modular_marker_distribution(modular_copy: dict[str, Path]) -> None:
     assert "HERMES_LARK_REDIRECT_BEGIN" in contents["busy"]
     # 重定向判定点（防抖前换卡，#43 反馈）
     assert "HERMES_LARK_REDIRECT_RESOLVED_BEGIN" in contents["busy"]
+    # 后台完成通知接管（#47 可选锚点）
+    assert "HERMES_LARK_BG_COMPLETION_BEGIN" in contents["notifications"]
 
 
 def test_modular_followup_done_seals_card_before_merge(modular_copy: dict[str, Path]) -> None:
@@ -432,6 +454,24 @@ def test_redirect_hook_rebuilds_card_before_notice(modular_copy: dict[str, Path]
     assert "from hermes_fry_cards.patch import on_turn_redirected" in block
     assert "new_message_id=event.message_id" in block
     assert "injected hook failed: redirect" in block
+
+
+def test_bg_completion_hook_intercepts_before_internal_marker(modular_copy: dict[str, Path]) -> None:
+    """#47: 完成通知接管挂在内部标记处理之前——接管时跳过整条合成消息注入."""
+    patcher = Patcher(modular_paths=modular_copy)
+    patcher.apply()
+    notifications = modular_copy["notifications"].read_text(encoding="utf-8")
+
+    begin = notifications.index("HERMES_LARK_BG_COMPLETION_BEGIN")
+    end = notifications.index("HERMES_LARK_BG_COMPLETION_END")
+    marker_line = notifications.index("_mark_internal_notification(synth_text)")
+    assert begin < end < marker_line, "hook must be injected before the internal-marker line"
+
+    block = notifications[begin:end]
+    assert "from hermes_fry_cards.patch import on_background_completion" in block
+    assert "session_key=(str(_lark_evt_key) if _lark_evt_key else None)" in block
+    assert "return True" in block
+    assert "injected hook failed: bg_completion" in block
 
 
 def test_optional_hooks_are_skipped_when_anchor_missing(tmp_path: Path) -> None:

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 新增 / Added
+- **后台完成通知接管**（#47）：新增可选注入点 `BG_COMPLETION`，挂在 `gateway/run_notifications.py`
+  的 `_inject_watch_notification` 内部标记处理之前。watch/completion 通知不再以纯文本气泡直达
+  （该路径不经过卡片管线，无 START 钩子可拦）：会话此刻有活跃卡（按 `session_key`，其次唯一
+  活跃卡）时按 #43 通知分区并入（完成后通知置顶），无活跃卡时复用合成轮次的静态卡路径
+  （`send_card_to_chat`，不 reply 已过期的触发消息 #52694）；都不可行时返回 False，Hermes 照常
+  注入，无损降级。modular 布局自动发现 `gateway/run_notifications.py`（0.22.5 真实源码回归）。
+
+### 修复 / Fixed
+- **合成轮次的 `streamed=False` 重复投递误报**（#48）：合成轮次（后台完成通知触发的回复轮）
+  没有 `event_message_id`，`mark_stream_delivered` 此前拿到 None 导致谓词恒 False，网关误打
+  `Normal final-send NOT suppressed` 警告。`mark_stream_delivered` 与 `stream_card_healthy`
+  均增加 `session_key` 兜底（syn-* 会话注册时已同步进 `_session_keys`），谓词按活跃卡健康
+  状态正确回答。**升级需重跑 `uninstall` + `install`**（answer 钩子注入模板有变更）。
+
+### 测试 / Tests
+- 合成轮次按 session_key 解析、无任何标识返回 False、`stream_card_healthy` 双参数（#48）；
+  `run_notifications` 存根注入、真实 0.22.5 源码上 `BG_COMPLETION` 落在内部标记之前（#47）；
+  通知接管的状态级回归（活跃卡并入 / 静态卡 / chat 不匹配 / 投递失败降级）。全量 **947 passed**。
+
+---
+
 ## [0.5.8] - 2026-10-24
 
 v0.5.7 实测反馈两连修：#43 第二轮（连续打断、合成 id 回执、提示分区渲染）与 #46（长任务把飞书客户端渲染打满直至被系统杀掉）。

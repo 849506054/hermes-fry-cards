@@ -542,12 +542,56 @@ def test_mark_stream_delivered_reports_healthy_card() -> None:
 
     consumer = _Consumer()
     with patch.object(patch_mod, "get_controller", return_value=ctrl):
-        mark_stream_delivered(consumer, "msg_mark")
+        mark_stream_delivered(consumer, "msg_mark", "key_mark")
         assert consumer.has_durably_delivered_text("final answer") is True
 
         session = ctrl._sessions["msg_mark"]
         session.state = SessionState.FAILED
         assert consumer.has_durably_delivered_text("final answer") is False
+
+
+def test_mark_stream_delivered_synthetic_turn_resolves_by_session_key() -> None:
+    """合成轮次没有 event_message_id：message_id=None 时谓词按 session_key 兜底（#48）."""
+    from unittest.mock import patch
+
+    import hermes_fry_cards.patch as patch_mod
+    from hermes_fry_cards.patch import mark_stream_delivered
+
+    ctrl = _setup_ctrl()
+    _streaming(ctrl, "syn-abc123def456", key="key_syn48")
+
+    class _Consumer:
+        pass
+
+    consumer = _Consumer()
+    with patch.object(patch_mod, "get_controller", return_value=ctrl):
+        mark_stream_delivered(consumer, None, "key_syn48")
+        assert consumer._fry_session_key == "key_syn48"
+        assert consumer.has_durably_delivered_text("final answer") is True
+
+
+def test_mark_stream_delivered_without_any_id_is_false() -> None:
+    from unittest.mock import patch
+
+    import hermes_fry_cards.patch as patch_mod
+    from hermes_fry_cards.patch import mark_stream_delivered
+
+    ctrl = _setup_ctrl()
+
+    class _Consumer:
+        pass
+
+    consumer = _Consumer()
+    with patch.object(patch_mod, "get_controller", return_value=ctrl):
+        mark_stream_delivered(consumer, None, None)
+        assert consumer.has_durably_delivered_text("final answer") is False
+
+
+def test_stream_card_healthy_resolves_by_session_key() -> None:
+    ctrl = _setup_ctrl()
+    _streaming(ctrl, "syn-abc123def456", key="key_healthy")
+    assert ctrl.stream_card_healthy(None, "key_healthy") is True
+    assert ctrl.stream_card_healthy(None, None) is False
 
 
 def test_mark_stream_delivered_survives_card_loss() -> None:

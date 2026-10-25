@@ -54,6 +54,10 @@ gateway/run.py (Hermes)
        ├─ on_busy_ack           → controller.on_busy_ack() (busy receipt into notice slot, #43)
        ├─ on_turn_redirected    → patch.on_turn_redirected() (redirect: switch cards; else merge notice, #43)
        ├─ on_turn_redirected (REDIRECT_RESOLVED, optional) → same, injected after the _steer unpack BEFORE the 30s busy-ack debounce so a second consecutive interrupt still switches cards (#43)
+       ├─ on_background_completion (BG_COMPLETION, optional) → controller.on_background_completion() in
+       │    gateway/run_notifications.py's _inject_watch_notification — watch/completion notices merge into
+       │    the live card (session_key resolution) or go out as a standalone static card; True skips the
+       │    plain-text synthetic injection (#47)
        └─ on_session_compressed → controller.on_compression() (optional, seal card on context compaction)
 
 cron/scheduler.py (Hermes)
@@ -134,5 +138,5 @@ Studio (studio/ — visual config workbench, stdlib http.server + native JS only
 - The background deliver hook (`on_background_deliver`) is injected in `_run_background_task` after `adapter.extract_images(response)`. It uses `ReplyMessage` API with `event_message_id` as anchor, so cards land in the correct topic. On success, `text_content` is cleared to avoid duplicate text delivery, while images and media files continue through the original Hermes loops. On failure, the original Hermes delivery logic runs as fallback.
 - Notices (#43) render Hermes's text raw — no `💡 提示` label. Zones: in-progress notices (kind `busy`/`redirect`) go to the card BOTTOM (streaming: before loading; completed: before footer), post-turn receipts (kind `background`) stay at the TOP. `on_interrupted` clears the old card's progress notices on redirect so the sentence is not rendered twice.
 - Synthetic turn ids (background completion receipts, e.g. `["completion", <task>, <ts>]`) are detected in `on_message_started` (`_is_synthetic_turn_id`) and treated like `syn-*` turns: the card is sent via `send_card_to_chat` instead of `reply_card_by_id` (which would fail 99992354); the id is kept as the session key.
-- The answer hook marks Hermes's stream consumer via `patch.mark_stream_delivered` when a delta is consumed: it installs `has_durably_delivered_text` (the duck-typed query point in `_run_agent_stream_confirmed_final_delivery`) backed by `controller.stream_card_healthy`, so `_run_agent_mark_streamed_delivery` takes the suppression branch instead of logging the "Normal final-send NOT suppressed" duplicate-risk warning. `on_completed_wait` marks the text fallback when sealing fails so the gateway's `already_sent` is undone and the final text still delivers.
+- The answer hook marks Hermes's stream consumer via `patch.mark_stream_delivered` when a delta is consumed: it installs `has_durably_delivered_text` (the duck-typed query point in `_run_agent_stream_confirmed_final_delivery`) backed by `controller.stream_card_healthy`, so `_run_agent_mark_streamed_delivery` takes the suppression branch instead of logging the "Normal final-send NOT suppressed" duplicate-risk warning. Synthetic turns carry no `event_message_id` — the mark and the health query both fall back to `session_key` (#48). `on_completed_wait` marks the text fallback when sealing fails so the gateway's `already_sent` is undone and the final text still delivers.
 - Commit messages: body should use bullet list format (unnumbered `- item`).

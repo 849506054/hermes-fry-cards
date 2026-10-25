@@ -380,6 +380,7 @@ class TestGeneratedAnswerHook:
             callback("delta", ctx)
 
         assert consumer._fry_msg_id == "modern-message"
+        assert consumer._fry_session_key == ctx.session_key
         assert callable(consumer.has_durably_delivered_text)
 
     def test_consumed_delta_without_consumer_is_silent(self) -> None:

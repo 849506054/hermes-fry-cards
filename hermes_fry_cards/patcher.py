@@ -42,6 +42,7 @@ _HOOK_NAMES = [
     "REDIRECT",
     "COMPRESSION",
     "REDIRECT_RESOLVED",
+    "BG_COMPLETION",
 ]
 MARKERS: list[tuple[str, str]] = [(f"# {PREFIX}_{n}_BEGIN", f"# {PREFIX}_{n}_END") for n in _HOOK_NAMES]
 
@@ -65,11 +66,12 @@ MK_BUSY_ACK, MK_BUSY_ACK_END = MARKERS[16]
 MK_REDIRECT, MK_REDIRECT_END = MARKERS[17]
 MK_COMPRESSION, MK_COMPRESSION_END = MARKERS[18]
 MK_REDIRECT_RESOLVED, MK_REDIRECT_RESOLVED_END = MARKERS[19]
+MK_BG_COMPLETION, MK_BG_COMPLETION_END = MARKERS[20]
 
 # 可选注入点：锚点不存在时跳过而不让整次安装失败（#43 提示入卡与压缩封卡）。
 # 旧版 Hermes 或精简布局可能缺失部分回调，缺失时插件退回既有行为。
 OPTIONAL_HOOKS: frozenset[str] = frozenset(
-    {"busy_ack", "redirect", "compression", "redirect_resolved"}
+    {"busy_ack", "redirect", "compression", "redirect_resolved", "bg_completion"}
 )
 _OPTIONAL_MARKERS: frozenset[str] = frozenset(
     f"# {PREFIX}_{name.upper()}_BEGIN" for name in OPTIONAL_HOOKS
@@ -240,6 +242,10 @@ def _default_modular_paths() -> dict[str, Path]:
         resolved = _resolve_module_path(f"gateway.run_turn_{optional}", roots)
         if resolved.exists():
             paths[optional] = resolved
+    notifications = _resolve_module_path("gateway.run_notifications", roots)
+    if notifications.exists():
+        # 0.22+ 的 watch/completion 通知宿主（#47 可选注入点 bg_completion）
+        paths["notifications"] = notifications
     return paths
 
 
@@ -355,6 +361,35 @@ def _redirect_resolved_hook(indent: str) -> str:
             "            text='',",
             "        )",
             *_hook_exception_lines("redirect_resolved"),
+        ],
+    )
+
+
+def _bg_completion_hook(indent: str) -> str:
+    """后台完成通知接管：活跃卡并入通知区，无卡走静态卡（#47）.
+
+    ``_inject_watch_notification`` 把完成通知合成内部消息注入——纯文本气泡
+    直达，不经过卡片管线（无 START 钩子可拦）。这个锚点挂在内部标记处理
+    之前：fry 按会话活跃卡并入通知区，或独立静态卡直接投聊天；返回 True
+    时注入点 ``return True`` 跳过 Hermes 注入（外层语义同「adapter 已接受」，
+    不会重试/重排队）。False 时 Hermes 照常注入，无损降级。
+    """
+    return _make_hook(
+        indent,
+        MK_BG_COMPLETION,
+        MK_BG_COMPLETION_END,
+        [
+            "try:",
+            "    if platform_name in ('feishu', 'lark'):",
+            "        from hermes_fry_cards.patch import on_background_completion",
+            "        _lark_evt_key = evt.get('session_key') if isinstance(evt, dict) else None",
+            "        if await on_background_completion(",
+            "            chat_id=str(getattr(source, 'chat_id', '') or ''),",
+            "            session_key=(str(_lark_evt_key) if _lark_evt_key else None),",
+            "            text=synth_text,",
+            "        ):",
+            "            return True",
+            *_hook_exception_lines("bg_completion"),
         ],
     )
 
@@ -659,13 +694,14 @@ def _answer_hook(indent: str) -> str:
             "            _lark_session_key = None",
             "    if text and _lark_run_current() and on_answer_delta(message_id=_lark_message_id, text=text, session_key=_lark_session_key):",
             "        try:",
-            "            # 增量由 fry 卡片接管：把投递事实挂到网关流消费者上，",
-            "            # 最终 send 的抑制判定按卡片健康状态走 True 分支（#43 反馈），",
-            "            # 不再打 streamed=False 的重复投递警告。",
+            "            # 增量由 fry 卡片接管: 把投递事实挂到网关流消费者上,",
+            "            # 最终 send 的抑制判定按卡片健康状态走 True 分支(#43 反馈),",
+            "            # 不再打 streamed=False 的重复投递警告. 合成轮次没有",
+            "            # event_message_id(None), session_key 兜底(#48).",
             "            from hermes_fry_cards.patch import mark_stream_delivered",
             "            _lark_sc_holder = getattr(ctx, 'stream_consumer_holder', None)",
             "            if _lark_sc_holder is not None:",
-            "                mark_stream_delivered(_lark_sc_holder[0], _lark_message_id)",
+            "                mark_stream_delivered(_lark_sc_holder[0], _lark_message_id, _lark_session_key)",
             "        except Exception:",
             "            pass",
             "        try:",
@@ -1000,6 +1036,7 @@ _HOOK_FNS = {
     "busy_ack": _busy_ack_hook,
     "redirect": _redirect_hook,
     "redirect_resolved": _redirect_resolved_hook,
+    "bg_completion": _bg_completion_hook,
     "compression": _compression_hook,
     "group_boundary": _group_boundary_hook,
 }
@@ -1072,9 +1109,9 @@ class Patcher:
                 raise PatcherError(
                     "modular_paths must contain at least: " + ", ".join(sorted(required))
                 )
-            # 可选模块（0.22+ 的 progress / persistence）只接受已知名字，
+            # 可选模块（0.22+ 的 progress / persistence / notifications）只接受已知名字，
             # 防止拼写错误让锚点静默回退到旧模块。
-            unknown = set(modular_paths) - required - {"progress", "persistence"}
+            unknown = set(modular_paths) - required - {"progress", "persistence", "notifications"}
             if unknown:
                 raise PatcherError(
                     "modular_paths contains unknown modules: " + ", ".join(sorted(unknown))
@@ -1348,6 +1385,10 @@ class Patcher:
             "progress": [],
             # persistence 只承载 agent:end 的 verify 探测，无注入点；留在 specs 里防 KeyError。
             "persistence": [],
+            # 0.22+ 的 watch/completion 通知宿主（#47 可选注入点）。
+            "notifications": [
+                ("bg_completion", "background completion", _find_bg_completion_site),
+            ],
         }
         # tool 锚点宿主：与 _verify_modular_target 的解析顺序一致（progress 优先，回退 runner）。
         tool_host = "runner"
@@ -1734,6 +1775,20 @@ def _find_redirect_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] |
 
 
 _REDIRECT_RESOLVED_ANCHOR = "effective_mode, redirected = _steer.effective_mode, _steer.redirected"
+
+
+def _find_bg_completion_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
+    """后台完成通知接管点：``_inject_watch_notification`` 内、内部标记之前（#47）.
+
+    完成通知在 ``_mark_internal_notification(synth_text)`` 之后经
+    ``admit_process_notice`` / ``admit_internal_event`` 注入为纯文本气泡；
+    挂在标记处理之前，fry 接管（并入活跃卡或独立静态卡）时跳过整条注入。
+    宿主是 0.22+ 拆出的 ``gateway/run_notifications.py``；旧布局没有该模块时
+    由「模块不存在 → specs 缺失」自然跳过。
+    """
+    return _find_call_line_in_function(
+        tree, lines, "_inject_watch_notification", "_mark_internal_notification(synth_text)",
+    )
 
 
 def _find_redirect_resolved_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:

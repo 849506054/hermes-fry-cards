@@ -243,7 +243,7 @@ def test_busy_notice_anchors_on_real_busy_module(real_v022: dict[str, Path]) -> 
 
 _SAMPLE_225 = SAMPLES_DIR.parent / "modular_v0.22.5"
 _MODULES_225 = ("run_turn.py", "run_turn_runner.py", "run_turn_progress.py",
-                "run_turn_persistence.py", "run_busy.py")
+                "run_turn_persistence.py", "run_busy.py", "run_notifications.py")
 
 
 @pytest.fixture()
@@ -253,7 +253,8 @@ def real_v0225(tmp_path: Path) -> dict[str, Path]:
         pytest.skip("v0.22.5 samples not available")
     paths = {}
     for key, name in zip(
-        ("turn", "runner", "progress", "persistence", "busy"), _MODULES_225, strict=True
+        ("turn", "runner", "progress", "persistence", "busy", "notifications"),
+        _MODULES_225, strict=True,
     ):
         destination = tmp_path / name
         shutil.copy2(_SAMPLE_225 / name, destination)
@@ -339,3 +340,30 @@ def test_v0225_redirect_resolved_anchors_before_debounce(real_v0225: dict[str, P
         real_v0225["busy"].read_text(encoding="utf-8").splitlines(),
         real_v0225["busy"],
     )
+
+
+def test_v0225_bg_completion_anchors_before_internal_marker(real_v0225: dict[str, Path]) -> None:
+    """#47: 真实 run_notifications.py 上，通知接管挂在内部标记处理之前."""
+    from hermes_fry_cards.patcher import MK_BG_COMPLETION, MK_BG_COMPLETION_END
+
+    patcher = Patcher(modular_paths=real_v0225)
+    patcher.apply()
+    lines = real_v0225["notifications"].read_text(encoding="utf-8").splitlines()
+
+    host = next(
+        i for i, line in enumerate(lines)
+        if line.strip().startswith("async def _inject_watch_notification(")
+    )
+    begin = next(i for i, line in enumerate(lines) if MK_BG_COMPLETION in line)
+    end = next(i for i, line in enumerate(lines) if MK_BG_COMPLETION_END in line)
+    # 注意：812 行的 lambda（_self_post_api_server）也含同样的 needle，取 hook 之后的第一个
+    marker = next(
+        i for i, line in enumerate(lines)
+        if i > end and "_mark_internal_notification(synth_text)" in line and not line.strip().startswith("#")
+    )
+    assert host < begin < end < marker, "hook must live inside _inject_watch_notification, before the marker"
+
+    body = "\n".join(lines[begin:end])
+    assert "session_key=(str(_lark_evt_key) if _lark_evt_key else None)" in body
+    assert "return True" in body
+    assert patcher.is_fully_patched()

@@ -2659,6 +2659,95 @@ class TestBackgroundDeliver:
         assert "skipped" in records[0].getMessage()
 
 
+class TestBackgroundCompletion:
+    """#47: run_notifications 的 watch/completion 通知接管."""
+
+    def _live_session(self, ctrl, msg_id: str, *, chat_id: str, key: str | None = None):
+        session = _make_session(msg_id)
+        session.chat_id = chat_id
+        session.state = SessionState.STREAMING
+        session.card_id = f"card_{msg_id}"
+        session.card_msg_id = f"msg_{msg_id}"
+        ctrl._register_session(session, session_key=key)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_merges_into_live_card_by_session_key(self) -> None:
+        ctrl = _setup_ctrl()
+        session = self._live_session(ctrl, "msg_bgc", chat_id="chat_bgc", key="key_bgc")
+        ctrl._do_background_deliver = AsyncMock()
+
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_bgc", session_key="key_bgc", text="后台任务完成",
+        )
+
+        assert ok is True
+        ctrl._do_background_deliver.assert_not_awaited()
+        assert [s.text for s in session.segment_state.notices] == ["后台任务完成"]
+
+    @pytest.mark.asyncio
+    async def test_merges_into_single_live_card_without_session_key(self) -> None:
+        ctrl = _setup_ctrl()
+        session = self._live_session(ctrl, "msg_bgc_solo", chat_id="chat_bgc")
+
+        ok = await ctrl.on_background_completion(chat_id="chat_bgc", text="done")
+
+        assert ok is True
+        assert [s.text for s in session.segment_state.notices] == ["done"]
+
+    @pytest.mark.asyncio
+    async def test_builds_static_card_without_live_card(self) -> None:
+        ctrl = _setup_ctrl()
+        ctrl._do_background_deliver = AsyncMock()
+
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_bgc", session_key="key_gone", text="任务完成",
+        )
+
+        assert ok is True
+        ctrl._do_background_deliver.assert_awaited_once()
+        args, kwargs = ctrl._do_background_deliver.await_args
+        assert args[0] == "chat_bgc"
+        # evt 里的 message_id 是过期的触发消息，不作为 reply 锚点（#52694）
+        assert kwargs["reply_to_message_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_chat_mismatch_falls_back_to_static_card(self) -> None:
+        ctrl = _setup_ctrl()
+        self._live_session(ctrl, "msg_other", chat_id="chat_other", key="key_other")
+        ctrl._do_background_deliver = AsyncMock()
+
+        ok = await ctrl.on_background_completion(
+            chat_id="chat_bgc", session_key="key_other", text="done",
+        )
+
+        assert ok is True
+        ctrl._do_background_deliver.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_static_failure_returns_false(self) -> None:
+        ctrl = _setup_ctrl()
+        ctrl._do_background_deliver = AsyncMock(
+            side_effect=FeishuAPIError(
+                "send_card_to_chat: code=99992354", code=99992354,
+            )
+        )
+
+        ok = await ctrl.on_background_completion(chat_id="chat_bgc", text="done")
+
+        assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_blank_text_returns_false(self) -> None:
+        ctrl = _setup_ctrl()
+        ctrl._do_background_deliver = AsyncMock()
+
+        ok = await ctrl.on_background_completion(chat_id="chat_bgc", text="   ")
+
+        assert ok is False
+        ctrl._do_background_deliver.assert_not_awaited()
+
+
 # ── _complete_header_enabled: 快回复去 header 阈值 ──────────────────────────
 def _mock_cfg(header_enabled: bool = True, min_duration: float = 0.0) -> MagicMock:
     cfg = MagicMock()

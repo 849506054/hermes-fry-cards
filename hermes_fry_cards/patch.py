@@ -439,7 +439,11 @@ def on_answer_delta(*, ctrl: Any, message_id: str, text: str, session_key: str |
     return bool(ctrl.on_answer(message_id=message_id, text=text, session_key=session_key))
 
 
-def mark_stream_delivered(consumer: Any, message_id: str | None) -> None:
+def mark_stream_delivered(
+    consumer: Any,
+    message_id: str | None,
+    session_key: str | None = None,
+) -> None:
     """把「最终回复已由 fry 卡片流式投递」告知网关的流消费者（#43 反馈）.
 
     答案增量被插件接走后，Hermes 的 stream consumer 全程空转，
@@ -449,6 +453,10 @@ def mark_stream_delivered(consumer: Any, message_id: str | None) -> None:
     ``getattr`` 鸭子类型读取）：按 fry 卡片的健康状态回答。旧版 mono
     Hermes 只查 ``final_response_sent``（不可伪造，会触发 stale-finalize
     改写路径），不去碰——mono 侧本无该警告，最终投递由 already_sent 抑制。
+
+    ``session_key``（#48）：合成轮次（后台完成通知触发的回复轮）没有
+    ``event_message_id``，message_id 为 None 时按 session_key 解析活跃卡，
+    否则谓词恒 False 造成误报。
     """
     if consumer is None:
         return
@@ -458,12 +466,16 @@ def mark_stream_delivered(consumer: Any, message_id: str | None) -> None:
                 ctrl = get_controller()
             except Exception:
                 return False
-            return bool(ctrl.stream_card_healthy(getattr(consumer, "_fry_msg_id", None)))
+            return bool(ctrl.stream_card_healthy(
+                getattr(consumer, "_fry_msg_id", None),
+                getattr(consumer, "_fry_session_key", None),
+            ))
 
         consumer._fry_delivery_predicate = _delivered
         consumer.has_durably_delivered_text = _delivered
     # 重定向换卡后 event_message_id 变化：每次增量都刷新归属
     consumer._fry_msg_id = message_id
+    consumer._fry_session_key = session_key
 
 
 @_safe_hook(default_return=False, log_level="debug")
@@ -668,6 +680,34 @@ async def on_background_deliver(
         )
     except Exception as exc:
         _logger.warning("on_background_deliver error: %s", exc, exc_info=True)
+        return False
+
+
+async def on_background_completion(
+    *,
+    ctrl: Any = None,
+    chat_id: str = "",
+    session_key: str | None = None,
+    text: str = "",
+    **kwargs: Any,
+) -> bool:
+    """[可选注入点] run_notifications 的 watch/completion 通知接管（#47）.
+
+    该路径把完成通知合成内部消息注入，纯文本气泡直达，不经过卡片管线。
+    返回 True 表示 fry 已接管本次投递（并入活跃卡通知区或独立静态卡），
+    注入点应跳过 Hermes 的合成消息注入；False 时 Hermes 照常注入，无损降级。
+    """
+    try:
+        ctrl = ctrl or get_controller()
+        if not ctrl.enabled:
+            return False
+        return bool(await ctrl.on_background_completion(
+            chat_id=chat_id,
+            session_key=session_key,
+            text=text,
+        ))
+    except Exception as exc:
+        _logger.warning("on_background_completion error: %s", exc, exc_info=True)
         return False
 
 
