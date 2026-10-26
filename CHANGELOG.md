@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### 新增 / Added
+- **统一面板 header 字体可配**：新增 `display.panel_text_size`（默认 `notation`，与此前写死值一致；
+  可选 `normal_v2` / `normal` / `heading`）。此前统一面板 header 字号在 builder 硬编码，Studio 无法
+  设置。`build_complete_card` 增加 `panel_text_size` 参数（封卡 / 完成态两个调用点同步）；
+  Studio 的「统一面板」区新增「面板 header 字体」下拉，校验（`textsize` 同族）、状态采集、
+  真实 builder 预览全链路接通，预览渲染按 `header.text_size` 应用字号（补了缺失的 `.ts-heading`）。
+
+### 测试 / Tests
+- `TestPanelTextSize`（config 优先级与非法值回落）、`test_panel_text_size_validate_and_merge` 与
+  `test_studio_ui_exposes_panel_text_size`（studio）、完成态统一面板 header 字号断言（builder）。
+  全量 **1009 passed**，ruff / mypy 零新增。
+
+---
+
 ## [0.5.10] - 2026-10-26
 
 cherry-pick 自本地补丁线 `local/0.5.9.4`（#47 / #49 / #50 实测反馈修复，作者已在部署上验证）：

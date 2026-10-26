@@ -337,6 +337,28 @@ class TestToolPanelStepCap:
         # header 计总步数（"50 steps"），面板体积有界但总数不丢
         assert "50" in panel["header"]["title"]["content"]
 
+    def test_complete_card_panel_header_honours_panel_text_size(self) -> None:
+        """统一面板 header 字号走 display.panel_text_size（Studio 可设，默认 notation）."""
+        seg = _seg("reasoning", "thinking text")
+        card = build_complete_card(
+            segments=[seg], all_tool_steps=[_STEP_SUCCESS],
+            footer_data={"duration": 10.0}, panel_text_size="heading",
+        )
+        panel = next(
+            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+        )
+        assert panel["header"]["text_size"] == "heading"
+
+    def test_complete_card_panel_header_defaults_to_notation(self) -> None:
+        seg = _seg("reasoning", "thinking text")
+        card = build_complete_card(
+            segments=[seg], all_tool_steps=[_STEP_SUCCESS], footer_data={"duration": 10.0},
+        )
+        panel = next(
+            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+        )
+        assert panel["header"]["text_size"] == "notation"
+
     def test_estimation_matches_capped_rendering(self) -> None:
         """估算端与渲染端按同一上限取值，长任务里估算不再无界增长."""
         from hermes_fry_cards.streaming.segment_helper import estimate_tool_elements

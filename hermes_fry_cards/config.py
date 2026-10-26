@@ -460,6 +460,29 @@ class Config:
         return default
 
     @property
+    def panel_text_size(self) -> str:
+        """统一面板 header 标题的字号（此前在 builder 写死 notation）.
+
+        优先级：display.platforms.feishu.panel_text_size → display.panel_text_size，
+        默认 ``notation``（小字，与旧版行为一致）。非法值回落默认。
+        """
+        valid = ("normal_v2", "normal", "heading", "notation")
+        display = self._reload().get("display")
+        if not isinstance(display, dict):
+            return "notation"
+        platforms = display.get("platforms")
+        if isinstance(platforms, dict):
+            feishu = platforms.get("feishu")
+            if isinstance(feishu, dict) and "panel_text_size" in feishu:
+                value = str(feishu["panel_text_size"])
+                if value in valid:
+                    return value
+        value = display.get("panel_text_size")
+        if isinstance(value, str) and value in valid:
+            return value
+        return "notation"
+
+    @property
     def feishu_app_id(self) -> str:
         return str(self._platform_cfg().get("app_id", ""))
 

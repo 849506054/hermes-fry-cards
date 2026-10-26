@@ -148,6 +148,14 @@ class TestValidation:
         out = srv.validate_payload({"display": {"panel_fields": []}})
         assert out["display"]["panel_fields"] == []
 
+    def test_panel_text_size_validate_and_merge(self) -> None:
+        out = srv.validate_payload({"display": {"panel_text_size": "heading"}})
+        assert out["display"]["panel_text_size"] == "heading"
+        merged, _ = srv.merge_managed({}, out)
+        assert merged["display"]["platforms"]["feishu"]["panel_text_size"] == "heading"
+        with pytest.raises(ValueError, match="panel_text_size"):
+            srv.validate_payload({"display": {"panel_text_size": "huge"}})
+
     def test_partial_sections_allowed(self) -> None:
         out = srv.validate_payload({"display": {"show_reasoning": False}})
         assert "streaming" not in out
@@ -204,6 +212,16 @@ class TestValidation:
         assert '"f-completion-notice"' in js
         assert '"f-completion-notice-text"' in js
         assert 'completion_notice_text:' in js
+
+    def test_studio_ui_exposes_panel_text_size(self) -> None:
+        """统一面板 header 字体控件在 HTML / 读写两端都接通（display.panel_text_size）."""
+        html = (srv._WEB_ROOT / "index.html").read_text(encoding="utf-8")
+        assert 'id="f-panel-text-size"' in html
+        js = (srv._WEB_ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        assert 'setVal("f-panel-text-size", d.panel_text_size)' in js
+        assert 'panel_text_size: $("#f-panel-text-size").value' in js
+        i18n = (srv._WEB_ROOT / "js" / "i18n.js").read_text(encoding="utf-8")
+        assert '"lbl.panel-text-size"' in i18n
 
 
 # ---------------------------------------------------------------------------

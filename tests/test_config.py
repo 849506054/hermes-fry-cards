@@ -382,6 +382,44 @@ class TestPanelFields:
         assert cfg.panel_fields == self._DEFAULT
 
 
+class TestPanelTextSize:
+    def _make_config(self, raw: dict[str, Any]) -> Config:
+        cfg = Config()
+        cfg._reload = lambda: raw  # type: ignore[assignment]
+        return cfg
+
+    def test_default_notation(self) -> None:
+        assert self._make_config({}).panel_text_size == "notation"
+
+    def test_platform_level(self) -> None:
+        cfg = self._make_config({
+            "display": {"platforms": {"feishu": {"panel_text_size": "heading"}}}
+        })
+        assert cfg.panel_text_size == "heading"
+
+    def test_global_fallback(self) -> None:
+        cfg = self._make_config({"display": {"panel_text_size": "normal"}})
+        assert cfg.panel_text_size == "normal"
+
+    def test_platform_takes_priority_over_global(self) -> None:
+        cfg = self._make_config({
+            "display": {
+                "platforms": {"feishu": {"panel_text_size": "normal_v2"}},
+                "panel_text_size": "heading",
+            }
+        })
+        assert cfg.panel_text_size == "normal_v2"
+
+    @pytest.mark.parametrize("raw", ["huge", "", "Notation"], ids=["unknown", "empty", "case"])
+    def test_invalid_returns_default(self, raw: str) -> None:
+        cfg = self._make_config({"display": {"panel_text_size": raw}})
+        assert cfg.panel_text_size == "notation"
+
+    def test_display_not_dict(self) -> None:
+        cfg = self._make_config({"display": "invalid"})
+        assert cfg.panel_text_size == "notation"
+
+
 class TestPlatformCfg:
     def test_env_takes_priority(self) -> None:
         cfg = _make_config({"feishu": {"app_id": "config_id", "app_secret": "config_secret"}})

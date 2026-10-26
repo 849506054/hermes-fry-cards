@@ -232,6 +232,7 @@
     setCheck("f-enabled", s.enabled);
     setVal("f-width", s.width_mode);
     setCheck("f-panel-expanded", s.panel_expanded);
+    setVal("f-panel-text-size", d.panel_text_size);
     setCheck("f-completion-notice", s.completion_notice);
     setVal("f-completion-notice-text", s.completion_notice_text);
     setVal("f-content-lang", s.content_lang);
@@ -356,6 +357,7 @@
         unified_panel_min_duration: num("#f-unified-min-duration"),
         context_display_mode: $("#f-context-mode").value,
         panel_fields: panelFields,
+        panel_text_size: $("#f-panel-text-size").value,
       },
       gateway: {
         group_security_boundary: {
