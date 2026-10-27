@@ -32,6 +32,23 @@ _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 MAX_TOOL_PANEL_STEPS = 30
 
 
+def count_card_elements(nodes: list[dict[str, Any]]) -> int:
+    """递归数出 CardKit 元素总数（含面板/推理容器里的子元素）。
+
+    飞书 200 硬上限按服务端展开后的元素数算，容器自身的子元素也占额度；
+    只看 ``body.elements`` 的长度会严重低估。
+    """
+    total = 0
+    for el in nodes:
+        total += 1
+        for key in ("elements", "children"):
+            sub = el.get(key)
+            if isinstance(sub, list):
+                total += count_card_elements([x for x in sub if isinstance(x, dict)])
+    return total
+
+
+
 def _truncate_model(name: str) -> str:
     """截断模型名：or/lc/LongCat-2.0 → ⇲LongCat-2.0（保留最后一段）.
 
@@ -859,6 +876,7 @@ def build_complete_card(
     width_mode: str = "default",
     notices: list[str] | None = None,
     progress_notices: list[str] | None = None,
+    collapse_tool_panel: bool = False,
 ) -> dict[str, Any]:
     """完成态流式卡片 — 推理+工具合并成底部统一面板，答案在上面.
 
@@ -997,7 +1015,20 @@ def build_complete_card(
             "border": {"color": border_color, "corner_radius": "5px"},
             "elements": unified_children,
         }
-        elements.append(unified_panel)
+        if collapse_tool_panel:
+            # 封卡收成一行：完成态整卡重建会把面板子元素在飞书侧再计一遍，
+            # 一张流式过 30 步的卡重发带面板的完成态必被 300305 拒（实测 20 步以下才过）。
+            # 过程细节在流式期已经看过，封卡只留一行摘要，稳定占 1 格。
+            line_en = f"{header_en} · 过程已收起"
+            line_zh = f"{header_zh} · 过程已收起"
+            elements.append({
+                "tag": "markdown",
+                "content": line_en,
+                "i18n_content": _i18n(line_en, line_zh),
+                "text_size": "notation",
+            })
+        else:
+            elements.append(unified_panel)
 
     if not has_answer:
         elements.append({"tag": "markdown", "content": _T["done"][0], "text_size": body_text_size})

@@ -18,6 +18,7 @@ from ..cardkit.builder import (
     build_overflow_fallback_card,
     build_streaming_card_v2,
     build_streaming_notice_element,
+    count_card_elements,
 )
 from ..cardkit.markdown import (
     clamp_utf8,
@@ -1200,30 +1201,36 @@ class StreamingController:
         # 展示位拆分（#43 反馈）：后台回执等完成后通知在顶部，忙碌/重定向等
         # 进行中提示落底部（footer 之前）。记账仍按总条数。
         top_notices, progress_notices = _split_notice_slots(session)
-        card = build_complete_card(
-            segments=active_segments,
-            all_tool_steps=all_tool_steps,
-            footer_data=session.footer,
-            is_error=is_error,
-            is_aborted=is_aborted,
-            footer_fields=self._cfg.footer_fields,
-            footer_show_label=self._cfg.footer_show_label,
-            footer_enabled=self._cfg.footer_enabled,
-            footer_text_size=self._cfg.footer_text_size,
-            panel_fields=self._cfg.panel_fields,
-            panel_expanded=self._cfg.panel_expanded,
-            header_enabled=self._complete_header_enabled(session, all_tool_steps),
-            body_text_size=self._cfg.body_text_size,
-            show_tool_use=self._cfg.show_tool_use,
-            width_mode=self._cfg.width_mode,
-            notices=top_notices,
-            progress_notices=progress_notices,
-        )
 
+        def _build_complete(show_tool_use: bool) -> dict:
+            return build_complete_card(
+                segments=active_segments,
+                all_tool_steps=all_tool_steps,
+                footer_data=session.footer,
+                is_error=is_error,
+                is_aborted=is_aborted,
+                footer_fields=self._cfg.footer_fields,
+                footer_show_label=self._cfg.footer_show_label,
+                footer_enabled=self._cfg.footer_enabled,
+                footer_text_size=self._cfg.footer_text_size,
+                panel_fields=self._cfg.panel_fields,
+                panel_expanded=self._cfg.panel_expanded,
+                header_enabled=self._complete_header_enabled(session, all_tool_steps) if show_tool_use else False,
+                body_text_size=self._cfg.body_text_size,
+                show_tool_use=self._cfg.show_tool_use and show_tool_use,
+                width_mode=self._cfg.width_mode,
+                notices=top_notices,
+                progress_notices=progress_notices,
+                # 封卡把工具/思考过程收成一行：完成态整卡重建会把面板子元素在飞书侧
+                # 再计一遍，流式过 30 步的卡片重发带面板的完成态必被 300305 拒。
+                collapse_tool_panel=True,
+            )
+
+        card = _build_complete(True)
+        # 真实元素数（递归含面板/推理子元素），与流式期估算同一口径。
+        card_elements = count_card_elements(card.get("body", {}).get("elements", []))
+        summary_dropped = False
         streaming_closed = False
-        # #22：重建卡片的真实元素数（含完成态长文切块二次膨胀）与流式期估算
-        # tracked 对照打出，用于定位 300305 的低谷来自流式估算还是完成态重建。
-        card_elements = len(card.get("body", {}).get("elements", []))
         for attempt in range(3):
             try:
                 assert self._client is not None
@@ -1258,6 +1265,18 @@ class StreamingController:
                 )
                 if session.guard.terminate("_do_complete_card", e):
                     return False
+                if e.code == CARDKIT_ELEMENT_LIMIT_TOTAL and not summary_dropped:
+                    # 连一行摘要都装不下（旧卡已近上限）：去掉摘要行再发一次，
+                    # 正文和状态优先入卡，过程信息让位。
+                    summary_dropped = True
+                    card = _build_complete(False)
+                    card_elements = count_card_elements(card.get("body", {}).get("elements", []))
+                    _logger.warning(
+                        "CardKit complete card over element limit -> drop tool summary line: msg=%s elements=%d",
+                        session.message_id[:12],
+                        card_elements,
+                    )
+                    continue
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
                 continue
@@ -1301,8 +1320,11 @@ class StreamingController:
             await self._remove_loading_icon(session.card_id, session.sequence + 1)
             # #22：封卡失败后失控的流式卡会留在聊天里、正文又经纯文本重发一遍——
             # 用一张小降级卡整卡替换，提示用户内容在下方，避免两张内容重叠的实体。
+            # 序号记账：_remove_loading_icon 已经用掉 N+1，这里要跳到 N+2，
+            # 再按 +1 递增会和它撞号回 300317（sequence number compare failed），
+            # 降级卡本身也跟着失效。
+            session.sequence += 2
             try:
-                session.sequence += 1
                 await self._client.cardkit_update(
                     session.card_id,
                     build_overflow_fallback_card(),
