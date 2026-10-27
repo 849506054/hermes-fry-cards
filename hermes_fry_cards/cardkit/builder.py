@@ -295,6 +295,7 @@ def _build_tool_panel(
     expanded: bool = True,
     element_id: str | None = TOOL_PANEL_ELEMENT_ID,
     running: bool = False,
+    compact: bool = False,
 ) -> dict:
     en_t, zh_t = _T["tool_running"] if running else _T["tool_use"]
     en_parts, zh_parts = [en_t], [zh_t]
@@ -324,7 +325,12 @@ def _build_tool_panel(
             "text_size": "notation",
         })
     for s in shown:
-        children.extend(_build_tool_step_elements(s))
+        # compact：封卡只留「工具名 · 状态 · 耗时」一行（title 里已带耗时），
+        # 不展开入参与输出，每步稳定 1 格，避免完成态整卡重建撞元素上限。
+        step_elements = _build_tool_step_elements(s)
+        children.append(step_elements[0])
+        if not compact:
+            children.extend(step_elements[1:])
 
     panel = _collapsible_panel(
         expanded=expanded,
@@ -876,7 +882,7 @@ def build_complete_card(
     width_mode: str = "default",
     notices: list[str] | None = None,
     progress_notices: list[str] | None = None,
-    collapse_tool_panel: bool = False,
+    compact_tool_panel: bool = False,
 ) -> dict[str, Any]:
     """完成态流式卡片 — 推理+工具合并成底部统一面板，答案在上面.
 
@@ -980,6 +986,9 @@ def build_complete_card(
                     entry["elapsed_ms"],
                     expanded=panel_expanded,
                     element_id=f"tool_panel_{_tool_group_seq}",
+                    # 封卡保留框，每步只留「工具名 · 状态 · 耗时」一行：完成态整卡重建
+                    # 会把面板子元素在飞书侧再计一遍，带全量详情的面板必被 300305 拒。
+                    compact=compact_tool_panel,
                 )
                 unified_children.append(tool_panel)
         # header: 字段化组合（默认 🍟 model · 💭n · 🔧n · context · ⏱️ elapsed），
@@ -1015,20 +1024,7 @@ def build_complete_card(
             "border": {"color": border_color, "corner_radius": "5px"},
             "elements": unified_children,
         }
-        if collapse_tool_panel:
-            # 封卡收成一行：完成态整卡重建会把面板子元素在飞书侧再计一遍，
-            # 一张流式过 30 步的卡重发带面板的完成态必被 300305 拒（实测 20 步以下才过）。
-            # 过程细节在流式期已经看过，封卡只留一行摘要，稳定占 1 格。
-            line_en = f"{header_en} · 过程已收起"
-            line_zh = f"{header_zh} · 过程已收起"
-            elements.append({
-                "tag": "markdown",
-                "content": line_en,
-                "i18n_content": _i18n(line_en, line_zh),
-                "text_size": "notation",
-            })
-        else:
-            elements.append(unified_panel)
+        elements.append(unified_panel)
 
     if not has_answer:
         elements.append({"tag": "markdown", "content": _T["done"][0], "text_size": body_text_size})

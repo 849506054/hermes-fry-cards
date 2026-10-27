@@ -272,11 +272,11 @@ async def test_rollover_stays_flat_after_panel_cap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_completion_drops_summary_line_on_element_limit() -> None:
-    """完成态撞 300305 时去掉「过程已收起」那一行再发，正文优先入卡。
+async def test_completion_keeps_panel_with_compact_step_rows() -> None:
+    """封卡保留工具面板的框，每步只留工具名 · 状态 · 耗时，不展开入参与输出。
 
-    背景（2026-10-27 实测）：流式过 30 步的卡片，完成态整卡重建带面板必被
-    300305 拒；面板子元素在飞书侧被重复计一次，本地账面看不出来。
+    背景（2026-10-27 实测）：流式过 30 步的卡片，完成态整卡重建带全量详情的
+    面板必被 300305 拒；面板子元素在飞书侧被重复计一次，本地账面看不出来。
     """
     import json as _json
 
@@ -284,22 +284,42 @@ async def test_completion_drops_summary_line_on_element_limit() -> None:
     client = ctrl._client
     client.cardkit_close_streaming = AsyncMock()
     bodies: list[dict] = []
+    client.cardkit_update = AsyncMock(side_effect=lambda card_id, card, sequence=0: bodies.append(card))
 
-    async def update(card_id: str, card: dict, sequence: int = 0) -> None:
-        bodies.append(card)
-        if len(bodies) == 1:
-            raise FeishuAPIError("element exceeds the limit", code=300305)
-
-    client.cardkit_update = update
-    session = _streaming_session(ctrl, "msg_slim", "card_slim")
-    _add_steps(session, "f", 3)
+    session = _streaming_session(ctrl, "msg_compact", "card_compact")
+    for idx in range(3):
+        session.tool_use.record_start("exec", f"f{idx}_0")
+        session.tool_use.record_end("exec", output="out" * 8)
+        session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
     await _flush(ctrl, session)
 
     assert await ctrl._do_complete_card(session) is True
-    assert len(bodies) == 2
-    assert "过程已收起" in _json.dumps(bodies[0], ensure_ascii=False)
-    assert "过程已收起" not in _json.dumps(bodies[1], ensure_ascii=False)
-    assert len(bodies[1]["body"]["elements"]) < len(bodies[0]["body"]["elements"])
+    payload = _json.dumps(bodies[0], ensure_ascii=False)
+    assert "collapsible_panel" in payload, "封卡要保留工具面板的框"
+    panel = _find_panel(bodies[0]["body"]["elements"])
+    assert panel is not None
+    rows = panel.get("elements") or []
+    assert len(rows) == 3, f"每步一行，实际 {len(rows)} 行"
+    for row in rows:
+        assert row["tag"] == "div" and row.get("icon"), "每行是带图标的一行工具记录"
+        assert "Result" not in _json.dumps(row, ensure_ascii=False), "封卡不展开执行详情"
+
+
+def _find_panel(nodes: list[dict]) -> dict | None:
+    for el in nodes:
+        if el.get("tag") == "collapsible_panel":
+            for nested in el.get("elements") or []:
+                if str(nested.get("element_id", "")).startswith("tool_panel"):
+                    return nested
+            if el.get("element_id") is None and (el.get("elements") or [{}])[0].get("tag") == "div":
+                return el
+        for key in ("elements", "children"):
+            sub = el.get(key)
+            if isinstance(sub, list):
+                found = _find_panel([x for x in sub if isinstance(x, dict)])
+                if found:
+                    return found
+    return None
 
 
 @pytest.mark.asyncio

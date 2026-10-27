@@ -1221,9 +1221,9 @@ class StreamingController:
                 width_mode=self._cfg.width_mode,
                 notices=top_notices,
                 progress_notices=progress_notices,
-                # 封卡把工具/思考过程收成一行：完成态整卡重建会把面板子元素在飞书侧
-                # 再计一遍，流式过 30 步的卡片重发带面板的完成态必被 300305 拒。
-                collapse_tool_panel=True,
+                # 封卡保留工具面板的框，但每步只留工具名与耗时：完成态整卡重建会把
+                # 面板子元素在飞书侧再计一遍，带全量详情的面板必被 300305 拒。
+                compact_tool_panel=True,
             )
 
         card = _build_complete(True)
@@ -1266,13 +1266,13 @@ class StreamingController:
                 if session.guard.terminate("_do_complete_card", e):
                     return False
                 if e.code == CARDKIT_ELEMENT_LIMIT_TOTAL and not summary_dropped:
-                    # 连一行摘要都装不下（旧卡已近上限）：去掉摘要行再发一次，
+                    # 连精简面板都装不下（旧卡已近上限）：整块面板去掉再发一次，
                     # 正文和状态优先入卡，过程信息让位。
                     summary_dropped = True
                     card = _build_complete(False)
                     card_elements = count_card_elements(card.get("body", {}).get("elements", []))
                     _logger.warning(
-                        "CardKit complete card over element limit -> drop tool summary line: msg=%s elements=%d",
+                        "CardKit complete card over element limit -> drop tool panel: msg=%s elements=%d",
                         session.message_id[:12],
                         card_elements,
                     )
