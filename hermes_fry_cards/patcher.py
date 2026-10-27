@@ -1834,6 +1834,7 @@ def _find_bg_completion_site(tree: ast.Module, lines: list[str]) -> tuple[int, s
 
 
 _BG_BUSY_RECEIPT_ANCHOR = 'self._format_process_final_message(session_id, session, "concise")'
+_BG_BUSY_RECEIPT_HOSTS = ("_watch_process", "_run_process_watcher")
 
 
 def _find_bg_busy_suppress_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:
@@ -1841,14 +1842,16 @@ def _find_bg_busy_suppress_site(tree: ast.Module, lines: list[str]) -> tuple[int
 
     发起轮仍在运行时，``_run_process_watcher`` 会在这条 concise 文案之后补发一条
     纯文本回执（#112033 的「先给个回执」）；插件已把同一条回执并进活跃卡时这里
-    要能拦住它。锚点取「concise 文案合成」这一行——同函数里还有一条
-    ``notify_mode`` 的文案合成，用 ``"concise"`` 字面量才能唯一命中。
+    要能拦住它。锚点取「concise 文案合成」这一行。
+    在 Hermes 0.22.5+1713 中，_run_process_watcher 变为 wrapper，真正承载逻辑的
+    是 _watch_process，因此按 _BG_BUSY_RECEIPT_HOSTS 顺序查找。
     """
-    hit = _find_call_line_in_function(tree, lines, "_run_process_watcher", _BG_BUSY_RECEIPT_ANCHOR)
-    if hit is None:
-        return None
-    end_idx = _statement_end_after(tree, hit[0] + 1)
-    return end_idx, _safe_indent(lines, end_idx) or hit[1]
+    for host in _BG_BUSY_RECEIPT_HOSTS:
+        hit = _find_call_line_in_function(tree, lines, host, _BG_BUSY_RECEIPT_ANCHOR)
+        if hit is not None:
+            end_idx = _statement_end_after(tree, hit[0] + 1)
+            return end_idx, _safe_indent(lines, end_idx) or hit[1]
+    return None
 
 
 def _find_redirect_resolved_site(tree: ast.Module, lines: list[str]) -> tuple[int, str] | None:

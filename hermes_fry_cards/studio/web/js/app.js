@@ -266,6 +266,7 @@
     if (note) note.hidden = !multi;
 
     setVal("f-body-text-size", s.body.text_size);
+    setVal("f-flush-interval-ms", s.flush_interval_ms);
     setCheck("f-show-reasoning", d.show_reasoning);
     setCheck("f-show-tool-use", d.show_tool_use);
     setCheck("f-show-context", d.show_context);
@@ -335,6 +336,7 @@
         completion_notice: $("#f-completion-notice").checked,
         completion_notice_text: $("#f-completion-notice-text").value,
         width_mode: $("#f-width").value,
+        flush_interval_ms: int("#f-flush-interval-ms"),
         header: {
           enabled: $("#f-header-enabled").checked,
           min_duration: num("#f-header-min-duration"),

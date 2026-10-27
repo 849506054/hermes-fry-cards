@@ -223,6 +223,16 @@ class TestValidation:
         i18n = (srv._WEB_ROOT / "js" / "i18n.js").read_text(encoding="utf-8")
         assert '"lbl.panel-text-size"' in i18n
 
+    def test_studio_ui_exposes_flush_interval_ms(self) -> None:
+        """流式刷新节流输入控件在 HTML / 读写两端都接通（streaming.flush_interval_ms）."""
+        html = (srv._WEB_ROOT / "index.html").read_text(encoding="utf-8")
+        assert 'id="f-flush-interval-ms"' in html
+        js = (srv._WEB_ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        assert 'setVal("f-flush-interval-ms", s.flush_interval_ms)' in js
+        assert 'flush_interval_ms: int("#f-flush-interval-ms")' in js
+        i18n = (srv._WEB_ROOT / "js" / "i18n.js").read_text(encoding="utf-8")
+        assert '"lbl.flush-interval"' in i18n
+
 
 # ---------------------------------------------------------------------------
 # 纯函数：白名单合并 / 备份 / 原子写

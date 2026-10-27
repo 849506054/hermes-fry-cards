@@ -9,7 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 修复 / Fixed
+- **飞书瞬态错误后重试陷入 300301 Duplicate ID 死锁**（#51）：飞书服务端偶发瞬态异常（如 300308）
+  重试后，元素在云端实际已成功落地但客户端保持 `created=False`。下次 flush 重发 `add_elements`
+  被飞书返回 `300301 Duplicate ID` 拒绝，导致整批更新被原子拒绝并陷入死锁假死。在 `_do_batch_update`
+  中增加对 `300301` 的提取与自愈恢复路径：自动将对应段纠正标记为 `created=True` 并补齐计数，
+  下轮 flush 自动转为 `partial_update` 或静默态恢复正常流式更新。
+- **Hermes 0.22.5+1713 锚点适配**：`run_notifications.py` 中 `_run_process_watcher` 变为 wrapper、
+  实际逻辑移入 `_watch_process`；`_find_bg_busy_suppress_site` 的宿主函数扩展为
+  `("_watch_process", "_run_process_watcher")` 顺序查找。
+
 ### 新增 / Added
+- **Studio 暴露流式刷新节流设置**：前端流式设置卡片中新增「流式刷新节流（毫秒）」输入项，
+  绑定 `streaming.flush_interval_ms`；增加针对鸿蒙/安卓端长任务若卡顿闪退建议设 600~800ms 的提示。
 - **统一面板 header 字体可配**：新增 `display.panel_text_size`（默认 `notation`，与此前写死值一致；
   可选 `normal_v2` / `normal` / `heading`）。此前统一面板 header 字号在 builder 硬编码，Studio 无法
   设置。`build_complete_card` 增加 `panel_text_size` 参数（封卡 / 完成态两个调用点同步）；
@@ -17,9 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   真实 builder 预览全链路接通，预览渲染按 `header.text_size` 应用字号（补了缺失的 `.ts-heading`）。
 
 ### 测试 / Tests
-- `TestPanelTextSize`（config 优先级与非法值回落）、`test_panel_text_size_validate_and_merge` 与
-  `test_studio_ui_exposes_panel_text_size`（studio）、完成态统一面板 header 字号断言（builder）。
-  全量 **1009 passed**，ruff / mypy 零新增。
+- 新增 `tests/test_issue51_duplicate_id_recovery.py`（Duplicate ID 错误提取与自愈死锁解除）。
+- `test_patcher_modular.py` 补充宿主为 `_watch_process` 时的注入测试。
+- `TestPanelTextSize`（config 优先级与非法值回落）、`test_panel_text_size_validate_and_merge`、
+  `test_studio_ui_exposes_flush_interval_ms`、`test_studio_ui_exposes_panel_text_size`（studio）、
+  完成态统一面板 header 字号断言（builder）。全量 **1013 passed**，ruff / mypy 零新增。
 
 ---
 

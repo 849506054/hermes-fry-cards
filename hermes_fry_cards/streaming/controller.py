@@ -32,7 +32,13 @@ from ..feishu import (
     CARDKIT_STREAMING_CLOSED,
     FeishuAPIError,
 )
-from .diagnostics import compact_ids, extract_missing_element_id, segment_state_for_log, summarize_actions
+from .diagnostics import (
+    compact_ids,
+    extract_duplicate_element_id,
+    extract_missing_element_id,
+    segment_state_for_log,
+    summarize_actions,
+)
 from .image import ImageResolver
 from .segment_helper import (
     ELEMENT_THRESHOLD,
@@ -738,6 +744,32 @@ class StreamingController:
                             seg.el_id,
                         )
                         break
+
+            # 元素已存在（300301 Duplicate ID，#51）：飞书偶发内部瞬态错误（如 300308）重试后，
+            # 元素在云端实际已成功落地但客户端保持 created=False。下次 flush 重发 add_elements
+            # 会报 Duplicate ID，导致整批更新被原子拒绝并陷入死锁假死。
+            # 这里标记其已创建并补齐元素计数，让下轮 flush 转为 partial_update 或静默态恢复正常更新。
+            duplicate_el_id = extract_duplicate_element_id(e)
+            if duplicate_el_id:
+                for seg in segments[session.split_index:]:
+                    if seg.el_id == duplicate_el_id:
+                        if not seg.created:
+                            seg.created = True
+                            estimate = new_el_estimates.get(seg.el_id, 0)
+                            seg.element_estimate = estimate
+                            session.element_count += estimate
+                            if seg.type == SegmentType.TOOL:
+                                session.tool_panel_created = True
+                            _logger.info(
+                                "CardKit recovered duplicate segment %s (marked created=True, est=%d)",
+                                seg.el_id,
+                                estimate,
+                            )
+                        break
+                if duplicate_el_id == TOOL_PANEL_ELEMENT_ID and not session.tool_panel_created:
+                    session.tool_panel_created = True
+                    _logger.info("CardKit recovered duplicate tool panel skeleton")
+
             self._handle_flush_error(e)
             # 卡片元素总数超限（300305）：element_count 追踪失真导致卡片实际元素数
             # 超过飞书硬上限，当前卡已无法写入任何新元素。强制拆卡到新卡继续流式。
