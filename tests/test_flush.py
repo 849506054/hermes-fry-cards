@@ -42,7 +42,7 @@ class TestConstruction:
 class TestScheduleUpdate:
     @pytest.mark.asyncio
     async def test_first_call_schedules_delayed_flush(self) -> None:
-        ctrl = _make_async()
+        ctrl = _make_async(throttle_ms=0.10)
         ctrl.set_card_message_ready(True)
         flushed = asyncio.Event()
 
@@ -412,39 +412,39 @@ class TestAdaptivePayloadThrottle:
 
     @pytest.mark.asyncio
     async def test_small_payload_keeps_base(self) -> None:
-        ctrl = _make_async()
+        ctrl = _make_async(throttle_ms=0.100)
         ctrl.adapt_payload_size(15_000)
         assert ctrl.throttle_ms == ctrl._base_throttle_ms
 
     @pytest.mark.asyncio
     async def test_large_payload_widens_window(self) -> None:
-        ctrl = _make_async()
+        ctrl = _make_async(throttle_ms=0.100)
         ctrl.adapt_payload_size(20_000)
-        assert ctrl.throttle_ms == 0.300
-
-    @pytest.mark.asyncio
-    async def test_huge_payload_widens_further(self) -> None:
-        ctrl = _make_async()
-        ctrl.adapt_payload_size(41_000)
         assert ctrl.throttle_ms == 0.500
 
     @pytest.mark.asyncio
-    async def test_never_goes_faster_than_base(self) -> None:
-        ctrl = _make_async(throttle_ms=0.800)
+    async def test_huge_payload_widens_further(self) -> None:
+        ctrl = _make_async(throttle_ms=0.100)
         ctrl.adapt_payload_size(41_000)
         assert ctrl.throttle_ms == 0.800
 
     @pytest.mark.asyncio
-    async def test_recovers_after_card_shrinks(self) -> None:
-        ctrl = _make_async()
+    async def test_never_goes_faster_than_base(self) -> None:
+        ctrl = _make_async(throttle_ms=0.900)
         ctrl.adapt_payload_size(41_000)
-        assert ctrl.throttle_ms == 0.500
+        assert ctrl.throttle_ms == 0.900
+
+    @pytest.mark.asyncio
+    async def test_recovers_after_card_shrinks(self) -> None:
+        ctrl = _make_async(throttle_ms=0.100)
+        ctrl.adapt_payload_size(41_000)
+        assert ctrl.throttle_ms == 0.800
         ctrl.adapt_payload_size(1_000)
         assert ctrl.throttle_ms == ctrl._base_throttle_ms
 
     @pytest.mark.asyncio
     async def test_set_throttle_resets_base(self) -> None:
-        ctrl = _make_async()
+        ctrl = _make_async(throttle_ms=0.100)
         ctrl.adapt_payload_size(41_000)
         ctrl.set_throttle(0.200)
         assert ctrl._base_throttle_ms == 0.200
@@ -453,12 +453,12 @@ class TestAdaptivePayloadThrottle:
 
     @pytest.mark.asyncio
     async def test_boundary_values(self) -> None:
-        ctrl = _make_async()
+        ctrl = _make_async(throttle_ms=0.100)
         ctrl.adapt_payload_size(16_000)  # 恰好等于阈值 → 仍属小载荷
         assert ctrl.throttle_ms == ctrl._base_throttle_ms
         ctrl.adapt_payload_size(16_001)
-        assert ctrl.throttle_ms == 0.300
-        ctrl.adapt_payload_size(40_000)
-        assert ctrl.throttle_ms == 0.300
-        ctrl.adapt_payload_size(40_001)
         assert ctrl.throttle_ms == 0.500
+        ctrl.adapt_payload_size(40_000)
+        assert ctrl.throttle_ms == 0.500
+        ctrl.adapt_payload_size(40_001)
+        assert ctrl.throttle_ms == 0.800

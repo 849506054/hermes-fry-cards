@@ -20,8 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `("_watch_process", "_run_process_watcher")` 顺序查找。
 
 ### 新增 / Added
+- **流式刷新节流默认值调优为 500ms**：默认刷新间隔由 100ms 调整为 500ms（2 Hz），兼顾打字机流畅感与移动端/鸿蒙系统防卡顿闪退，大幅降低高频全卡重绘对客户端 UI 线程的压力；载荷自适应降频分档同步收拢为 ≥500ms 与 ≥800ms。
 - **Studio 暴露流式刷新节流设置**：前端流式设置卡片中新增「流式刷新节流（毫秒）」输入项，
-  绑定 `streaming.flush_interval_ms`；增加针对鸿蒙/安卓端长任务若卡顿闪退建议设 600~800ms 的提示。
+  绑定 `streaming.flush_interval_ms`（默认 500ms，50~2000ms 范围）；增加兼顾打字机流畅感与移动端防卡顿的提示。
 - **统一面板 header 字体可配**：新增 `display.panel_text_size`（默认 `notation`，与此前写死值一致；
   可选 `normal_v2` / `normal` / `heading`）。此前统一面板 header 字号在 builder 硬编码，Studio 无法
   设置。`build_complete_card` 增加 `panel_text_size` 参数（封卡 / 完成态两个调用点同步）；

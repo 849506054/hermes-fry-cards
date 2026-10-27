@@ -730,13 +730,13 @@ class TestReloadCache:
 
 
 class TestFlushIntervalMs:
-    def test_default_100(self) -> None:
+    def test_default_500(self) -> None:
         cfg = _make_config({"streaming": {}})
-        assert cfg.flush_interval_ms == 100
+        assert cfg.flush_interval_ms == 500
 
     def test_missing_section_defaults(self) -> None:
         cfg = _make_config({})
-        assert cfg.flush_interval_ms == 100
+        assert cfg.flush_interval_ms == 500
 
     def test_override(self) -> None:
         cfg = _make_config({"streaming": {"flush_interval_ms": 300}})
@@ -754,4 +754,4 @@ class TestFlushIntervalMs:
     @pytest.mark.parametrize("raw", ["abc", None, [300]], ids=["str", "none", "list"])
     def test_invalid_falls_back_to_default(self, raw: Any) -> None:
         cfg = _make_config({"streaming": {"flush_interval_ms": raw}})
-        assert cfg.flush_interval_ms == 100
+        assert cfg.flush_interval_ms == 500

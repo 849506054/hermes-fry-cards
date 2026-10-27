@@ -32,7 +32,7 @@ window.FryI18n = (function () {
     "opt.group": ["仅群聊 group", "Group only"],
     "lbl.body-size": ["正文文字大小", "Body text size"],
     "lbl.flush-interval": ["流式刷新节流（毫秒）", "Streaming flush interval (ms)"],
-    "hint.flush-interval": ["默认 100ms（50~2000）；鸿蒙 / 安卓端长任务若卡顿闪退建议设 600~800ms。", "Default 100ms (50~2000); 600~800ms recommended for HarmonyOS/Android devices if crashing."],
+    "hint.flush-interval": ["默认 500ms（50~2000）；兼顾打字机流畅感与移动端防卡顿闪退。", "Default 500ms (50~2000); balances smooth typing effect with crash prevention on mobile."],
     "opt.heading": ["heading（大）", "heading (large)"],
     "opt.notation": ["notation（小）", "notation (small)"],
 

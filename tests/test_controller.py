@@ -1596,9 +1596,11 @@ class TestDoFlush:
 
     @pytest.mark.asyncio
     async def test_big_payload_widens_throttle_after_flush(self) -> None:
-        """>16KB 载荷的 flush 把节流窗口放大到 ≥300ms（#46 自适应降频）."""
+        """>16KB 载荷的 flush 把节流窗口放大到 ≥500ms（#46 自适应降频）."""
         ctrl = _setup_ctrl()
+        ctrl._cfg._raw = {"streaming": {"enabled": True, "flush_interval_ms": 100}}
         session = _make_session("msg_big_payload")
+        session.flush.set_throttle(0.100)
         session.state = SessionState.STREAMING
         session.card_id = "card_big_payload"
         session.segment_state.on_answer_delta("答" * 17_000)  # >16KB 的流式文本
@@ -1606,12 +1608,14 @@ class TestDoFlush:
 
         await ctrl._do_flush(session)
 
-        assert session.flush.throttle_ms >= 0.300
+        assert session.flush.throttle_ms >= 0.500
 
     @pytest.mark.asyncio
     async def test_small_payload_keeps_configured_throttle(self) -> None:
         ctrl = _setup_ctrl()
+        ctrl._cfg._raw = {"streaming": {"enabled": True, "flush_interval_ms": 100}}
         session = _make_session("msg_small_payload")
+        session.flush.set_throttle(0.100)
         session.state = SessionState.STREAMING
         session.card_id = "card_small_payload"
         session.segment_state.on_answer_delta("hello")
@@ -1619,7 +1623,7 @@ class TestDoFlush:
 
         await ctrl._do_flush(session)
 
-        assert session.flush.throttle_ms < 0.300
+        assert session.flush.throttle_ms == pytest.approx(0.100)
 
     @pytest.mark.asyncio
     async def test_split_flushes_pending_actions_then_moves_to_next_card(self) -> None:
