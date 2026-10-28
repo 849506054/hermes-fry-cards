@@ -18,6 +18,7 @@ from hermes_fry_cards.cardkit.builder import (
     _longest_backtick_run,
     build_complete_card,
     build_streaming_card_v2,
+    strip_unified_panel,
 )
 from hermes_fry_cards.cardkit.markdown import (
     _downgrade_tables,
@@ -366,6 +367,117 @@ class TestToolPanelStepCap:
         steps = self._steps(50)
         # 两个都超过 30 步的区间：估算收敛到同一上限值（含摘要行）
         assert estimate_tool_elements(0, 50, steps) == estimate_tool_elements(5, 50, steps)
+
+
+class TestCompactToolPanel:
+    """#53 封卡紧凑面板：每步只渲染标题行（工具名 · 状态），不渲染入参与输出."""
+
+    @staticmethod
+    def _steps(count: int) -> list[dict]:
+        return [
+            {
+                **_STEP_SUCCESS,
+                "name": f"tool_{idx}",
+                "title": f"Tool {idx}",
+                "detail": f"detail of {idx}",
+                "output": f"output of {idx}",
+            }
+            for idx in range(count)
+        ]
+
+    def test_compact_renders_title_only(self) -> None:
+        panel = _build_tool_panel(self._steps(3), compact=True)
+        # 每步 1 个标题元素，detail/output 不入卡
+        assert len(panel["elements"]) == 3
+        for el in panel["elements"]:
+            assert el["text"]["tag"] == "lark_md"
+            assert "font" in el["text"]["content"]  # 状态色标在标题行内
+
+    def test_non_compact_keeps_detail_and_output(self) -> None:
+        panel = _build_tool_panel(self._steps(1), compact=False)
+        # 标题 + detail（output 走 result_block，本 step 未带 → 2 个元素）
+        assert len(panel["elements"]) == 2
+        assert any("detail of 0" in str(el) for el in panel["elements"])
+        # 紧凑模式下 detail 不出现
+        compact_panel = _build_tool_panel(self._steps(1), compact=True)
+        assert all("detail of 0" not in str(el) for el in compact_panel["elements"])
+
+    def test_compact_keeps_panel_header_and_summary(self) -> None:
+        from hermes_fry_cards.cardkit.builder import MAX_TOOL_PANEL_STEPS
+
+        panel = _build_tool_panel(self._steps(50), elapsed_ms=5000, compact=True)
+        assert "50" in panel["header"]["title"]["content"]
+        # 摘要 1 行 + 最近 30 步各 1 个标题元素
+        assert len(panel["elements"]) == MAX_TOOL_PANEL_STEPS + 1
+
+    def test_complete_card_tool_groups_are_compact(self) -> None:
+        """统一面板里的嵌套工具组按紧凑渲染，长工具轮次完成态不再撞 300305（#53）."""
+        seg = _seg("tool", "", tool_offset=0, tool_end_offset=5)
+        card = build_complete_card(
+            segments=[seg], all_tool_steps=self._steps(5), footer_data={"duration": 10.0},
+        )
+        unified = next(
+            el for el in card["body"]["elements"]
+            if el.get("tag") == "collapsible_panel"
+        )
+        tool_panel = unified["elements"][0]
+        # 5 步 → 5 个标题元素，无 detail/output 元素
+        assert len(tool_panel["elements"]) == 5
+        assert all("detail of" not in str(el) for el in tool_panel["elements"])
+
+    def test_unified_panel_has_stable_element_id(self) -> None:
+        seg = _seg("reasoning", "thinking text")
+        card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
+        unified = next(
+            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+        )
+        assert unified["element_id"] == "unified_panel"
+
+    def test_complete_card_reasoning_text_clamped_to_budget(self) -> None:
+        """完成态统一面板的 reasoning 全文按同一预算钳制（#52）：28KB 级思考全文
+        叠加正文会越过 ~30KB 卡片 JSON 上限，且与流式期钳制后的观感保持一致."""
+        from hermes_fry_cards.cardkit.markdown import _REASONING_MAX_BYTES
+
+        seg = _seg("reasoning", "思" * 20_000)  # ~60KB 全文
+        card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
+        unified = next(
+            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+        )
+        reasoning_panel = unified["elements"][0]
+        content = reasoning_panel["elements"][0]["content"]
+        assert len(content.encode("utf-8")) <= _REASONING_MAX_BYTES
+
+    def test_complete_card_short_reasoning_text_untouched(self) -> None:
+        seg = _seg("reasoning", "短思考")
+        card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
+        unified = next(
+            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+        )
+        assert "短思考" in unified["elements"][0]["elements"][0]["content"]
+
+
+class TestStripUnifiedPanel:
+    """#53 封卡撞 300305 时的应急剥离：正文与状态优先入卡."""
+
+    def test_strips_only_unified_panel(self) -> None:
+        seg = _seg("reasoning", "thinking text")
+        card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
+        before = len(card["body"]["elements"])
+        removed = strip_unified_panel(card)
+        assert removed == 1
+        assert len(card["body"]["elements"]) == before - 1
+        # 正文仍在
+        assert any(el.get("tag") == "markdown" for el in card["body"]["elements"])
+
+    def test_returns_zero_when_absent(self) -> None:
+        card = {"body": {"elements": [{"tag": "markdown", "content": "x"}]}}
+        assert strip_unified_panel(card) == 0
+        assert len(card["body"]["elements"]) == 1
+
+    def test_malformed_body_is_noop(self) -> None:
+        assert strip_unified_panel({}) == 0
+        assert strip_unified_panel({"body": "broken"}) == 0
+        assert strip_unified_panel({"body": {"elements": "broken"}}) == 0
 
 
 # --- Footer ---

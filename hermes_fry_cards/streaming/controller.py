@@ -18,8 +18,10 @@ from ..cardkit.builder import (
     build_overflow_fallback_card,
     build_streaming_card_v2,
     build_streaming_notice_element,
+    strip_unified_panel,
 )
 from ..cardkit.markdown import (
+    _REASONING_MAX_BYTES,
     clamp_utf8,
     optimize_markdown_style,
     prepare_streaming_markdown,
@@ -501,13 +503,22 @@ class StreamingController:
         payload_bytes += await self._sync_notice_slot(session, segment_state)
 
         # ── 步骤 2: stream_element 刷脏文本 ──
+        max_element_bytes = 0
         for seg in segments[session.split_index:]:
             if not seg.created or not seg.dirty:
                 continue
             try:
                 if seg.type == SegmentType.REASONING:
                     content = optimize_markdown_style(seg.text) or " "
-                    payload_bytes += len(content.encode("utf-8"))
+                    # 尾部窗口钳制（#52）：stream_element 是覆盖语义全文重发，
+                    # reasoning 无上限时每秒重写 20–28KB、单轮累计 1.3MB，
+                    # 会把飞书客户端渲染打满。保留头部摘要 + 尾部最新结论。
+                    content = clamp_utf8(
+                        content, max_bytes=_REASONING_MAX_BYTES, preserve_tail=True,
+                    )
+                    content_bytes = len(content.encode("utf-8"))
+                    payload_bytes += content_bytes
+                    max_element_bytes = max(max_element_bytes, content_bytes)
                     session.sequence += 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=reasoning len=%d",
@@ -528,7 +539,9 @@ class StreamingController:
                         content = session.image_resolver.resolve_images(content)
                     content = prepare_streaming_markdown(content) or " "
                     content = clamp_utf8(content, preserve_tail=False)
-                    payload_bytes += len(content.encode("utf-8"))
+                    content_bytes = len(content.encode("utf-8"))
+                    payload_bytes += content_bytes
+                    max_element_bytes = max(max_element_bytes, content_bytes)
                     session.sequence += 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=answer len=%d",
@@ -546,8 +559,9 @@ class StreamingController:
             except Exception as e:
                 _logger.debug("CardKit stream element failed: %s el=%s", e, seg.el_id, exc_info=True)
 
-        # 载荷自适应降频（#46）：按本 flush 实际推送量调整下一轮节流窗口
-        session.flush.adapt_payload_size(payload_bytes)
+        # 载荷自适应降频（#46/#52）：按本 flush 实际推送量 + 最大单元素全文
+        # 调整下一轮节流窗口；元素级档位优先（客户端重绘量由最大单元素决定）。
+        session.flush.adapt_payload_size(payload_bytes, max_element_bytes=max_element_bytes)
 
     async def _sync_notice_slot(self, session: CardSession, segment_state: SegmentState) -> int:
         """把最新一条提示画到卡片通知槽，返回本次推送的载荷字节数.
@@ -1255,6 +1269,7 @@ class StreamingController:
         )
 
         streaming_closed = False
+        panel_dropped = False
         # #22：重建卡片的真实元素数（含完成态长文切块二次膨胀）与流式期估算
         # tracked 对照打出，用于定位 300305 的低谷来自流式估算还是完成态重建。
         card_elements = len(card.get("body", {}).get("elements", []))
@@ -1292,6 +1307,18 @@ class StreamingController:
                 )
                 if session.guard.terminate("_do_complete_card", e):
                     return False
+                # 元素总数超限（#53）：面板子元素被流式期已提交的一份重复计数。
+                # 剥离统一面板（思考+工具过程）重发一次，正文与状态优先入卡；
+                # 仍超限再走重试/降级。
+                if e.code == CARDKIT_ELEMENT_LIMIT_TOTAL and not panel_dropped:
+                    panel_dropped = True
+                    if strip_unified_panel(card):
+                        card_elements = len(card.get("body", {}).get("elements", []))
+                        _logger.warning(
+                            "CardKit complete retry without unified panel: msg=%s card_elements=%d",
+                            session.message_id[:12],
+                            card_elements,
+                        )
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
                 continue
@@ -1336,7 +1363,9 @@ class StreamingController:
             # #22：封卡失败后失控的流式卡会留在聊天里、正文又经纯文本重发一遍——
             # 用一张小降级卡整卡替换，提示用户内容在下方，避免两张内容重叠的实体。
             try:
-                session.sequence += 1
+                # 上面删 loading 的调用已占用 N+1，本地序号要跳到 N+2：
+                # 复用 N+1 会被服务端判 300317 sequence compare failed，降级卡换不上（#53）。
+                session.sequence += 2
                 await self._client.cardkit_update(
                     session.card_id,
                     build_overflow_fallback_card(),

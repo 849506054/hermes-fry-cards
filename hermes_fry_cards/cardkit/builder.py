@@ -10,6 +10,7 @@ from ..streaming.segments import Segment, SegmentType
 from ..streaming.tooluse import ToolDisplayStep
 from .i18n import _LOCALES, _T, _i18n, _t
 from .markdown import (
+    _REASONING_MAX_BYTES,
     _downgrade_tables,
     _split_long_text,
     clamp_utf8,
@@ -22,6 +23,7 @@ STREAMING_ELEMENT_ID = "streaming_content"
 REASONING_ELEMENT_ID = "reasoning_content"
 REASONING_TEXT_ELEMENT_ID = "reasoning_text"
 TOOL_PANEL_ELEMENT_ID = "tool_panel"
+UNIFIED_PANEL_ELEMENT_ID = "unified_panel"
 LOADING_ELEMENT_ID = "loading_icon"
 _LOADING_ELEMENT_ID = LOADING_ELEMENT_ID  # 兼容旧私有引用
 _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
@@ -278,6 +280,7 @@ def _build_tool_panel(
     expanded: bool = True,
     element_id: str | None = TOOL_PANEL_ELEMENT_ID,
     running: bool = False,
+    compact: bool = False,
 ) -> dict:
     en_t, zh_t = _T["tool_running"] if running else _T["tool_use"]
     en_parts, zh_parts = [en_t], [zh_t]
@@ -307,7 +310,13 @@ def _build_tool_panel(
             "text_size": "notation",
         })
     for s in shown:
-        children.extend(_build_tool_step_elements(s))
+        # 紧凑模式（#53）：每步只渲染标题行（工具名 · 状态），不渲染入参与输出。
+        # 完成态整卡重建会把面板子元素连同流式期已提交的一并累计，CardKit 按
+        # 「已有 + 本次」计数，30 步全量面板足以越过 200 硬上限 → 300305。
+        if compact:
+            children.append(_build_tool_step_title(s))
+        else:
+            children.extend(_build_tool_step_elements(s))
 
     panel = _collapsible_panel(
         expanded=expanded,
@@ -883,8 +892,13 @@ def build_complete_card(
     for seg in segments:
         if seg.type == SegmentType.REASONING:
             if seg.text:
+                # 尾部窗口钳制（#52）：与流式 reasoning 同一预算。完成态整卡重建把
+                # 全文再发一遍，28KB 级 reasoning 叠加正文会越过 ~30KB 卡片 JSON 上限；
+                # 钳制后完成态与流式期观感也保持一致（同一份头部摘要+尾部结论）。
                 round_entry = {
-                    "text": seg.text,
+                    "text": clamp_utf8(
+                        seg.text, max_bytes=_REASONING_MAX_BYTES, preserve_tail=True,
+                    ),
                     "elapsed_ms": seg.elapsed_ms,
                     "text_el_id": seg.text_el_id,  # 复用流式阶段的 text element id，避免完成态 Duplicate ID
                 }
@@ -957,12 +971,15 @@ def build_complete_card(
             elif entry["kind"] == "tools":
                 # 每个工具组独立成一个嵌套 🔧 面板（保留 fry 现有工具面板样式），
                 # 交错在思考轮次之间，而非全部堆到末尾。
+                # compact=True（#53）：完成态整卡重建会把面板子元素重复计数，
+                # 每步只留标题行把子元素数压回 1/3，长工具轮次不再撞 300305。
                 _tool_group_seq += 1
                 tool_panel = _build_tool_panel(
                     entry["steps"],
                     entry["elapsed_ms"],
                     expanded=panel_expanded,
                     element_id=f"tool_panel_{_tool_group_seq}",
+                    compact=True,
                 )
                 unified_children.append(tool_panel)
         # header: 字段化组合（默认 🍟 model · 💭n · 🔧n · context · ⏱️ elapsed），
@@ -986,6 +1003,8 @@ def build_complete_card(
         )
         unified_panel = {
             "tag": "collapsible_panel",
+            # 固定 id：封卡撞 300305 时按 id 精确剥离整个面板重发（#53 修法 2）
+            "element_id": UNIFIED_PANEL_ELEMENT_ID,
             "expanded": panel_expanded,
             "header": {
                 "title": {
@@ -1099,6 +1118,30 @@ def build_background_card(preview: str, content: str) -> dict[str, Any]:
         card["config"]["summary"] = {"content": summary}
     _append_content_elements(card["body"]["elements"], body)
     return card
+
+
+def strip_unified_panel(card: dict[str, Any]) -> int:
+    """去掉完成态卡片的统一面板（思考 + 工具过程），就地修改，返回剥离的元素数（#53）.
+
+    封卡撞 300305 时的应急重发载荷：面板子元素在流式期已提交过一次，整卡重建
+    会被服务端按「已有 + 本次」重复计数，是元素超限的最大来源。剥离后正文与
+    状态优先入卡；仍超限才走 build_overflow_fallback_card 整卡降级。返回 0 表示
+    卡上没有统一面板。
+    """
+    body = card.get("body")
+    if not isinstance(body, dict):
+        return 0
+    elements = body.get("elements")
+    if not isinstance(elements, list):
+        return 0
+    kept = [
+        el for el in elements
+        if not (isinstance(el, dict) and el.get("element_id") == UNIFIED_PANEL_ELEMENT_ID)
+    ]
+    removed = len(elements) - len(kept)
+    if removed:
+        body["elements"] = kept
+    return removed
 
 
 def build_overflow_fallback_card() -> dict[str, Any]:

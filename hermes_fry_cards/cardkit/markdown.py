@@ -16,9 +16,14 @@ _MAX_CHUNK_CHARS = 2400
 # 单个 answer 元素的 UTF-8 字节预算（≈6000 汉字）。飞书卡片 JSON ~30KB 上限，
 # 元素级估算（2400 字符/chunk）对单段超长文本保护不足，字节级钳制兜底。
 _ANSWER_MAX_BYTES = 18000
+# 单个 reasoning 元素的 UTF-8 字节预算（#52）。stream_element 是覆盖语义全文重发，
+# reasoning 无上限时每秒重写 20–28KB，单轮累计 1.3MB 会把飞书客户端渲染打满。
+# 上限取 answer 的 ~55%：思考过程封卡后无人回看，头部摘要 + 尾部结论足够。
+_REASONING_MAX_BYTES = 10000
 
 __all__ = [
     "_ANSWER_MAX_BYTES",
+    "_REASONING_MAX_BYTES",
     "_downgrade_tables",
     "_find_tables_outside_code_blocks",
     "_split_long_text",

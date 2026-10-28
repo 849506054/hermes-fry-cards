@@ -462,3 +462,49 @@ class TestAdaptivePayloadThrottle:
         assert ctrl.throttle_ms == 0.500
         ctrl.adapt_payload_size(40_001)
         assert ctrl.throttle_ms == 0.800
+
+
+class TestAdaptiveElementThrottle:
+    """单元素全文长度分档（#52）：客户端重绘量由最大单元素决定，优先于载荷档位."""
+
+    @pytest.mark.asyncio
+    async def test_large_element_widens_to_1s(self) -> None:
+        ctrl = _make_async(throttle_ms=0.100)
+        ctrl.adapt_payload_size(2_000, max_element_bytes=8_001)
+        assert ctrl.throttle_ms == 1.000
+
+    @pytest.mark.asyncio
+    async def test_huge_element_widens_to_2s(self) -> None:
+        ctrl = _make_async(throttle_ms=0.100)
+        ctrl.adapt_payload_size(2_000, max_element_bytes=16_001)
+        assert ctrl.throttle_ms == 2.000
+
+    @pytest.mark.asyncio
+    async def test_element_tier_overrides_payload_tier(self) -> None:
+        # 载荷累加和 41KB、但最大单元素只有 9KB：按元素档位判 ≥1s，不按 41KB 判 ≥800ms。
+        # 累加和会把多个小元素叠成大档位（#52 指出的判错方式）。
+        ctrl = _make_async(throttle_ms=0.100)
+        ctrl.adapt_payload_size(41_000, max_element_bytes=9_000)
+        assert ctrl.throttle_ms == 1.000
+
+    @pytest.mark.asyncio
+    async def test_small_element_falls_back_to_payload_tiers(self) -> None:
+        ctrl = _make_async(throttle_ms=0.100)
+        ctrl.adapt_payload_size(20_000, max_element_bytes=8_000)
+        assert ctrl.throttle_ms == 0.500
+
+    @pytest.mark.asyncio
+    async def test_boundary_values(self) -> None:
+        ctrl = _make_async(throttle_ms=0.100)
+        ctrl.adapt_payload_size(0, max_element_bytes=8_000)
+        assert ctrl.throttle_ms == ctrl._base_throttle_ms
+        ctrl.adapt_payload_size(0, max_element_bytes=16_000)
+        assert ctrl.throttle_ms == 1.000
+        ctrl.adapt_payload_size(0, max_element_bytes=16_001)
+        assert ctrl.throttle_ms == 2.000
+
+    @pytest.mark.asyncio
+    async def test_never_faster_than_base(self) -> None:
+        ctrl = _make_async(throttle_ms=2.500)
+        ctrl.adapt_payload_size(0, max_element_bytes=20_000)
+        assert ctrl.throttle_ms == 2.500

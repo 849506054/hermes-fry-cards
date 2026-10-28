@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### 修复 / Fixed
+- **reasoning 面板无长度上限打满飞书客户端渲染**（#52）：`stream_element` 是覆盖语义全文重发，
+  reasoning 分支此前无 clamp，生产实测单次推送峰值 28.8KB、单轮累计 1.3MB，客户端每秒重绘
+  20KB+ markdown 直至卡顿无响应。流式 reasoning 与完成态统一面板的 reasoning 全文现按尾部
+  窗口钳制到 `_REASONING_MAX_BYTES`（10KB，头部摘要 + 尾部结论 + 省略标记，两处观感一致）；
+  `adapt_payload_size` 新增元素级分档（单元素全文 >8KB → ≥1s、>16KB → ≥2s，按最大单元素判定
+  而非 flush 累加和），元素档位优先于载荷档位。
+- **长工具轮次封卡必撞 300305 + 降级替换序号重号回 300317**（#53）：完成态整卡重建把工具面板
+  子元素连同流式期已提交的一份重复计数，30 步全量面板即越过 200 硬上限；封卡降级替换复用
+  删 loading 已占用的序号，被服务端判 300317，降级卡自己也换不上。三处修复：完成态统一面板
+  内的工具组按紧凑渲染（每步只留标题行，子元素数压回 1/3）；封卡撞 300305 时先按
+  `strip_unified_panel` 剥离统一面板重发一次（正文与状态优先入卡）；降级替换序号改为
+  `session.sequence += 2` 跳过删 loading 占用的 N+1。
 - **飞书瞬态错误后重试陷入 300301 Duplicate ID 死锁**（#51）：飞书服务端偶发瞬态异常（如 300308）
   重试后，元素在云端实际已成功落地但客户端保持 `created=False`。下次 flush 重发 `add_elements`
   被飞书返回 `300301 Duplicate ID` 拒绝，导致整批更新被原子拒绝并陷入死锁假死。在 `_do_batch_update`
@@ -32,9 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 测试 / Tests
 - 新增 `tests/test_issue51_duplicate_id_recovery.py`（Duplicate ID 错误提取与自愈死锁解除）。
 - `test_patcher_modular.py` 补充宿主为 `_watch_process` 时的注入测试。
-- `TestPanelTextSize`（config 优先级与非法值回落）、`test_panel_text_size_validate_and_merge`、
-  `test_studio_ui_exposes_flush_interval_ms`、`test_studio_ui_exposes_panel_text_size`（studio）、
-  完成态统一面板 header 字号断言（builder）。全量 **1013 passed**，ruff / mypy 零新增。
+- `TestAdaptiveElementThrottle`（元素级降频分档与边界）、reasoning 钳制与元素档位触发
+  （TestDoFlush）、`TestCompactToolPanel` / `TestStripUnifiedPanel`（紧凑面板、应急剥离、
+  完成态 reasoning 钳制）、`TestCompletePanelStripRetry`（300305 剥离重发 / 非 300305 保留
+  面板）、降级替换序号断言（TestOverflowFallbackReplace）。全量 **1035 passed**，ruff / mypy 零新增。
 
 ---
 
