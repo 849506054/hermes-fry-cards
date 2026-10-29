@@ -234,6 +234,7 @@ _DISPLAY_KEYS: dict[str, str] = {
     "unified_panel_min_duration": "dur600",
     "context_display_mode": "context",
     "panel_fields": "panel_fields",
+    "panel_text_size": "textsize",
 }
 _GATEWAY_KEYS = {"enabled": "bool", "allow_chats": "chatlist"}
 
@@ -754,6 +755,7 @@ def collect_state(home: Path | None = None) -> dict[str, Any]:
         "unified_panel_min_duration": cfg.unified_panel_min_duration,
         "context_display_mode": cfg.context_display_mode,
         "panel_fields": cfg.panel_fields,
+        "panel_text_size": cfg.panel_text_size,
     }
     gateway = {"group_security_boundary": cfg.group_security_boundary}
     return {
@@ -969,6 +971,7 @@ def build_preview(payload: Any, home: Path | None = None) -> dict[str, Any]:
             footer_text_size=sv_footer.get("text_size", "notation"),
             panel_fields=dv.get("panel_fields"),
             panel_expanded=bool(sv.get("panel_expanded", False)),
+            panel_text_size=str(dv.get("panel_text_size") or "notation"),
             header_enabled=common["header_enabled"],
             body_text_size=common["body_text_size"],
             show_tool_use=common["show_tool_use"],

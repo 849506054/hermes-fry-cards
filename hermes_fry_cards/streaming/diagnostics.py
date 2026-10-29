@@ -9,6 +9,7 @@ from ..feishu import FeishuAPIError
 from .segments import Segment, SegmentType
 
 _MISSING_ELEMENT_RE = re.compile(r"not find elementID\s*:\s*([A-Za-z0-9_-]+)")
+_DUPLICATE_ID_RE = re.compile(r"ElementID\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
 _SUMMARY_LIMIT = 8
 
 
@@ -46,6 +47,19 @@ def summarize_actions(actions: list[dict[str, Any]]) -> str:
 def extract_missing_element_id(error: FeishuAPIError) -> str:
     match = _MISSING_ELEMENT_RE.search(str(error))
     return match.group(1) if match else ""
+
+
+def extract_duplicate_element_id(error: FeishuAPIError) -> str:
+    """从 300301 Duplicate ID 异常中提取已存在于云端的元素 ID（#51）.
+
+    格式形如: "FeishuAPIError: code=300301 msg=Duplicate ID (ElementID reasoning_0_panel: Code 1001: Duplicate ID)"
+    """
+    err_str = str(error)
+    if "Duplicate ID" in err_str or getattr(error, "code", 0) == 300301:
+        match = _DUPLICATE_ID_RE.search(err_str)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def segment_state_for_log(segments: list[Segment], el_id: str) -> str:

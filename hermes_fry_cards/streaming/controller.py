@@ -18,9 +18,10 @@ from ..cardkit.builder import (
     build_overflow_fallback_card,
     build_streaming_card_v2,
     build_streaming_notice_element,
-    count_card_elements,
+    strip_unified_panel,
 )
 from ..cardkit.markdown import (
+    _REASONING_MAX_BYTES,
     clamp_utf8,
     optimize_markdown_style,
     prepare_streaming_markdown,
@@ -33,7 +34,13 @@ from ..feishu import (
     CARDKIT_STREAMING_CLOSED,
     FeishuAPIError,
 )
-from .diagnostics import compact_ids, extract_missing_element_id, segment_state_for_log, summarize_actions
+from .diagnostics import (
+    compact_ids,
+    extract_duplicate_element_id,
+    extract_missing_element_id,
+    segment_state_for_log,
+    summarize_actions,
+)
 from .image import ImageResolver
 from .segment_helper import (
     ELEMENT_THRESHOLD,
@@ -496,13 +503,22 @@ class StreamingController:
         payload_bytes += await self._sync_notice_slot(session, segment_state)
 
         # ── 步骤 2: stream_element 刷脏文本 ──
+        max_element_bytes = 0
         for seg in segments[session.split_index:]:
             if not seg.created or not seg.dirty:
                 continue
             try:
                 if seg.type == SegmentType.REASONING:
                     content = optimize_markdown_style(seg.text) or " "
-                    payload_bytes += len(content.encode("utf-8"))
+                    # 尾部窗口钳制（#52）：stream_element 是覆盖语义全文重发，
+                    # reasoning 无上限时每秒重写 20–28KB、单轮累计 1.3MB，
+                    # 会把飞书客户端渲染打满。保留头部摘要 + 尾部最新结论。
+                    content = clamp_utf8(
+                        content, max_bytes=_REASONING_MAX_BYTES, preserve_tail=True,
+                    )
+                    content_bytes = len(content.encode("utf-8"))
+                    payload_bytes += content_bytes
+                    max_element_bytes = max(max_element_bytes, content_bytes)
                     session.sequence += 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=reasoning len=%d",
@@ -523,7 +539,9 @@ class StreamingController:
                         content = session.image_resolver.resolve_images(content)
                     content = prepare_streaming_markdown(content) or " "
                     content = clamp_utf8(content, preserve_tail=False)
-                    payload_bytes += len(content.encode("utf-8"))
+                    content_bytes = len(content.encode("utf-8"))
+                    payload_bytes += content_bytes
+                    max_element_bytes = max(max_element_bytes, content_bytes)
                     session.sequence += 1
                     _logger.info(
                         "CardKit stream element: msg=%s seq=%d type=answer len=%d",
@@ -541,8 +559,9 @@ class StreamingController:
             except Exception as e:
                 _logger.debug("CardKit stream element failed: %s el=%s", e, seg.el_id, exc_info=True)
 
-        # 载荷自适应降频（#46）：按本 flush 实际推送量调整下一轮节流窗口
-        session.flush.adapt_payload_size(payload_bytes)
+        # 载荷自适应降频（#46/#52）：按本 flush 实际推送量 + 最大单元素全文
+        # 调整下一轮节流窗口；元素级档位优先（客户端重绘量由最大单元素决定）。
+        session.flush.adapt_payload_size(payload_bytes, max_element_bytes=max_element_bytes)
 
     async def _sync_notice_slot(self, session: CardSession, segment_state: SegmentState) -> int:
         """把最新一条提示画到卡片通知槽，返回本次推送的载荷字节数.
@@ -739,6 +758,32 @@ class StreamingController:
                             seg.el_id,
                         )
                         break
+
+            # 元素已存在（300301 Duplicate ID，#51）：飞书偶发内部瞬态错误（如 300308）重试后，
+            # 元素在云端实际已成功落地但客户端保持 created=False。下次 flush 重发 add_elements
+            # 会报 Duplicate ID，导致整批更新被原子拒绝并陷入死锁假死。
+            # 这里标记其已创建并补齐元素计数，让下轮 flush 转为 partial_update 或静默态恢复正常更新。
+            duplicate_el_id = extract_duplicate_element_id(e)
+            if duplicate_el_id:
+                for seg in segments[session.split_index:]:
+                    if seg.el_id == duplicate_el_id:
+                        if not seg.created:
+                            seg.created = True
+                            estimate = new_el_estimates.get(seg.el_id, 0)
+                            seg.element_estimate = estimate
+                            session.element_count += estimate
+                            if seg.type == SegmentType.TOOL:
+                                session.tool_panel_created = True
+                            _logger.info(
+                                "CardKit recovered duplicate segment %s (marked created=True, est=%d)",
+                                seg.el_id,
+                                estimate,
+                            )
+                        break
+                if duplicate_el_id == TOOL_PANEL_ELEMENT_ID and not session.tool_panel_created:
+                    session.tool_panel_created = True
+                    _logger.info("CardKit recovered duplicate tool panel skeleton")
+
             self._handle_flush_error(e)
             # 卡片元素总数超限（300305）：element_count 追踪失真导致卡片实际元素数
             # 超过飞书硬上限，当前卡已无法写入任何新元素。强制拆卡到新卡继续流式。
@@ -917,6 +962,7 @@ class StreamingController:
             footer_enabled=False,
             panel_fields=self._cfg.panel_fields,
             panel_expanded=self._cfg.panel_expanded,
+            panel_text_size=self._cfg.panel_text_size,
             header_enabled=False,
             body_text_size=self._cfg.body_text_size,
             show_tool_use=self._cfg.show_tool_use,
@@ -1201,36 +1247,32 @@ class StreamingController:
         # 展示位拆分（#43 反馈）：后台回执等完成后通知在顶部，忙碌/重定向等
         # 进行中提示落底部（footer 之前）。记账仍按总条数。
         top_notices, progress_notices = _split_notice_slots(session)
+        card = build_complete_card(
+            segments=active_segments,
+            all_tool_steps=all_tool_steps,
+            footer_data=session.footer,
+            is_error=is_error,
+            is_aborted=is_aborted,
+            footer_fields=self._cfg.footer_fields,
+            footer_show_label=self._cfg.footer_show_label,
+            footer_enabled=self._cfg.footer_enabled,
+            footer_text_size=self._cfg.footer_text_size,
+            panel_fields=self._cfg.panel_fields,
+            panel_expanded=self._cfg.panel_expanded,
+            panel_text_size=self._cfg.panel_text_size,
+            header_enabled=self._complete_header_enabled(session, all_tool_steps),
+            body_text_size=self._cfg.body_text_size,
+            show_tool_use=self._cfg.show_tool_use,
+            width_mode=self._cfg.width_mode,
+            notices=top_notices,
+            progress_notices=progress_notices,
+        )
 
-        def _build_complete(show_tool_use: bool) -> dict:
-            return build_complete_card(
-                segments=active_segments,
-                all_tool_steps=all_tool_steps,
-                footer_data=session.footer,
-                is_error=is_error,
-                is_aborted=is_aborted,
-                footer_fields=self._cfg.footer_fields,
-                footer_show_label=self._cfg.footer_show_label,
-                footer_enabled=self._cfg.footer_enabled,
-                footer_text_size=self._cfg.footer_text_size,
-                panel_fields=self._cfg.panel_fields,
-                panel_expanded=self._cfg.panel_expanded,
-                header_enabled=self._complete_header_enabled(session, all_tool_steps) if show_tool_use else False,
-                body_text_size=self._cfg.body_text_size,
-                show_tool_use=self._cfg.show_tool_use and show_tool_use,
-                width_mode=self._cfg.width_mode,
-                notices=top_notices,
-                progress_notices=progress_notices,
-                # 封卡保留工具面板的框，但每步只留工具名与耗时：完成态整卡重建会把
-                # 面板子元素在飞书侧再计一遍，带全量详情的面板必被 300305 拒。
-                compact_tool_panel=True,
-            )
-
-        card = _build_complete(True)
-        # 真实元素数（递归含面板/推理子元素），与流式期估算同一口径。
-        card_elements = count_card_elements(card.get("body", {}).get("elements", []))
-        summary_dropped = False
         streaming_closed = False
+        panel_dropped = False
+        # #22：重建卡片的真实元素数（含完成态长文切块二次膨胀）与流式期估算
+        # tracked 对照打出，用于定位 300305 的低谷来自流式估算还是完成态重建。
+        card_elements = len(card.get("body", {}).get("elements", []))
         for attempt in range(3):
             try:
                 assert self._client is not None
@@ -1265,18 +1307,18 @@ class StreamingController:
                 )
                 if session.guard.terminate("_do_complete_card", e):
                     return False
-                if e.code == CARDKIT_ELEMENT_LIMIT_TOTAL and not summary_dropped:
-                    # 连精简面板都装不下（旧卡已近上限）：整块面板去掉再发一次，
-                    # 正文和状态优先入卡，过程信息让位。
-                    summary_dropped = True
-                    card = _build_complete(False)
-                    card_elements = count_card_elements(card.get("body", {}).get("elements", []))
-                    _logger.warning(
-                        "CardKit complete card over element limit -> drop tool panel: msg=%s elements=%d",
-                        session.message_id[:12],
-                        card_elements,
-                    )
-                    continue
+                # 元素总数超限（#53）：面板子元素被流式期已提交的一份重复计数。
+                # 剥离统一面板（思考+工具过程）重发一次，正文与状态优先入卡；
+                # 仍超限再走重试/降级。
+                if e.code == CARDKIT_ELEMENT_LIMIT_TOTAL and not panel_dropped:
+                    panel_dropped = True
+                    if strip_unified_panel(card):
+                        card_elements = len(card.get("body", {}).get("elements", []))
+                        _logger.warning(
+                            "CardKit complete retry without unified panel: msg=%s card_elements=%d",
+                            session.message_id[:12],
+                            card_elements,
+                        )
                 if attempt < 2:
                     await asyncio.sleep(2**attempt)
                 continue
@@ -1320,11 +1362,10 @@ class StreamingController:
             await self._remove_loading_icon(session.card_id, session.sequence + 1)
             # #22：封卡失败后失控的流式卡会留在聊天里、正文又经纯文本重发一遍——
             # 用一张小降级卡整卡替换，提示用户内容在下方，避免两张内容重叠的实体。
-            # 序号记账：_remove_loading_icon 已经用掉 N+1，这里要跳到 N+2，
-            # 再按 +1 递增会和它撞号回 300317（sequence number compare failed），
-            # 降级卡本身也跟着失效。
-            session.sequence += 2
             try:
+                # 上面删 loading 的调用已占用 N+1，本地序号要跳到 N+2：
+                # 复用 N+1 会被服务端判 300317 sequence compare failed，降级卡换不上（#53）。
+                session.sequence += 2
                 await self._client.cardkit_update(
                     session.card_id,
                     build_overflow_fallback_card(),

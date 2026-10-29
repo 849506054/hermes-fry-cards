@@ -248,6 +248,7 @@ legend { font-weight: 700; padding: 0 0 6px; font-size: 14px; color: var(--text)
 .md { font-size: 14px; word-break: break-word; }
 .md.ts-notation, .ts-notation { font-size: 12px; }
 .md.ts-normal, .ts-normal, .md.ts-normal_v2, .ts-normal_v2 { font-size: 14px; }
+.ts-heading { font-size: 16px; }
 .md h1, .md h2, .md h3, .md h4, .md h5 { margin: 10px 0 6px; line-height: 1.4; }
 .md h4 { font-size: 16px; } .md h5 { font-size: 14px; }
 .md p { margin: 6px 0; }

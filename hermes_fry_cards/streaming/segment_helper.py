@@ -9,10 +9,8 @@ from ..cardkit.builder import (
     MAX_TOOL_PANEL_STEPS,
     _build_reasoning_panel,
     _build_tool_panel,
-    _build_tool_step_elements,
     _format_elapsed,
     _streaming_element,
-    count_card_elements,
 )
 from ..cardkit.i18n import _T, _i18n
 from .segments import Segment, SegmentType
@@ -92,13 +90,10 @@ def tool_segment_end(seg: Segment, all_steps: list[ToolDisplayStep]) -> int:
 
 
 def estimate_tool_elements(start: int, end: int, all_steps: list[ToolDisplayStep]) -> int:
-    """估算 tool panel 在 [start, end) step 区间内的元素数。
+    """估算 tool panel 在 [start, end) step 区间内的元素数.
 
     渲染端只保留最近 ``MAX_TOOL_PANEL_STEPS`` 步（#46，更早的折叠成一行摘要），
     估算按同一上限截取，否则长任务轮次里估算随步数无界增长，会过早触发拆卡。
-
-    单步成本直接数 ``_build_tool_step_elements`` 的真实产物，不再按常数折算：
-    常数（5/7）与实际渲染（3）对不上时，账面余额是假的，剩余预算判据跟着失真。
     """
     steps = all_steps[start:end]
     count = 3  # panel/header 基础元素
@@ -106,7 +101,11 @@ def estimate_tool_elements(start: int, end: int, all_steps: list[ToolDisplayStep
         count += 1  # 「…另有 N 步」摘要行
         steps = steps[-MAX_TOOL_PANEL_STEPS:]
     for step in steps:
-        count += count_card_elements(_build_tool_step_elements(step))
+        count += 3  # title: div + standard_icon + lark_md
+        if step.get("detail"):
+            count += 2  # detail: div + plain_text
+        if step.get("result_block") or step.get("error_block"):
+            count += 2  # output: div + lark_md
     return count
 
 

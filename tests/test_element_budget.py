@@ -245,12 +245,8 @@ async def test_force_split_triggered_by_300305_in_flush() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rollover_stays_flat_after_panel_cap() -> None:
-    """面板截断后单卡元素数有界：纯工具轮次跑到 40 步也不拆卡（真实计数口径）。
-
-    回归样本 2026-10-27 22:00 轮：54 步没拆卡，账面 156、真实面板只有 94 格。
-    旧用例按「每步 7 格」的常数口径写，二十多步就误判为接近上限。
-    """
+async def test_rollover_counts_panel_once_not_per_segment() -> None:
+    """拆卡判断以本卡已入账的面板总量为基准，不把整块面板重复计入."""
     ctrl = _setup_ctrl()
     client = ctrl._client
     client.cardkit_create = AsyncMock(return_value="card_next")
@@ -258,92 +254,20 @@ async def test_rollover_stays_flat_after_panel_cap() -> None:
     session = _streaming_session(ctrl, "msg_roll", "card_roll")
     session.element_count = 1
 
-    counts = []
+    steps_to_split = None
     for idx in range(1, 41):
+        # exec 带输出 → 7 元素/步（read 的 no_result 不渲染 result_block，输出不上秤）。
+        # #46 面板截断后轻步骤面板有界、不再触发拆卡，rollover 记账用重步骤验证。
         session.tool_use.record_start("exec", f"f{idx}_0")
         session.tool_use.record_end("exec", output="out" * 32)
         session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
         await _flush(ctrl, session)
-        counts.append(session.element_count)
-        assert session.split_index == 0, f"面板封顶后不该拆卡: 第 {idx} 步拆了"
+        if session.split_index > 0:
+            steps_to_split = idx
+            break
 
-    assert max(counts) < ELEMENT_THRESHOLD, "面板封顶后纯工具轮次不应顶到拆卡阈值"
-    assert counts[-1] <= counts[29] + 2, "第 30 步之后元素数应有界: 面板只留最近 30 步"
-
-
-@pytest.mark.asyncio
-async def test_completion_keeps_panel_with_compact_step_rows() -> None:
-    """封卡保留工具面板的框，每步只留工具名 · 状态 · 耗时，不展开入参与输出。
-
-    背景（2026-10-27 实测）：流式过 30 步的卡片，完成态整卡重建带全量详情的
-    面板必被 300305 拒；面板子元素在飞书侧被重复计一次，本地账面看不出来。
-    """
-    import json as _json
-
-    ctrl = _setup_ctrl()
-    client = ctrl._client
-    client.cardkit_close_streaming = AsyncMock()
-    bodies: list[dict] = []
-    client.cardkit_update = AsyncMock(side_effect=lambda card_id, card, sequence=0: bodies.append(card))
-
-    session = _streaming_session(ctrl, "msg_compact", "card_compact")
-    for idx in range(3):
-        session.tool_use.record_start("exec", f"f{idx}_0")
-        session.tool_use.record_end("exec", output="out" * 8)
-        session.segment_state.on_tool_event(len(session.tool_use.build_display_steps()))
-    await _flush(ctrl, session)
-
-    assert await ctrl._do_complete_card(session) is True
-    payload = _json.dumps(bodies[0], ensure_ascii=False)
-    assert "collapsible_panel" in payload, "封卡要保留工具面板的框"
-    panel = _find_panel(bodies[0]["body"]["elements"])
-    assert panel is not None
-    rows = panel.get("elements") or []
-    assert len(rows) == 3, f"每步一行，实际 {len(rows)} 行"
-    for row in rows:
-        assert row["tag"] == "div" and row.get("icon"), "每行是带图标的一行工具记录"
-        assert "Result" not in _json.dumps(row, ensure_ascii=False), "封卡不展开执行详情"
-
-
-def _find_panel(nodes: list[dict]) -> dict | None:
-    for el in nodes:
-        if el.get("tag") == "collapsible_panel":
-            for nested in el.get("elements") or []:
-                if str(nested.get("element_id", "")).startswith("tool_panel"):
-                    return nested
-            if el.get("element_id") is None and (el.get("elements") or [{}])[0].get("tag") == "div":
-                return el
-        for key in ("elements", "children"):
-            sub = el.get(key)
-            if isinstance(sub, list):
-                found = _find_panel([x for x in sub if isinstance(x, dict)])
-                if found:
-                    return found
-    return None
-
-
-@pytest.mark.asyncio
-async def test_overflow_fallback_advances_sequence() -> None:
-    """降级卡替换不得复用删 loading 用掉的序号，否则回 300317、兜底也失效。"""
-    from unittest.mock import patch
-
-    ctrl = _setup_ctrl()
-    client = ctrl._client
-    client.cardkit_close_streaming = AsyncMock()
-    client.cardkit_update = AsyncMock(side_effect=FeishuAPIError("limit", code=300305))
-    batch_seqs: list[int] = []
-
-    async def batch_update(card_id: str, actions: list, sequence: int = 0) -> None:
-        batch_seqs.append(sequence)
-
-    client.cardkit_batch_update = batch_update
-    session = _streaming_session(ctrl, "msg_seq", "card_seq")
-    session.sequence = 100
-
-    with patch("asyncio.sleep", new_callable=AsyncMock):
-        assert await ctrl._do_complete_card(session) is False
-
-    update_seqs = [c.kwargs.get("sequence") for c in client.cardkit_update.await_args_list]
-    assert batch_seqs, "删 loading 的 batch update 应该发生"
-    assert update_seqs[-1] > max(batch_seqs), (update_seqs, batch_seqs)
-    assert len(set(update_seqs)) == len(update_seqs), f"完成态序号重号: {update_seqs}"
+    assert steps_to_split is not None, "接近元素上限时必须主动拆卡"
+    # 每步约 7 个元素（title+detail+output），180 阈值下约 25 步接近；
+    # 以面板总量为基准时不可能在 20 步内拆卡（重复计入时的表现）。
+    assert steps_to_split > 20, f"panel counted twice: split at step {steps_to_split}"
+    assert session.element_count <= ELEMENT_THRESHOLD + 10

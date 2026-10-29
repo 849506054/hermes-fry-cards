@@ -269,19 +269,19 @@ class Config:
     def flush_interval_ms(self) -> int:
         """流式卡片刷新节流间隔（毫秒，``streaming.flush_interval_ms``）.
 
-        每次 flush 推送整卡结构性变更，默认 100ms（10 Hz）。长任务轮次里卡片
-        载荷随工具步数线性膨胀，安卓端渲染能力弱、实测易被整卡重绘打满
-        （iOS / 桌面端正常），安卓为主的部署可调到 300~500 缓解客户端卡顿
-        （#46）。另有按载荷的自适应降频兜底（flush.py），本配置是基准窗口。
+        每次 flush 推送整卡结构性变更，默认 500ms（2 Hz，兼顾打字机流畅度与移动端防卡死）。
+        长任务轮次里卡片载荷随工具步数线性膨胀，实测高频重绘易导致安卓/鸿蒙端闪退，
+        用户可根据需要在 50~2000 间微调（#46）。另有按载荷的自适应降频兜底（flush.py），
+        本配置是基准窗口。
 
-        允许 50~2000，越界值按边界处理；非法值回落默认 100。
+        允许 50~2000，越界值按边界处理；非法值回落默认 500。
         """
         sec = self._streaming_sec()
-        value = sec.get("flush_interval_ms", 100)
+        value = sec.get("flush_interval_ms", 500)
         try:
             return max(50, min(2000, int(value)))
         except (TypeError, ValueError):
-            return 100
+            return 500
 
     @property
     def unified_panel_min_duration(self) -> float:
@@ -458,6 +458,29 @@ class Config:
         if isinstance(raw, list) and raw and all(isinstance(x, str) and x for x in raw):
             return list(raw)
         return default
+
+    @property
+    def panel_text_size(self) -> str:
+        """统一面板 header 标题的字号（此前在 builder 写死 notation）.
+
+        优先级：display.platforms.feishu.panel_text_size → display.panel_text_size，
+        默认 ``notation``（小字，与旧版行为一致）。非法值回落默认。
+        """
+        valid = ("normal_v2", "normal", "heading", "notation")
+        display = self._reload().get("display")
+        if not isinstance(display, dict):
+            return "notation"
+        platforms = display.get("platforms")
+        if isinstance(platforms, dict):
+            feishu = platforms.get("feishu")
+            if isinstance(feishu, dict) and "panel_text_size" in feishu:
+                value = str(feishu["panel_text_size"])
+                if value in valid:
+                    return value
+        value = display.get("panel_text_size")
+        if isinstance(value, str) and value in valid:
+            return value
+        return "notation"
 
     @property
     def feishu_app_id(self) -> str:

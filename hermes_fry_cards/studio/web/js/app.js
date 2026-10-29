@@ -232,6 +232,7 @@
     setCheck("f-enabled", s.enabled);
     setVal("f-width", s.width_mode);
     setCheck("f-panel-expanded", s.panel_expanded);
+    setVal("f-panel-text-size", d.panel_text_size);
     setCheck("f-completion-notice", s.completion_notice);
     setVal("f-completion-notice-text", s.completion_notice_text);
     setVal("f-content-lang", s.content_lang);
@@ -265,6 +266,7 @@
     if (note) note.hidden = !multi;
 
     setVal("f-body-text-size", s.body.text_size);
+    setVal("f-flush-interval-ms", s.flush_interval_ms);
     setCheck("f-show-reasoning", d.show_reasoning);
     setCheck("f-show-tool-use", d.show_tool_use);
     setCheck("f-show-context", d.show_context);
@@ -334,6 +336,7 @@
         completion_notice: $("#f-completion-notice").checked,
         completion_notice_text: $("#f-completion-notice-text").value,
         width_mode: $("#f-width").value,
+        flush_interval_ms: int("#f-flush-interval-ms"),
         header: {
           enabled: $("#f-header-enabled").checked,
           min_duration: num("#f-header-min-duration"),
@@ -356,6 +359,7 @@
         unified_panel_min_duration: num("#f-unified-min-duration"),
         context_display_mode: $("#f-context-mode").value,
         panel_fields: panelFields,
+        panel_text_size: $("#f-panel-text-size").value,
       },
       gateway: {
         group_security_boundary: {

@@ -372,6 +372,8 @@ def test_v0225_bg_completion_anchors_before_internal_marker(real_v0225: dict[str
 # ── 真实 run_notifications.py：turn_busy 纯文本回执抑制锚点（0.5.9.3） ──────
 
 _LIVE_NOTIFICATIONS_CANDIDATES = (
+    # 归档的干净样张（从真实 0.22.5 部署取回，未注入）——Windows 开发机也跑得动
+    _SAMPLE_225 / "run_notifications.py",
     Path("/opt/hermes/gateway/run_notifications.py"),
     Path.home() / ".hermes" / "hermes-agent" / "gateway" / "run_notifications.py",
 )

@@ -535,6 +535,24 @@ def test_bg_busy_suppress_hook_lands_before_concise_receipt(modular_copy: dict[s
     ast.parse(notifications)
 
 
+def test_bg_busy_suppress_hook_matches_watch_process_host(modular_copy: dict[str, Path]) -> None:
+    """Hermes 0.22.5+1713 中 _run_process_watcher 改为 wrapper，逻辑移入 _watch_process，锚点仍要命中."""
+    content = modular_copy["notifications"].read_text(encoding="utf-8")
+    # 将函数名 _run_process_watcher 替换为 _watch_process 模拟最新 Hermes 源码
+    content = content.replace("async def _run_process_watcher(", "async def _watch_process(")
+    modular_copy["notifications"].write_text(content, encoding="utf-8")
+
+    patcher = Patcher(modular_paths=modular_copy)
+    patcher.apply()
+
+    notifications = modular_copy["notifications"].read_text(encoding="utf-8")
+    assert MK_BG_BUSY_SUPPRESS in notifications
+    begin = notifications.index(MK_BG_BUSY_SUPPRESS_END)
+    concise = notifications.index('_format_process_final_message(session_id, session, "concise")')
+    assert concise < begin
+    ast.parse(notifications)
+
+
 def test_bg_busy_suppress_hook_is_optional(modular_copy: dict[str, Path]) -> None:
     """通知模块没有该锚点时跳过注入，不让整次安装失败（旧布局兼容）."""
     assert "bg_busy_suppress" in OPTIONAL_HOOKS

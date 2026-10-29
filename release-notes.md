@@ -1,43 +1,55 @@
-## 🍟 hermes-fry-cards v0.5.9
+## 🍟 hermes-fry-cards v0.6.0
 
-> v0.5.8 实测反馈两连修：合成轮次（后台完成通知触发的回复轮）的 `streamed=False`
-> 抑制误报消除（#48）；后台完成通知不再以纯文本气泡直达，改为并入活跃卡或
-> 独立静态卡（#47，上版「尚未覆盖」项正式落地）。
+> 长任务渲染减压与封卡可靠性专项：流式 reasoning 不再每秒全文重发 28KB 打满飞书客户端，
+> 长工具轮次封卡不再必撞 300305、降级替换不再因序号重号失效；附带 #51 死锁自愈、
+> 节流默认值调优与面板字号可配。
 
-### 🚫 合成轮次的抑制误报（#48）
+### 🧊 reasoning 全文钳制 + 元素级降频（#52）
 
-后台完成通知触发的回复轮没有 `event_message_id`，`mark_stream_delivered` 拿到 `None`
-后谓词恒 False，网关误打 `Normal final-send NOT suppressed ... streamed=False` 重复投递
-警告（实际投递无重复，纯噪音）：
+`stream_element` 是覆盖语义全文重发，reasoning 分支此前没有任何长度上限。生产实测
+单次推送峰值 28.8KB、单轮累计 1.3MB，客户端每秒重绘 20KB+ markdown 直至掉帧卡顿
+（#46 的载荷分档管不到这一半：16–40KB 档等于不降频，28.8KB 也永远进不了降频档）：
 
-- `mark_stream_delivered` 与 `stream_card_healthy` 均增加 `session_key` 兜底
-- syn-* 会话注册时本就同步进了 `_session_keys`，谓词按活跃卡健康状态正确回答
+- **尾部窗口钳制**：流式 reasoning 与完成态统一面板的 reasoning 全文统一钳到
+  `_REASONING_MAX_BYTES`（10KB）——头部摘要 + 尾部最新结论 + 中间省略标记，
+  两处观感一致；短思考（p50 ≈ 2.8KB）完全不受影响
+- **元素级降频**：`adapt_payload_size` 新增单元素分档——单元素全文 >8KB → ≥1s、
+  >16KB → ≥2s，按「最大单元素」判定而非 flush 累加和（累加和会把多个小元素叠成
+  大档位判错）；元素档位优先于 #46 的载荷档位，重绘量大头直接被拉开窗口
 
-### 🧾 后台完成通知接管（#47）
+### 📦 封卡 300305 三连修（#53）
 
-`gateway/run_notifications.py` 的 watch/completion 通知把完成回执合成内部消息注入，
-**纯文本气泡直达**——该路径不经过卡片管线，没有任何钩子可拦（0.5.8 release notes
-「尚未覆盖」项）。新增可选注入点 `BG_COMPLETION`，挂在 `_inject_watch_notification`
-的内部标记处理之前：
+工具面板步骤数超过二十来步的长轮次，封卡整卡重建时把面板子元素连同流式期已提交的
+一份重复计数，服务端按「已有 + 本次」累计越过 200 硬上限 → 必撞 300305；降级替换
+又复用了删 loading 已占用的序号回 300317，降级卡自己也换不上，卡片停在半路：
 
-- **会话此刻有活跃卡**（按 `session_key` 解析，其次唯一活跃卡）→ 回执按 #43 通知分区
-  并入当前卡（完成后通知置顶）
-- **无活跃卡** → 复用合成轮次的静态卡路径（`send_card_to_chat`），不 reply 已过期的
-  触发消息（Hermes #52694：evt 里的 message_id 在投递时刻已过期）
-- 都不可行（禁用 / 无 chat_id / 投递失败）→ 返回 False，Hermes 照常注入，无损降级
+- **紧凑面板**：完成态统一面板内的工具组每步只渲染标题行（工具名 · 状态），不渲染
+  入参与输出，子元素数压回 1/3（30 步 ≈ 31 格）；封卡后无人回看过程细节，header
+  仍保留总步数与总耗时
+- **应急剥离**：封卡仍撞 300305 时按 `unified_panel` id 剥离统一面板重发一次，
+  正文与状态优先入卡；仍超限才走整卡降级
+- **序号修复**：降级替换跳到 `sequence += 2`，不再复用删 loading 占用的 N+1，
+  降级卡能真正换上
 
-### ⚠️ 升级必读
+### 🔁 300301 Duplicate ID 死锁自愈（#51）
 
-answer 钩子注入模板有变更（传入 `session_key`），**必须重跑 `uninstall` + `install`**，
-只升级包的话 #48 的误报不会消失。
+飞书偶发瞬态异常重试后，元素在云端实际已落地但客户端记 `created=False`，下轮重发
+`add_elements` 被 300301 拒绝并陷入死锁假死。`_do_batch_update` 现在识别 300301
+并自愈：纠正段状态、补齐计数，下轮 flush 自动转回正常流式更新。另适配 Hermes
+0.22.5+1713 的 `run_notifications.py` wrapper 布局。
 
-### ✅ 验证
+### ⚙️ 其他
 
-- 全量 **947 passed**，ruff / mypy 相对上一版零新增
-- 真实 Hermes **v0.22.5** 源码回归：`BG_COMPLETION` 落在 `_inject_watch_notification`
-  内部标记处理之前（真实 `run_notifications.py` 上核过）
+- 流式刷新节流默认值 100ms → 500ms（2 Hz，兼顾打字机流畅感与移动端防闪退），
+  Studio 新增「流式刷新节流（毫秒）」设置项（50–2000ms）
+- 统一面板 header 字体可配：`display.panel_text_size`（默认 `notation`），Studio
+  可视化设置全链路接通
+- 全量 **1035 passed**，ruff / mypy 相对 v0.5.10 零新增
 
 ### 📦 升级
+
+本版**无新增注入点**，只升级包 + 重启网关即可；重跑 `uninstall + install` 亦无副作用。
+从 v0.5.9 及以下升级、或 Hermes 升到 0.22.5+ 的部署，仍建议完整重跑一遍：
 
 **PyPI（推荐）**：
 
@@ -64,13 +76,13 @@ hermes gateway restart
 
 | 现象 | 含义 |
 | --- | --- |
-| `status` 里有 `bg_completion: installed` | 通知接管注入点已落位 |
-| 后台完成通知触发的轮次 | 日志不再出现 `Normal final-send NOT suppressed` |
-| 后台任务完成、会话无活跃卡 | 回执以独立卡片出现（不再纯文本气泡） |
-| 后台任务完成、会话有活跃卡 | 回执出现在卡片顶部通知区 |
+| 跑一轮长思考任务 | 日志 `CardKit stream element ... type=reasoning len=` 单次 ≤10000，不再出现 28KB 级全文推送 |
+| 工具调用密集的长轮次封卡 | 不再出现 `complete attempt N failed: code=300305`；真撞上时日志有 `complete retry without unified panel`，卡片正文与状态仍正常落卡 |
+| 封卡连续失败降级 | 卡片能替换为红色降级提示卡，日志不再出现 `300317 sequence number compare failed` |
+| 移动端长任务 | 客户端不再因 reasoning 全文重绘掉帧卡顿 |
 
 ---
 
 完整明细见 [CHANGELOG.md](https://github.com/techysy/hermes-fry-cards/blob/main/CHANGELOG.md)。
 
-**Full Changelog**: [v0.5.8...v0.5.9](https://github.com/techysy/hermes-fry-cards/compare/v0.5.8...v0.5.9)
+**Full Changelog**: [v0.5.10...v0.6.0](https://github.com/techysy/hermes-fry-cards/compare/v0.5.10...v0.6.0)

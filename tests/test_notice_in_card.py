@@ -235,7 +235,7 @@ async def test_completed_card_includes_notice_slot() -> None:
     card = ctrl._client.cardkit_update.call_args.args[1]
     bodies = card["body"]["elements"]
     notices = [el for el in bodies if str(el.get("element_id", "")).startswith("fry_notice")]
-    assert len(notices) == 1, "通知槽单槽位：卡上最多一个提示元素"
+    assert len(notices) == 1, "通知槽单槽位: 卡上最多一个提示元素"
     assert notices[0]["content"] == BUSY_TEXT
 
 

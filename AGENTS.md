@@ -83,7 +83,7 @@ StreamCardController (singleton, controller.py)
   │   └─ stream segments: CardSession.segment_state (SegmentState)
   ├─ _session_keys — Hermes session_key → active CardSession mapping for precise /stop handling
   ├─ _interrupt_map — old_message_id → new_message_id mapping for interrupt redirect
-  ├─ FlushController (streaming/flush.py) — throttles CardKit updates (100ms)
+  ├─ FlushController (streaming/flush.py) — throttles CardKit updates (500ms)
   ├─ ToolUseTracker (streaming/tooluse.py) — tracks tool call lifecycle with icon/status mapping
   ├─ UnavailableGuard (streaming/unavailable_guard.py) — auto-terminates on message delete/recall
   └─ ImageResolver (streaming/image.py) — async download + re-upload markdown images as Feishu img_key
@@ -94,8 +94,10 @@ Streaming card runtime (streaming/)
   ├─ segments.py — SegmentState: flat segment list (reasoning / answer / tool), same-type appends, cross-type creates new
   ├─ segment_helper.py — CardKit action builders, element estimates, and tool split point selection
   ├─ text.py — reasoning tag parsing and final answer text cleanup
-  ├─ flush.py — FlushController: throttles CardKit updates (base = streaming.flush_interval_ms, default 100ms;
-  │              adaptive down-throttle by last flush payload: >16KB → ≥300ms, >40KB → ≥500ms, never below base, #46)
+  ├─ flush.py — FlushController: throttles CardKit updates (base = streaming.flush_interval_ms, default 500ms;
+  │              adaptive down-throttle: single stream_element full text >8KB → ≥1s, >16KB → ≥2s (#52, judged by
+  │              the largest single element, not the flush cumulative sum); flush payload >16KB → ≥500ms,
+  │              >40KB → ≥800ms (#46); element tiers take precedence; never below base)
   ├─ tooluse.py — ToolUseTracker: tool call lifecycle tracking with icon/status mapping
   ├─ image.py — ImageResolver: async download + re-upload markdown images as Feishu img_key
   └─ unavailable_guard.py — UnavailableGuard: auto-terminates on message delete/recall
@@ -128,6 +130,8 @@ Studio (studio/ — visual config workbench, stdlib http.server + native JS only
 - The completion hook installed into `gateway/run.py` is async: `on_message_completed_wait` awaits queued CardKit creation/finalization before setting `already_sent`. Upgrades must rerun `uninstall` + `install` so older sync completion hooks are removed from Hermes gateway.
 - The `_thinking_hook` has a `not already_streamed` guard (patcher.py:103) — thinking deltas are skipped once answer streaming has begun.
 - Tool panel renders only the last `MAX_TOOL_PANEL_STEPS` (30) steps (#46): header keeps the total count, older steps collapse into a one-line summary. `estimate_tool_elements` applies the same cap so split/rollover accounting stays consistent — light-step panels become bounded and stop splitting; heavy-step panels still split via the (uncapped-below-30) threshold math.
+- Reasoning text is clamped to `_REASONING_MAX_BYTES` (10KB, `cardkit/markdown.py`) with a head-summary + tail window (#52) in both full-text resend paths: streaming `cardkit_stream_element` (unbounded reasoning reached 28.8KB per push / 1.3MB per turn, saturating Feishu client rendering) and the completion card's unified reasoning panels (would otherwise approach the ~30KB card JSON limit stacked on the clamped answer). `FlushController.adapt_payload_size` also gains element-size tiers (>8KB → ≥1s, >16KB → ≥2s) keyed on the largest single element sent this flush — the payload cumulative sum would mis-bucket many small elements.
+- Completion cards render tool groups compact (`_build_tool_panel(compact=True)`: title rows only, no detail/output; #53) because the full-card rebuild resubmits panel sub-elements the server already counted from streaming history, crossing the 200-element hard limit → 300305. When completion still hits 300305, `_do_complete_card_inner` strips the unified panel (`strip_unified_panel`, matched by `UNIFIED_PANEL_ELEMENT_ID`) and retries once — body and status take priority — before the overflow fallback. The fallback replace advances `session.sequence += 2`: the loading-icon delete already consumed N+1, reusing it returns 300317 and the fallback card never lands.
 - The NORMALIZE hook (`on_feishu_normalize`) is injected at `source = event.source` in `_handle_message`, before any other processing. It detects Feishu quoted messages with a false `thread_id` (set by the Feishu adapter but absent in raw event) and clears it, preventing `_reply_anchor_for_event` from returning the wrong ID.
 - The `anchor_id` mechanism: for Feishu quoted messages, `_reply_anchor_for_event(event)` returns `reply_to_message_id` instead of `event.message_id`. The START hook passes both — `message_id` for session identity and streaming callback lookup, `anchor_id` for card delivery (reply target). Sessions are registered under both keys.
 - Reasoning display depends on upstream providing `<thinking>`/`<thought>`/`<antthinking>` tags or `Reasoning:\n` prefix in text. Native API reasoning blocks (Anthropic extended thinking, DeepSeek reasoning_content) are available via `on_reasoning_delta` hook when `display.platforms.feishu.show_reasoning` is enabled.

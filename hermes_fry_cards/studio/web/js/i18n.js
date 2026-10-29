@@ -31,6 +31,8 @@ window.FryI18n = (function () {
     "opt.dm": ["仅私聊 dm", "DM only"],
     "opt.group": ["仅群聊 group", "Group only"],
     "lbl.body-size": ["正文文字大小", "Body text size"],
+    "lbl.flush-interval": ["流式刷新节流（毫秒）", "Streaming flush interval (ms)"],
+    "hint.flush-interval": ["默认 500ms（50~2000）；兼顾打字机流畅感与移动端防卡顿闪退。", "Default 500ms (50~2000); balances smooth typing effect with crash prevention on mobile."],
     "opt.heading": ["heading（大）", "heading (large)"],
     "opt.notation": ["notation（小）", "notation (small)"],
 
@@ -62,6 +64,7 @@ window.FryI18n = (function () {
     "lbl.unified-min": ["面板最小耗时阈值（秒，短回复不显示）", "Min panel duration threshold (s, hidden for short replies)"],
     "lbl.truncate-model": ["面板 header 截断长模型名", "Truncate long model names in panel header"],
     "lbl.panel-fields": ["面板 header 字段", "Panel header fields"],
+    "lbl.panel-text-size": ["面板 header 字体", "Panel header text size"],
     "hint.panel-fields": ["ℹ️ 思考数/工具数为面板专属计数；上下文跟随上方「显示上下文」开关与显示格式；无数据的字段自动隐藏。", "ℹ️ Reasoning/tool counts are panel-exclusive; context follows the “show context” switch and format above; fields without data are hidden automatically."],
 
     "legend.alias": ["模型别名（统一面板 header 模型名）", "Model Aliases (panel header model name)"],

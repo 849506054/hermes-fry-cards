@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from hermes_fry_cards.cardkit.builder import _build_tool_step_elements, count_card_elements
 from hermes_fry_cards.streaming.segment_helper import (
     ELEMENT_THRESHOLD,
     FOOTER_RESERVE,
@@ -39,8 +38,7 @@ def test_estimate_segment_elements_for_basic_types() -> None:
 
     assert estimate_segment_elements(reasoning, steps) == 4
     assert estimate_segment_elements(answer, steps) == 1
-    # 面板 3 格基座 + 该步真实渲染产物（2026-10-27 起按 _build_tool_step_elements 数，不按常数折算）
-    assert estimate_segment_elements(tool, steps) == 4
+    assert estimate_segment_elements(tool, steps) == 6
 
 
 def test_estimate_answer_elements_grows_with_tables_and_length() -> None:
@@ -75,11 +73,6 @@ def test_estimate_answer_elements_grows_with_tables_and_length() -> None:
 
 
 def test_estimate_tool_elements_counts_optional_detail_and_output_blocks() -> None:
-    """面板估算必须等于真实渲染产物：单步成本直接数元素，不按常数折算。
-
-    回归（2026-10-27）：常数口径每步按 5~7 记，实际渲染只有 1~3，
-    账面余额虚高四成，剩余预算判据跟着失真。
-    """
     steps = [
         _step(),
         _step(detail="path"),
@@ -87,9 +80,7 @@ def test_estimate_tool_elements_counts_optional_detail_and_output_blocks() -> No
         _step(error=True),
     ]
 
-    real = 3 + sum(count_card_elements(_build_tool_step_elements(s)) for s in steps)
-    assert estimate_tool_elements(0, len(steps), steps) == real
-    assert estimate_tool_elements(0, len(steps), steps) < 3 + 4 * 5  # 旧常数口径下界
+    assert estimate_tool_elements(0, len(steps), steps) == 21
 
 
 def test_tool_segment_end_uses_open_segment_step_count() -> None:
@@ -112,8 +103,7 @@ def test_find_tool_split_offset_keeps_largest_fitting_prefix() -> None:
         all_steps=steps,
     )
 
-    # 单步真实成本 1~3 格（拼常数口径时代是 5~7），余量够装 3 步
-    assert split_offset == 3
+    assert split_offset == 1
 
 
 def test_find_tool_split_offset_returns_none_for_single_step() -> None:

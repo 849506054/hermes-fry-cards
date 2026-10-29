@@ -11,7 +11,7 @@ import time
 import uuid
 from collections.abc import Callable, Coroutine, Iterator
 from concurrent.futures import Future as ConcurrentFuture
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -75,7 +75,7 @@ def background_completion_text(
         except (TypeError, ValueError):
             elapsed = -1.0
         if elapsed >= 0:
-            elapsed_s = int(round(elapsed))
+            elapsed_s = round(elapsed)
 
     line = f"✅ 后台任务已完成 — `{cmd}`"
     if elapsed_s is not None:
@@ -110,10 +110,8 @@ def _busy_receipt_keys(
     if skey:
         keys.append(f"skey:{skey}")
     if started_at is not None:
-        try:
+        with suppress(TypeError, ValueError):
             keys.append(f"start:{float(started_at):.3f}")
-        except (TypeError, ValueError):
-            pass
     return keys
 
 

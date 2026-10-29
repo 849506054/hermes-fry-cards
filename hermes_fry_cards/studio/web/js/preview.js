@@ -146,6 +146,7 @@
         if (el.expanded) d.open = true;
         var sum = document.createElement("summary");
         sum.textContent = pickText(el.header && el.header.title);
+        if (el.header && el.header.text_size) sum.className = "ts-" + el.header.text_size;
         d.appendChild(sum);
         var kids = document.createElement("div");
         kids.className = "cp-children";

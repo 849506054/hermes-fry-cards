@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import sys
 import threading
@@ -15,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 
 import hermes_fry_cards.controller as controller_module
+from hermes_fry_cards.cardkit.markdown import _REASONING_MAX_BYTES
 from hermes_fry_cards.controller import (
     StreamCardController,
     background_completion_text,
@@ -1596,9 +1598,11 @@ class TestDoFlush:
 
     @pytest.mark.asyncio
     async def test_big_payload_widens_throttle_after_flush(self) -> None:
-        """>16KB 载荷的 flush 把节流窗口放大到 ≥300ms（#46 自适应降频）."""
+        """>16KB 载荷的 flush 把节流窗口放大到 ≥500ms（#46 自适应降频）."""
         ctrl = _setup_ctrl()
+        ctrl._cfg._raw = {"streaming": {"enabled": True, "flush_interval_ms": 100}}
         session = _make_session("msg_big_payload")
+        session.flush.set_throttle(0.100)
         session.state = SessionState.STREAMING
         session.card_id = "card_big_payload"
         session.segment_state.on_answer_delta("答" * 17_000)  # >16KB 的流式文本
@@ -1606,12 +1610,50 @@ class TestDoFlush:
 
         await ctrl._do_flush(session)
 
-        assert session.flush.throttle_ms >= 0.300
+        assert session.flush.throttle_ms >= 0.500
+
+    @pytest.mark.asyncio
+    async def test_reasoning_stream_element_clamped_to_budget(self) -> None:
+        """reasoning 流式全文超预算时钳到尾部窗口（#52），不再每秒全文重发 28KB."""
+        ctrl = _setup_ctrl()
+        ctrl._cfg._raw = {"streaming": {"enabled": True, "flush_interval_ms": 100}}
+        session = _make_session("msg_reason_clamp")
+        session.flush.set_throttle(0.100)
+        session.state = SessionState.STREAMING
+        session.card_id = "card_reason_clamp"
+        session.segment_state.on_reasoning_delta("思" * 20_000)  # ~60KB 全文
+        ctrl._sessions["msg_reason_clamp"] = session
+
+        await ctrl._do_flush(session)
+
+        content = ctrl._client.cardkit_stream_element.call_args[0][2]
+        # 头部摘要 + 尾部结论 + 省略标记，总字节不超 reasoning 预算
+        assert len(content.encode("utf-8")) <= _REASONING_MAX_BYTES
+        assert content  # 非空，结论尾部仍在
+
+    @pytest.mark.asyncio
+    async def test_large_reasoning_element_triggers_element_tier_throttle(self) -> None:
+        """reasoning 钳制后仍 >8KB → 元素级档位把窗口放大到 ≥1s（#52）."""
+        ctrl = _setup_ctrl()
+        ctrl._cfg._raw = {"streaming": {"enabled": True, "flush_interval_ms": 100}}
+        session = _make_session("msg_reason_throttle")
+        session.flush.set_throttle(0.100)
+        session.state = SessionState.STREAMING
+        session.card_id = "card_reason_throttle"
+        session.segment_state.on_reasoning_delta("思" * 4_000)  # 12KB 全文 → 钳到 10KB
+        ctrl._sessions["msg_reason_throttle"] = session
+
+        await ctrl._do_flush(session)
+
+        # 载荷 ~10KB 不触发载荷档位（<16KB），但单元素 >8KB 触发元素档位
+        assert session.flush.throttle_ms >= 1.0
 
     @pytest.mark.asyncio
     async def test_small_payload_keeps_configured_throttle(self) -> None:
         ctrl = _setup_ctrl()
+        ctrl._cfg._raw = {"streaming": {"enabled": True, "flush_interval_ms": 100}}
         session = _make_session("msg_small_payload")
+        session.flush.set_throttle(0.100)
         session.state = SessionState.STREAMING
         session.card_id = "card_small_payload"
         session.segment_state.on_answer_delta("hello")
@@ -1619,7 +1661,7 @@ class TestDoFlush:
 
         await ctrl._do_flush(session)
 
-        assert session.flush.throttle_ms < 0.300
+        assert session.flush.throttle_ms == pytest.approx(0.100)
 
     @pytest.mark.asyncio
     async def test_split_flushes_pending_actions_then_moves_to_next_card(self) -> None:
@@ -3012,3 +3054,136 @@ class TestOverflowFallbackReplace:
         fallback = attempts[-1]
         assert fallback["header"]["template"] == "red"
         assert "exceeded the Feishu card element limit" in fallback["body"]["elements"][0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_update_sequence_skips_loading_delete(self) -> None:
+        """降级替换的序号必须跳过删 loading 占用的 N+1，否则重号回 300317（#53）."""
+        ctrl = _setup_ctrl()
+        client = ctrl._client
+        sent_seqs: list[tuple[str, int]] = []
+
+        async def capture_close(card_id: str, **kwargs: object) -> None:
+            sent_seqs.append(("close", kwargs["sequence"]))  # type: ignore[arg-type]
+
+        async def capture_batch(card_id: str, actions: list, **kwargs: object) -> None:
+            sent_seqs.append(("batch", kwargs["sequence"]))  # type: ignore[arg-type]
+
+        async def fail_update(card_id: str, card: dict, **kwargs: object) -> None:
+            sent_seqs.append(("update", kwargs["sequence"]))  # type: ignore[arg-type]
+            if len(sent_seqs) <= 5:  # 3 次重试各占 update 一次（close 占首条）
+                raise FeishuAPIError("element exceeds the limit", code=300305)
+
+        client.cardkit_close_streaming = capture_close
+        client.cardkit_batch_update = capture_batch
+        client.cardkit_update = fail_update
+
+        session = _make_session("msg_seq53")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_seq53"
+        ctrl._sessions["msg_seq53"] = session
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            assert await ctrl._do_complete_card(session) is False
+
+        # 降级段轨迹：close → batch(删 loading) → fallback update
+        close_seq = sent_seqs[-3][1]
+        delete_seq = sent_seqs[-2][1]
+        fallback_seq = sent_seqs[-1][1]
+        assert delete_seq == close_seq + 1
+        assert fallback_seq == delete_seq + 1  # 旧实现复用 delete 前的序号 → 300317
+        assert sent_seqs[-1][0] == "update"
+
+
+class TestCompletePanelStripRetry:
+    """#53：封卡撞 300305 时剥离统一面板重发一次，正文与状态优先入卡."""
+
+    @pytest.mark.asyncio
+    async def test_300305_retries_without_unified_panel(self) -> None:
+        ctrl = _setup_ctrl()
+        client = ctrl._client
+        client.cardkit_close_streaming = AsyncMock()
+        attempts: list[dict] = []
+
+        async def fail_first(card_id: str, card: dict, **kwargs: object) -> None:
+            attempts.append(copy.deepcopy(card))
+            if len(attempts) == 1:
+                raise FeishuAPIError("element exceeds the limit", code=300305)
+
+        client.cardkit_update = fail_first
+
+        session = _make_session("msg_strip")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_strip"
+        session.segment_state.on_reasoning_delta("think")
+        session.tool_use.record_start("read", "f")
+        session.segment_state.on_tool_event(1)
+        ctrl._sessions["msg_strip"] = session
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            assert await ctrl._do_complete_card(session) is True
+
+        assert len(attempts) == 2
+        # 首发带统一面板，重发不带（正文与状态保留）
+        assert any(
+            el.get("element_id") == "unified_panel" for el in attempts[0]["body"]["elements"]
+        )
+        assert all(
+            el.get("element_id") != "unified_panel" for el in attempts[1]["body"]["elements"]
+        )
+        assert attempts[1]["body"]["elements"]  # 非空：正文/状态仍在
+
+    @pytest.mark.asyncio
+    async def test_non_300305_failure_keeps_panel(self) -> None:
+        ctrl = _setup_ctrl()
+        client = ctrl._client
+        client.cardkit_close_streaming = AsyncMock()
+        attempts: list[dict] = []
+
+        async def fail_first(card_id: str, card: dict, **kwargs: object) -> None:
+            attempts.append(copy.deepcopy(card))
+            if len(attempts) == 1:
+                raise FeishuAPIError("server busy", code=99992)
+
+        client.cardkit_update = fail_first
+
+        session = _make_session("msg_keep_panel")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_keep_panel"
+        session.segment_state.on_reasoning_delta("think")
+        session.tool_use.record_start("read", "f")
+        session.segment_state.on_tool_event(1)
+        ctrl._sessions["msg_keep_panel"] = session
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            assert await ctrl._do_complete_card(session) is True
+
+        assert len(attempts) == 2
+        # 非 300305 失败不剥离面板
+        assert any(
+            el.get("element_id") == "unified_panel" for el in attempts[1]["body"]["elements"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_300305_without_panel_still_retries(self) -> None:
+        """无面板的卡撞 300305（其他元素超限来源）不误伤，照常重试后成功."""
+        ctrl = _setup_ctrl()
+        client = ctrl._client
+        client.cardkit_close_streaming = AsyncMock()
+        attempts: list[dict] = []
+
+        async def fail_first(card_id: str, card: dict, **kwargs: object) -> None:
+            attempts.append(card)
+            if len(attempts) == 1:
+                raise FeishuAPIError("element exceeds the limit", code=300305)
+
+        client.cardkit_update = fail_first
+
+        session = _make_session("msg_nopanel")
+        session.state = SessionState.STREAMING
+        session.card_id = "card_nopanel"
+        session.segment_state.on_answer_delta("hello")
+        ctrl._sessions["msg_nopanel"] = session
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            assert await ctrl._do_complete_card(session) is True
+        assert len(attempts) == 2

@@ -10,17 +10,25 @@ from collections.abc import Awaitable, Callable
 _logger = logging.getLogger("hermes_fry_cards")
 
 
-CARDKIT_MS = 0.100  # CardKit 流式 API 的默认刷新间隔（可被 streaming.flush_interval_ms 覆盖）
+CARDKIT_MS = 0.500  # CardKit 流式 API 的默认刷新间隔（500ms，可被 streaming.flush_interval_ms 覆盖）
 LONG_GAP_MS = 2.000  # 超过此间隔 → 认为是长时间空闲
 BATCH_AFTER_GAP_MS = 0.300  # 长时间空闲后等待这个时间再 flush
 
 # 按载荷自适应降频（#46）：每次 flush 推的是结构性变更 + 全量步骤面板，
-# 载荷随工具步数线性膨胀，10 Hz × 几十 KB 的整卡重绘会把飞书客户端
+# 载荷随工具步数线性膨胀，高频全卡重绘会把飞书客户端（尤其鸿蒙/安卓移动端）
 # 渲染线程打满直至被系统杀掉。节流与体积无关 → 按最近一次 flush 载荷分档放大窗口。
-PAYLOAD_LARGE_BYTES = 16_000  # ≤16KB 维持配置节流；16–40KB 降到 ≥300ms
-PAYLOAD_HUGE_BYTES = 40_000  # >40KB 降到 ≥500ms
-ADAPTIVE_LARGE_MS = 0.300
-ADAPTIVE_HUGE_MS = 0.500
+PAYLOAD_LARGE_BYTES = 16_000  # ≤16KB 维持配置节流（默认 500ms）；16–40KB 降到 ≥500ms
+PAYLOAD_HUGE_BYTES = 40_000  # >40KB 降到 ≥800ms
+ADAPTIVE_LARGE_MS = 0.500
+ADAPTIVE_HUGE_MS = 0.800
+
+# 按单元素全文长度降频（#52）：stream_element 是覆盖语义，客户端每次都要重绘整个
+# 元素的 markdown。按 flush 累加和分档会把多个小元素叠成大档位判错（#46 遗留），
+# 单个长元素才是重绘量大头 → 元素级档位优先于载荷档位。
+ELEMENT_LARGE_BYTES = 8_000  # 单元素全文 >8KB → ≥1s
+ELEMENT_HUGE_BYTES = 16_000  # 单元素全文 >16KB → ≥2s
+ADAPTIVE_ELEMENT_LARGE_MS = 1.000
+ADAPTIVE_ELEMENT_HUGE_MS = 2.000
 
 
 class FlushController:
@@ -109,14 +117,21 @@ class FlushController:
         self._throttle_ms = ms
         self._base_throttle_ms = ms
 
-    def adapt_payload_size(self, size_bytes: int) -> None:
-        """按最近一次 flush 载荷调整节流窗口（#46）.
+    def adapt_payload_size(self, size_bytes: int, *, max_element_bytes: int = 0) -> None:
+        """按最近一次 flush 载荷调整节流窗口（#46/#52）.
 
-        分档：≤16KB 维持配置值；16–40KB ≥300ms；>40KB ≥500ms。永不低于
-        ``set_throttle`` 设定的基准（用户显式调慢时以其为准）。卡片拆小后
-        载荷回落，窗口自动恢复，无需手工干预。
+        元素级分档优先（#52）：``max_element_bytes`` 是本次 flush 中最大单个
+        stream_element 全文的字节数，>8KB ≥1s、>16KB ≥2s —— 客户端重绘量由最大
+        单元素决定，累加和只会把多个小元素叠成大档位判错。载荷级分档（#46）：
+        ≤16KB 维持配置值；16–40KB ≥500ms；>40KB ≥800ms。永不低于 ``set_throttle``
+        设定的基准（用户显式调慢时以其为准）。卡片拆小后载荷回落，窗口自动恢复，
+        无需手工干预。
         """
-        if size_bytes > PAYLOAD_HUGE_BYTES:
+        if max_element_bytes > ELEMENT_HUGE_BYTES:
+            self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_ELEMENT_HUGE_MS)
+        elif max_element_bytes > ELEMENT_LARGE_BYTES:
+            self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_ELEMENT_LARGE_MS)
+        elif size_bytes > PAYLOAD_HUGE_BYTES:
             self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_HUGE_MS)
         elif size_bytes > PAYLOAD_LARGE_BYTES:
             self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_LARGE_MS)
