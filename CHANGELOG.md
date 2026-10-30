@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
----
+## [0.6.0.1] - 2026-10-30
+
+### 新增 / Added
+- **思考时间线：一个折叠框内按阶段平铺**（`display.platforms.feishu.show_reasoning`）：建卡骨架给出
+  「💭 思考过程」外框，每轮思考的耗时标题与正文作为相邻子元素按到达顺序插进外框；阶段结束只把
+  标题改写为「思考了 Xs」，外框与阶段都保持用户的展开状态。流式阶段可见思考正文；封卡重建沿用同一外框，
+  框内只留一行「💭 思考了 N 轮 · 耗时 Xs」，逐步耗时与正文都不进卡；正文位置沿用原有布局
+  （流式时在框下、封卡时正文在上）。
+- **思考专用模式**（`show_tool_use: false`）：工具步骤照常执行并划分阶段边界，卡片只呈现思考时间线与正文；
+  封卡时思考面板不再被工具开关连带隐藏，`max_reasoning_panels` 在该模式下放开为不限，长任务每个阶段
+  保留独立标题。
+- **思考时间线的容量保护**：按元素预算与各段 UTF-8 长度估算提前拆卡，单张完成卡保持在飞书 JSON 上限内；
+  单阶段仍沿用 `_REASONING_MAX_BYTES` 尾部窗口钳制。
+
+### 变更 / Changed
+- 换卡与强制拆卡沿用工具展示开关，隐藏工具时骨架不再生成工具面板。
 
 ## [0.6.0] - 2026-10-29
 

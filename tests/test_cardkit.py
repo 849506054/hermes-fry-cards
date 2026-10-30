@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_fry_cards.cardkit.builder import (
-    REASONING_ELEMENT_ID,
+    PROCESS_PANEL_ELEMENT_ID,
     REASONING_TEXT_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
     _build_footer_elements,
@@ -701,11 +701,11 @@ class TestBuildStreamingCardV2:
 
     def test_show_reasoning_adds_panel(self) -> None:
         card = build_streaming_card_v2(show_reasoning=True)
-        assert any(e.get("element_id") == REASONING_ELEMENT_ID for e in card["body"]["elements"])
+        assert any(e.get("element_id") == PROCESS_PANEL_ELEMENT_ID for e in card["body"]["elements"])
 
     def test_show_reasoning_default_no_panel(self) -> None:
         card = build_streaming_card_v2()
-        assert not any(e.get("element_id") == REASONING_ELEMENT_ID for e in card["body"]["elements"])
+        assert not any(e.get("element_id") == PROCESS_PANEL_ELEMENT_ID for e in card["body"]["elements"])
 
     def test_reasoning_before_tool_before_answer(self) -> None:
         card = build_streaming_card_v2(
@@ -715,7 +715,7 @@ class TestBuildStreamingCardV2:
             show_tool_use=True,
         )
         ids = [e.get("element_id") for e in card["body"]["elements"]]
-        reasoning_idx = ids.index(REASONING_ELEMENT_ID)
+        reasoning_idx = ids.index(PROCESS_PANEL_ELEMENT_ID)
         tool_idx = ids.index(TOOL_PANEL_ELEMENT_ID)
         assert reasoning_idx < tool_idx
 

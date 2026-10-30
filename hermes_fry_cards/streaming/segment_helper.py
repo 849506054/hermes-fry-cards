@@ -7,7 +7,9 @@ from typing import Any
 from ..cardkit.builder import (
     _LOADING_ELEMENT_ID,
     MAX_TOOL_PANEL_STEPS,
+    PROCESS_ANCHOR_ELEMENT_ID,
     _build_reasoning_panel,
+    _build_reasoning_stage,
     _build_tool_panel,
     _format_elapsed,
     _streaming_element,
@@ -151,15 +153,27 @@ def find_tool_split_offset(
 
 def build_add_segment_action(
     seg: Segment, all_steps: list[ToolDisplayStep], *, text_size: str = "normal_v2",
+    reasoning_timeline: bool = False,
 ) -> dict[str, Any]:
-    """构造新增 segment 元素的 batch action."""
+    """构造新增 segment 元素的 batch action.
+
+    时间线的标题与正文平铺在外框内；答案落在 loading 之前，即外框下方。
+    """
+    target_element_id = _LOADING_ELEMENT_ID
     if seg.type == SegmentType.REASONING:
+        if reasoning_timeline:
+            return {
+                "action": "add_elements",
+                "params": {
+                    "type": "insert_before", "target_element_id": PROCESS_ANCHOR_ELEMENT_ID,
+                    "elements": _build_reasoning_stage(
+                        " ", seg.elapsed_ms, element_id=seg.el_id, text_element_id=seg.text_el_id,
+                    ),
+                },
+            }
         element = _build_reasoning_panel(
-            " ",
-            seg.elapsed_ms,
-            expanded=True,
-            element_id=seg.el_id,
-            text_element_id=seg.text_el_id,
+            " ", seg.elapsed_ms, expanded=True,
+            element_id=seg.el_id, text_element_id=seg.text_el_id,
         )
     elif seg.type == SegmentType.ANSWER:
         element = _streaming_element(element_id=seg.el_id, text_size=text_size)
@@ -174,14 +188,23 @@ def build_add_segment_action(
         "action": "add_elements",
         "params": {
             "type": "insert_before",
-            "target_element_id": _LOADING_ELEMENT_ID,
+            "target_element_id": target_element_id,
             "elements": [element],
         },
     }
 
 
-def build_reasoning_finalized_action(seg: Segment) -> dict[str, Any]:
-    """构造 reasoning header 耗时终结 action."""
+def build_reasoning_finalized_action(seg: Segment, *, reasoning_timeline: bool = False) -> dict[str, Any]:
+    """更新当前阶段的耗时标题，外框展开状态由用户控制。"""
+    if reasoning_timeline:
+        title = _build_reasoning_stage(" ", seg.elapsed_ms)[0]
+        return {
+            "action": "partial_update_element",
+            "params": {
+                "element_id": seg.el_id,
+                "partial_element": {"content": title["content"]},
+            },
+        }
     elapsed = _format_elapsed(seg.elapsed_ms)
     en_label = _T["thought_for"][0].format(elapsed)
     zh_label = _T["thought_for"][1].format(elapsed)
@@ -190,7 +213,6 @@ def build_reasoning_finalized_action(seg: Segment) -> dict[str, Any]:
         "params": {
             "element_id": seg.el_id,
             "partial_element": {
-                "expanded": False,
                 "header": {
                     "title": {
                         "tag": "plain_text",

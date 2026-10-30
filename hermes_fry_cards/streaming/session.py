@@ -62,6 +62,7 @@ class CardSession:
         "image_resolver",
         "message_id",
         "notice_element_count",
+        "reasoning_timeline",
         "segment_state",
         "sequence",
         "session_key",
@@ -118,6 +119,7 @@ class CardSession:
         self.split_index: int = 0
         self.clarify_pending_split: bool = False
         self.tool_panel_created: bool = False
+        self.reasoning_timeline: bool = False
 
     @property
     def has_card(self) -> bool:

@@ -165,6 +165,28 @@ class StreamingController:
         self._schedule_flush(session)
         return True
 
+    def _skeleton_element_count(self, session: CardSession) -> int:
+        """沿用面板/header 的保守预算；时间线外框和锚点共四格。"""
+        return 5 if session.reasoning_timeline else 1
+
+    def _timeline_byte_estimate(self, segments: list[Segment]) -> int:
+        """为完成卡预留 JSON 开销，按各段实际 UTF-8 窗口估算。"""
+        total = 5000
+        for seg in segments:
+            if seg.type == SegmentType.REASONING:
+                total += min(len(seg.text.encode("utf-8")), _REASONING_MAX_BYTES) + 1000
+            elif seg.type == SegmentType.ANSWER:
+                total += min(len(seg.text.encode("utf-8")), 18000) + 2000
+        return total
+
+    def _configure_reasoning_timeline(self, session: CardSession) -> None:
+        session.reasoning_timeline = self._cfg.show_reasoning
+        if session.segment_state is not None:
+            session.segment_state.max_reasoning_panels = (
+                None if session.reasoning_timeline and not self._cfg.show_tool_use
+                else self._cfg.max_reasoning_panels
+            )
+
     async def _do_create_card(self, session: CardSession) -> None:
         """创建只有 loading 的流式占位卡片."""
         if session.state != SessionState.IDLE:
@@ -179,9 +201,10 @@ class StreamingController:
 
             reply_to_message_id = session.anchor_id or session.message_id
             notice_text = _latest_notice(session)
+            self._configure_reasoning_timeline(session)
             card = build_streaming_card_v2(
                 show_tool_use=self._cfg.show_tool_use,
-                show_reasoning=False,
+                show_reasoning=session.reasoning_timeline,
                 show_streaming_element=False,
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
@@ -217,7 +240,11 @@ class StreamingController:
                         )
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
             self._track_live_card(session)  # #43：卡片建好后登记，网关重启时据此封卡
-            session.element_count = 1  # loading element
+            _logger.info(
+                "CardKit display: msg=%s reasoning_timeline=%s show_tool_use=%s",
+                session.message_id[:12], session.reasoning_timeline, self._cfg.show_tool_use,
+            )
+            session.element_count = self._skeleton_element_count(session)  # loading(+过程外框)
             # 流式建卡时已带上最新一条提示（_latest_notice），记账同步这一格
             session.notice_element_count = 1 if notice_text else 0
             session.element_count += session.notice_element_count
@@ -323,6 +350,23 @@ class StreamingController:
                 seg.dirty = False
                 continue
 
+            if (
+                session.reasoning_timeline and not self._cfg.show_tool_use
+                and i > session.split_index and not session.split_disabled
+                and self._timeline_byte_estimate(segments[session.split_index:i + 1]) > 160_000
+            ):
+                _logger.info(
+                    "CardKit timeline byte split: msg=%s index=%d bytes=%d",
+                    session.message_id[:12], i,
+                    self._timeline_byte_estimate(segments[session.split_index:i + 1]),
+                )
+                if not await self._do_split_card(
+                    session, i, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+                ):
+                    return
+                actions, new_el_ids, new_el_estimates, updated_tool_segs = [], set(), {}, []
+                new_el_total = 0
+
             if not seg.created:
                 # 新卡首个 TOOL 段会整体替换共享面板（而不是在旧面板上叠加）：
                 # 容量判断按「替换后的面板估算」算，并先扣掉本卡已入账的面板量，
@@ -412,7 +456,10 @@ class StreamingController:
                     new_el_ids.add(seg.el_id)
                     new_el_estimates[seg.el_id] = estimated
                     new_el_total += estimated
-                    actions.append(build_add_segment_action(seg, all_steps, text_size=self._cfg.body_text_size))
+                    actions.append(build_add_segment_action(
+                        seg, all_steps, text_size=self._cfg.body_text_size,
+                        reasoning_timeline=session.reasoning_timeline,
+                    ))
                 if (
                     seg.type == SegmentType.TOOL
                     and i + 1 < len(segments)
@@ -438,7 +485,9 @@ class StreamingController:
                     seg.elapsed_ms,
                     session.sequence + 1,
                 )
-                actions.append(build_reasoning_finalized_action(seg))
+                actions.append(build_reasoning_finalized_action(
+                    seg, reasoning_timeline=session.reasoning_timeline,
+                ))
             elif seg.type == SegmentType.TOOL and seg.dirty:
                 # 合并面板：本卡所有工具段共用一个面板，渲染区间从本卡首个工具段起，
                 # 拆卡后不把旧卡的步骤重发到新卡（否则新卡立刻再撞元素上限，#41）。
@@ -835,7 +884,7 @@ class StreamingController:
         new_card_id, new_msg_id = new_card
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
         self._track_live_card(session)  # #43：新卡改登记（旧卡封完已注销）
-        session.element_count = 1  # loading element
+        session.element_count = self._skeleton_element_count(session)  # loading(+过程外框)
         # 新卡同样带最新一条提示（_latest_notice），记账同步这一格
         session.notice_element_count = 1 if _latest_notice(session) else 0
         session.element_count += session.notice_element_count
@@ -1007,15 +1056,15 @@ class StreamingController:
         """
         assert self._client is not None
         try:
-            # 拆卡后重建需要 show_tool_use=True 以包含 tool_panel 元素，
-            # 否则后续 flush 会因找不到 element_id 而报 300313。
-            need_tool_panel = session.tool_panel_created or any(
-                s.type == SegmentType.TOOL for s in (session.segment_state.segments[session.split_index:] if session.segment_state else [])
+            # 换卡沿用工具展示开关；隐藏的工具段只保留内部阶段边界。
+            need_tool_panel = self._cfg.show_tool_use and (
+                session.tool_panel_created or any(s.type == SegmentType.TOOL for s in session.active_segments())
             )
             notice_text = _latest_notice(session)
+            self._configure_reasoning_timeline(session)
             card = build_streaming_card_v2(
                 show_tool_use=need_tool_panel,
-                show_reasoning=False,
+                show_reasoning=session.reasoning_timeline,
                 show_streaming_element=False,
                 header_enabled=self._cfg.header_enabled,
                 text_size=self._cfg.body_text_size,
@@ -1083,7 +1132,7 @@ class StreamingController:
         new_card_id, new_msg_id = new_card
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
         self._track_live_card(session)  # #43：强制拆卡后改登记新卡
-        session.element_count = 1  # loading element
+        session.element_count = self._skeleton_element_count(session)  # loading(+过程外框)
         # 新卡同样带最新一条提示（_latest_notice），记账同步这一格
         session.notice_element_count = 1 if _latest_notice(session) else 0
         session.element_count += session.notice_element_count
@@ -1157,8 +1206,9 @@ class StreamingController:
 
             # 重置内容，新卡承载 clarify 后的输出
             session.segment_state = SegmentState(max_reasoning_panels=self._cfg.max_reasoning_panels)
+            self._configure_reasoning_timeline(session)
             session.split_index = 0
-            session.element_count = 1  # loading element（与拆卡一致）
+            session.element_count = self._skeleton_element_count(session)  # loading(+过程外框)
             # 新卡同样带着最新一条提示：记账与元素登记一起迁到新段状态（#issue 原地接管）
             clarify_notice = _latest_notice(session)
             session.notice_element_count = 1 if clarify_notice else 0

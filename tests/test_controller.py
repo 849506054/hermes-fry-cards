@@ -676,7 +676,7 @@ async def test_clarify_split_seals_old_and_creates_new() -> None:
     assert len(session.segment_state.segments) == 0
     assert len(session.tool_use.build_display_steps()) == 0
     assert session.split_index == 0
-    assert session.element_count == 1  # 新卡自带 loading element
+    assert session.element_count == ctrl._skeleton_element_count(session)
 
 
 @pytest.mark.asyncio
@@ -1696,9 +1696,9 @@ class TestDoFlush:
         assert session.card_msg_id == "msg_next"
         assert session.split_index == 2
         assert session.split_disabled is False
-        # 新卡 element_count 重置为 loading 基线(1)，再计入工具面板的真实估算
+        # 新卡重置为骨架预算，再计入工具面板的估算
         # （共享面板只计一次增量；#41：面板元素必须进 element_count）。
-        assert session.element_count == 1 + session.tool_panel_estimate
+        assert session.element_count == ctrl._skeleton_element_count(session) + session.tool_panel_estimate
         assert session.tool_panel_estimate > 0
         assert [s.created for s in session.segment_state.segments] == [True, True, True]
 

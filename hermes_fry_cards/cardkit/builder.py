@@ -8,7 +8,7 @@ from typing import Any
 
 from ..streaming.segments import Segment, SegmentType
 from ..streaming.tooluse import ToolDisplayStep
-from .i18n import _LOCALES, _T, _i18n, _t
+from .i18n import _LOCALES, _T, _content_t, _i18n, _t
 from .markdown import (
     _REASONING_MAX_BYTES,
     _downgrade_tables,
@@ -24,6 +24,9 @@ REASONING_ELEMENT_ID = "reasoning_content"
 REASONING_TEXT_ELEMENT_ID = "reasoning_text"
 TOOL_PANEL_ELEMENT_ID = "tool_panel"
 UNIFIED_PANEL_ELEMENT_ID = "unified_panel"
+# 流式和完成态共用思考时间线外框。
+PROCESS_PANEL_ELEMENT_ID = UNIFIED_PANEL_ELEMENT_ID
+PROCESS_ANCHOR_ELEMENT_ID = "process_anchor"
 LOADING_ELEMENT_ID = "loading_icon"
 _LOADING_ELEMENT_ID = LOADING_ELEMENT_ID  # 兼容旧私有引用
 _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
@@ -436,6 +439,42 @@ def _escape_md(value: str) -> str:
     return re.sub(r"([`*_{}\[\]<>])", r"\\\1", value.replace("\\", "\\\\"))
 
 
+def _build_reasoning_stage(
+    text: str, elapsed_ms: float = 0, *, element_id: str | None = None,
+    text_element_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """时间线阶段：耗时标题和正文直接作为外框的相邻子元素。"""
+    label = (
+        _content_t("thought_for").format(_format_elapsed(elapsed_ms))
+        if elapsed_ms > 0 else _content_t("thinking_panel")
+    )
+    return [
+        {
+            "tag": "markdown", "content": f"<font color='grey'>💭 {label}</font>",
+            "text_size": "notation",
+            **({"element_id": element_id} if element_id else {}),
+        },
+        {
+            "tag": "markdown", "content": text or " ", "text_size": "notation",
+            **({"element_id": text_element_id} if text_element_id else {}),
+        },
+    ]
+
+
+def _build_reasoning_summary(rounds: list[dict]) -> list[dict[str, Any]]:
+    """封卡后的思考摘要：只报轮数，逐步耗时与正文都不进卡。"""
+    if not rounds:
+        return []
+    total_ms = sum(float(rnd.get("elapsed_ms") or 0) for rnd in rounds)
+    label = _content_t("thought_rounds").format(len(rounds))
+    if total_ms > 0:
+        label = f"{label} · {_content_t('elapsed').format(_format_elapsed(total_ms))}"
+    return [{
+        "tag": "markdown", "content": f"<font color='grey'>💭 {label}</font>",
+        "text_size": "notation",
+    }]
+
+
 def _build_reasoning_panel(
     text: str, elapsed_ms: float = 0, *, expanded: bool = False, element_id: str | None = None,
     text_element_id: str | None = REASONING_TEXT_ELEMENT_ID,
@@ -783,6 +822,30 @@ def build_streaming_tool_use_pending_panel() -> dict[str, Any]:
     return panel
 
 
+def build_streaming_process_pending_panel() -> dict[str, Any]:
+    """展开的思考时间线；阶段按到达顺序插到内部锚点前。"""
+    panel = _collapsible_panel(
+        expanded=True,
+        title_el={
+            "tag": "plain_text",
+            "content": _T["process_panel"][0],
+            "i18n_content": _t("process_panel"),
+            "text_color": "grey",
+            "text_size": "notation",
+        },
+        elements=[
+            {
+                "tag": "markdown",
+                "content": " ",
+                "element_id": PROCESS_ANCHOR_ELEMENT_ID,
+                "text_size": "notation",
+            }
+        ],
+    )
+    panel["element_id"] = PROCESS_PANEL_ELEMENT_ID
+    return panel
+
+
 def build_streaming_card_v2(
     *,
     tool_steps: list[ToolDisplayStep] | None = None,
@@ -798,13 +861,11 @@ def build_streaming_card_v2(
     """CardKit 2.0 流式占位卡片 — 工具面板合并到底部."""
     elements: list[dict] = []
 
-    if show_reasoning:
-        elements.append(
-            _build_reasoning_panel(" ", expanded=True, element_id=REASONING_ELEMENT_ID)
-        )
-
     if show_streaming_element:
         elements.append(_streaming_element(text_size=text_size))
+
+    if show_reasoning:
+        elements.append(build_streaming_process_pending_panel())
 
     # 工具面板放在底部（answer之后，loading之前）
     if show_tool_use:
@@ -935,10 +996,9 @@ def build_complete_card(
         _min_duration_ms = float(Config().unified_panel_min_duration) * 1000
     except Exception:
         _min_duration_ms = 5000
-    _show_unified_panel = (
-        (reasoning_rounds or tool_steps_total)
-        and show_tool_use
-        and (tool_steps_total or _panel_duration_ms >= _min_duration_ms)
+    _show_unified_panel = bool(tool_steps_total) or (
+        bool(reasoning_rounds)
+        and (not show_tool_use or _panel_duration_ms >= _min_duration_ms)
     )
     if _show_unified_panel:
         # 状态边框颜色：完成=绿色, 中断=黄色, 异常=红色
@@ -962,12 +1022,15 @@ def build_complete_card(
                 # 绝不回落到固定 REASONING_TEXT_ELEMENT_ID，防止单轮 reasoning 在 merge 更新下重复。
                 text_el_id = rnd.get("text_el_id") or f"reasoning_text_{_reasoning_seq}"
                 _reasoning_seq += 1
-                unified_children.append(_build_reasoning_panel(
-                    text=rnd["text"],
-                    elapsed_ms=rnd["elapsed_ms"],
-                    expanded=panel_expanded,
-                    text_element_id=text_el_id,
-                ))
+                if show_tool_use:
+                    unified_children.append(_build_reasoning_panel(
+                        text=rnd["text"], elapsed_ms=rnd["elapsed_ms"],
+                        expanded=panel_expanded, text_element_id=text_el_id,
+                    ))
+                else:
+                    # 封卡后只留一行「思考了 N 轮 · 耗时 Xs」，逐步内容与耗时都不进卡。
+                    unified_children.extend(_build_reasoning_summary(reasoning_rounds))
+                    break
             elif entry["kind"] == "tools":
                 # 每个工具组独立成一个嵌套 🔧 面板（保留 fry 现有工具面板样式），
                 # 交错在思考轮次之间，而非全部堆到末尾。

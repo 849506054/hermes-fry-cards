@@ -90,7 +90,7 @@ class SegmentState:
         "notice_element_text",
     )
 
-    def __init__(self, max_reasoning_panels: int = 3, max_answer_segments: int = 8) -> None:
+    def __init__(self, max_reasoning_panels: int | None = 3, max_answer_segments: int = 8) -> None:
         self._counter = 0
         self._completion_answers: set[str] = set()
         self.segments: list[Segment] = []
@@ -283,7 +283,7 @@ class SegmentState:
         # 达到 reasoning 面板上限：不新建面板，把文本合并进最后一个 reasoning 面板，
         # 避免 thinking/tool 频繁交替时产生海量独立面板导致元素溢出。
         reasoning_count = sum(1 for s in self.segments if s.type == SegmentType.REASONING)
-        if reasoning_count >= self.max_reasoning_panels:
+        if self.max_reasoning_panels is not None and reasoning_count >= self.max_reasoning_panels:
             for seg in reversed(self.segments):
                 if seg.type == SegmentType.REASONING:
                     seg.text += text

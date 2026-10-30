@@ -25,6 +25,8 @@ _T: dict[str, tuple[str, str]] = {
     "tool_running": ("Tool running", "工具执行中"),
     "tool_omitted": ("… and {} earlier tool steps", "…另有 {} 步工具调用"),
     "tool_pending": ("🛠️ Tool use pending", "🛠️ 等待工具执行"),
+    "process_panel": ("💭 Thinking process", "💭 思考过程"),
+    "thought_rounds": ("{} thinking rounds", "思考了 {} 轮"),
     "steps": ("{} step{}", "{} 步"),
     "thought": ("Thought", "思考"),
     "thinking_panel": ("Thinking", "思考中"),
