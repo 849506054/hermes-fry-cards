@@ -322,17 +322,26 @@ class SegmentState:
         """Append final completion text once, preserving interim answer segments.
 
         ``replaced=True`` = 本轮答案被收尾闸门打回后重写（调用方从 finish_reason 判定）：
-        流式段里那段旧稿不是合法历史，用定稿整段替换，否则封卡后正文出现旧稿+定稿两段。
+        流式段里的旧稿不是合法历史，定稿落到第一个 answer 段，其余 answer 段清空，
+        否则封卡后正文出现旧稿+定稿两段。
         """
         if not text or text in self._completion_answers:
             return
         if replaced:
-            for segment in reversed(self.segments):
-                if segment.type != SegmentType.ANSWER:
-                    continue
+            # 打回重写：本轮流式出来的每一段 answer 都属于被打回的那一版，全部让位给定稿。
+            # 只替换最后一段会漏掉重写轮之前/之间的段落 —— 重写轮常常在 reasoning 或
+            # 工具之后重新起一段，旧稿段原样留在卡片上，封卡后就是旧稿+定稿两段
+            # （2026-10-30 产线：404 字旧稿段 + 236 字定稿段）。
+            _answers = [s for s in self.segments if s.type == SegmentType.ANSWER]
+            if _answers:
+                _target = _answers[0]
+                _target.text = text
+                _target.dirty = True
+                for _stale in _answers[1:]:
+                    _stale.text = ""
+                    _stale.dirty = False
+                    _stale.created = False
                 self._completion_answers.add(text)
-                segment.text = text
-                segment.dirty = True
                 return
         elif any(
             segment.type == SegmentType.ANSWER and segment.text.endswith(text)

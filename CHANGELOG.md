@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0.2] - 2026-10-30
+
+### 修复 / Fixed
+- **打回重写的旧稿残留在卡上**：`on_completion_answer(replaced=True)` 此前只替换最后一个 answer 段。
+  重写轮常在 reasoning 或工具之后重新起一段，旧稿段原样留在卡片上，封卡后正文出现旧稿与定稿两段
+  （产线实测 404 字旧稿段 + 236 字定稿段）。现由第一个 answer 段承载定稿，其余 answer 段清空，
+  一次打回只留一段正文。
+
 ## [0.6.0.1] - 2026-10-30
 
 ### 新增 / Added

@@ -375,13 +375,23 @@ class TestCompletionAnswerReplaced:
         state.on_completion_answer("重写后的定稿", replaced=True)
         assert self._answer_texts(state) == ["重写后的定稿"]
 
-    def test_interlude_preserved_last_answer_replaced(self) -> None:
+    def test_interlude_also_replaced_when_whole_turn_rewritten(self) -> None:
+        """被打回的是整轮回答：工具前后的段落都属于旧稿，定稿只留一段。"""
         state = SegmentState()
         state.on_answer_delta("先看一下配置。")
         state.on_tool_event(1)
         state.on_answer_delta("旧稿")
         state.on_completion_answer("定稿", replaced=True)
-        assert self._answer_texts(state) == ["先看一下配置。", "定稿"]
+        assert [t for t in self._answer_texts(state) if t] == ["定稿"]
+
+    def test_draft_before_rewrite_segment_is_cleared(self) -> None:
+        """产线形态：旧稿段在前，重写轮在 reasoning 之后另起一段。"""
+        state = SegmentState()
+        state.on_answer_delta("旧稿" * 100)
+        state.on_reasoning_delta("重写中")
+        state.on_answer_delta("定稿")
+        state.on_completion_answer("定稿", replaced=True)
+        assert [t for t in self._answer_texts(state) if t] == ["定稿"]
 
     def test_replaced_without_streamed_answer_appends(self) -> None:
         state = SegmentState()
