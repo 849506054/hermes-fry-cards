@@ -328,6 +328,25 @@ class SegmentState:
                     return
         self._new_reasoning(text)
 
+    def _drop_repeated_answers(self) -> None:
+        """清掉与后面某段正文完全重复的 answer 段，同一轮只留最后一段。
+
+        2026-10-31 19:38 产线：收尾语「收工。有事随时喊我。」在工具调用前后各写了一遍，
+        中间夹着 tool 段，第二遍因此起了一个新 answer 段；封卡时两段都画上去，卡上正文
+        出现两遍。旁白与最终答案不同时仍各留一段（见
+        ``test_interlude_then_final_keeps_two_segments``），只收敛「去掉首尾空白后完全相同」
+        的重复段。
+        """
+        answers = [s for s in self.segments if s.type == SegmentType.ANSWER and s.text.strip()]
+        if len(answers) < 2:
+            return
+        last_by_text = {s.text.strip(): s for s in answers}
+        for seg in answers:
+            if last_by_text.get(seg.text.strip()) is not seg:
+                seg.text = ""
+                seg.dirty = False
+                seg.created = False
+
     def on_answer_delta(self, text: str) -> None:
         """处理 answer 增量，同类型追加否则新建 segment."""
         # 完成事件已到、正文还在来 = 收尾闸门打回后的重写稿（见 __init__ 的
@@ -368,6 +387,8 @@ class SegmentState:
         """
         if not text or text in self._completion_answers:
             return
+        # 工具调用前后各写一遍同一段话：先把重复段收敛掉，再走常规接续判定。
+        self._drop_repeated_answers()
         if replaced:
             # 打回重写：本轮流式出来的每一段 answer 都属于被打回的那一版，全部让位给定稿。
             # 只替换最后一段会漏掉重写轮之前/之间的段落 —— 重写轮常常在 reasoning 或

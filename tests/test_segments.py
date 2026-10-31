@@ -323,6 +323,30 @@ class TestCompletionOverlapDedup:
         state.on_completion_answer("。完全不同的完成文本(长度足够超过阈值)")
         assert self._answer_texts(state) == ["第一段尾。", "。完全不同的完成文本(长度足够超过阈值)"]
 
+    def test_repeated_answer_after_tool_collapses_to_one(self) -> None:
+        """2026-10-31 产线：收尾语在工具调用后又写一遍 → 卡上只留一段。
+
+        两段规范化后完全相同（第二段只是多了尾部换行），属于同一段正文被画了两遍，
+        不是旁白+答案，必须收敛成一段。
+        """
+        sentence = "收工。有事随时喊我。"
+        state = SegmentState()
+        state.on_answer_delta(sentence)
+        state.on_tool_event(1)
+        state.on_answer_delta(sentence)
+        state.on_completion_answer(sentence + "\n\n")
+        assert self._answer_texts(state) == [sentence + "\n\n"]
+        assert sum(1 for s in state.segments if s.type == SegmentType.ANSWER and s.text) == 1
+
+    def test_repeated_answer_kept_when_texts_differ(self) -> None:
+        """旁白与答案不同仍各留一段（与上一条同批守护）。"""
+        state = SegmentState()
+        state.on_answer_delta("先查一下日志。")
+        state.on_tool_event(1)
+        state.on_answer_delta("查完了，结论是这样。")
+        state.on_completion_answer("查完了，结论是这样。")
+        assert self._answer_texts(state) == ["先查一下日志。", "查完了，结论是这样。"]
+
     def test_multi_answer_split_by_reasoning_merged(self) -> None:
         """场景 G：reasoning 把一轮回复切成多个 answer 段 → 合并成一段，开头不出现两遍.
 

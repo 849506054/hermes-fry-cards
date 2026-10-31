@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 变更 / Changed
 - 换卡与强制拆卡沿用工具展示开关，隐藏工具时骨架不再生成工具面板。
 
+## [0.6.1.4] - 2026-10-31
+
+**Fork release.** 同一轮里模型在工具调用前后各写一遍同一段话时，卡片上那段正文出现两遍
+（19:38 产线：10 字收尾语 + 带尾换行的同一句，两个 answer 段都画上去）。`on_completion_answer`
+在接续判定前先收敛「去掉首尾空白后完全相同」的 answer 段，只留最后一段；旁白与答案不同时仍各留
+一段（`test_interlude_then_final_keeps_two_segments` 继续守护）。
+
 ## [0.6.1.3] - 2026-10-31
 
 ### 变更 / Changed
