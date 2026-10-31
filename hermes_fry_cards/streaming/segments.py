@@ -82,12 +82,14 @@ class SegmentState:
         "_completion_answers",
         "_counter",
         "_notice_live_seq",
-        "notices",
-        "segments",
-        "max_reasoning_panels",
+        "completed_seen",
         "max_answer_segments",
+        "max_reasoning_panels",
         "notice_element_id",
         "notice_element_text",
+        "notices",
+        "rewrite_target",
+        "segments",
     )
 
     def __init__(self, max_reasoning_panels: int | None = 3, max_answer_segments: int = 8) -> None:
@@ -111,6 +113,41 @@ class SegmentState:
         # 同一个 tool_panel element_id 只占一个面板——不设上限的只有 answer，
         # 20 轮工具调用就能产生 20 个 answer 段把卡片元素推向飞书 200 硬上限。
         self.max_answer_segments = max_answer_segments
+        # 本卡是否已经收到过一次完成事件。收尾闸门打回重写时，网关先交付第一版
+        # （完成事件在此刻到达），随后同一 message 上又流入重写稿的增量；第二版
+        # 不会再触发完成事件（实测 2026-10-31 12:08：on_completed_wait 只有一次，
+        # 之后 5 秒重写稿作为第二段 answer 上卡，旧稿段留着）。所以「完成之后
+        # 还来的 answer 增量」是本轮唯一的重写信号。
+        self.completed_seen = False
+        # 重写稿落地的目标 answer 段 element_id：定下来后所有增量都写回这一段，
+        # 旧稿段清空，卡上只留一段正文。
+        self.rewrite_target: str | None = None
+
+    def mark_completed(self) -> None:
+        """记下本卡收到过完成事件，供 ``on_answer_delta`` 识别打回后的重写稿。"""
+        self.completed_seen = True
+
+    def _rewrite_into_first_answer(self, text: str) -> bool:
+        """完成之后又来的 answer 增量：并入第一个 answer 段，其余 answer 段清空.
+
+        行首增量把旧稿整段作废（``text`` 覆盖），后续增量追加在同一段上。
+        返回 False 表示本卡还没有 answer 段，交给常规新建路径。
+        """
+        answers = [s for s in self.segments if s.type == SegmentType.ANSWER]
+        if not answers:
+            return False
+        target = answers[0]
+        if self.rewrite_target is None:
+            self.rewrite_target = target.el_id
+            target.text = text
+            for stale in answers[1:]:
+                stale.text = ""
+                stale.dirty = False
+                stale.created = False
+        else:
+            target.text += text
+        target.dirty = True
+        return True
 
     def add_notice(self, text: str, kind: str = "notice") -> None:
         """记录一条状态提示（Hermes 原文），随完成态卡片一起渲染.
@@ -293,6 +330,10 @@ class SegmentState:
 
     def on_answer_delta(self, text: str) -> None:
         """处理 answer 增量，同类型追加否则新建 segment."""
+        # 完成事件已到、正文还在来 = 收尾闸门打回后的重写稿（见 __init__ 的
+        # completed_seen 注释）：写回第一个 answer 段并作废旧稿，卡上只留定稿。
+        if self.completed_seen and self._rewrite_into_first_answer(text):
+            return
         if self.segments and self.segments[-1].type == SegmentType.ANSWER:
             self.segments[-1].text += text
             self.segments[-1].dirty = True

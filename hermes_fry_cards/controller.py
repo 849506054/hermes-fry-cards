@@ -1205,6 +1205,7 @@ class StreamCardController(StreamingController):
             self._yield_to_gateway(session, reason="no_card")
             return False
 
+        session.segment_state.mark_completed()
         _logger.info(
             "on_completed_wait: msg=%s has_card=%s state=%s",
             message_id[:12],

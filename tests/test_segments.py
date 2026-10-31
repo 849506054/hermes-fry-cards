@@ -361,6 +361,44 @@ class TestCompletionOverlapDedup:
         state.on_completion_answer("完全不同的最终答案")
         assert self._answer_texts(state) == ["第一句旁白。", "第二句旁白。", "完全不同的最终答案"]
 
+class TestRewriteAfterCompletion:
+    """完成事件之后又来的正文 = 收尾闸门打回后的重写稿（2026-10-31 产线形态）。
+
+    实测：网关先交付第一版并触发 on_completed_wait，5 秒后同一 message 上又流入
+    重写稿，但不再有完成事件。旧行为把它当新段追加，卡上留下旧稿+定稿两段。
+    """
+
+    @staticmethod
+    def _answer_texts(state):
+        return [s.text for s in state.segments if s.type == SegmentType.ANSWER]
+
+    def test_rewrite_after_completion_replaces_draft(self) -> None:
+        state = SegmentState()
+        state.on_answer_delta("旧稿" * 100)
+        state.on_reasoning_delta("重写中")
+        state.mark_completed()
+        state.on_answer_delta("定稿")
+        state.on_answer_delta("续写")
+        assert [t for t in self._answer_texts(state) if t] == ["定稿续写"]
+
+    def test_rewrite_clears_interlude_answers(self) -> None:
+        state = SegmentState()
+        state.on_answer_delta("先看一下配置。")
+        state.on_tool_event(1)
+        state.on_answer_delta("旧稿")
+        state.mark_completed()
+        state.on_answer_delta("定稿")
+        assert [t for t in self._answer_texts(state) if t] == ["定稿"]
+
+    def test_answers_before_completion_still_append(self) -> None:
+        """没有完成事件的正常轮次：工具前后旁白仍各占一段，行为不变。"""
+        state = SegmentState()
+        state.on_answer_delta("先看一下配置。")
+        state.on_tool_event(1)
+        state.on_answer_delta("结论如下。")
+        assert [t for t in self._answer_texts(state) if t] == ["先看一下配置。", "结论如下。"]
+
+
 class TestCompletionAnswerReplaced:
     """收尾闸门打回重写（replaced=True）：流式段里的旧稿不是合法历史，用定稿整段替换。"""
 
