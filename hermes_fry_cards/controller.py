@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -33,6 +34,14 @@ _STALE_SWEEP_MAX_ATTEMPTS = 2
 _LIVE_CARD_MAX_CLOSE_ATTEMPTS = 3
 # 后台完成回执里命令的显示上限：超长命令行截断，卡片上只留一眼能认出的那一段。
 _BACKGROUND_COMMAND_MAX_CHARS = 40
+# 回执没有可用字段时的通用完成句：委派类完成事件（#54）四个字段全空，
+# 兜底拿到的首行是 ``[ASYNC DELEGATION BATCH COMPLETE — …]`` 这类网关内部
+# 标记，不能上屏，只能给一句通用提示。
+_BACKGROUND_FALLBACK_TEXT = "✅ 后台任务已完成"
+# 网关内部标记行的形态：方括号开头且首个标记词全大写（``[ASYNC …]``、
+# ``[BG …]``；``[IMPORTANT: …]`` 在兜底前已被拆掉）。时间戳（``[2026-10-30 …]``）
+# 以数字开头，不会误伤。
+_INTERNAL_MARKER_RE = re.compile(r"^\[\s*[A-Z][A-Z0-9_]*[\] :,]")
 
 
 def _unwrap_important_text(text: str) -> str:
@@ -44,6 +53,16 @@ def _unwrap_important_text(text: str) -> str:
             body = body[:-1].rstrip()
     first = body.splitlines()[0].strip() if body.strip() else ""
     return first or body
+
+
+def _fallback_receipt_text(text: str) -> str:
+    """``command`` 缺失时的兜底文案；首行是网关内部标记就给通用完成句."""
+    line = _unwrap_important_text(text)
+    if not line:
+        return _BACKGROUND_FALLBACK_TEXT
+    if _INTERNAL_MARKER_RE.match(line) or "BATCH COMPLETE" in line:
+        return _BACKGROUND_FALLBACK_TEXT
+    return line
 
 
 def background_completion_text(
@@ -60,13 +79,15 @@ def background_completion_text(
     (exit code 0).\\nCommand: ...\\nOutput: ...]``，那是模型侧的合成消息，直接甩给
     用户既长又看不懂。有 ``command`` 时自己拼一句：``✅ 后台任务已完成 — `命令`
     (12s)``（命令超 40 字截断加省略号，时长 = now - started_at 取整秒）；字段缺失
-    时回退到去包裹后的首行。``exit_code`` 只进日志，回执文案统一一句完成提示。
+    时回退到去包裹后的首行，但首行若是 ``[ASYNC DELEGATION BATCH COMPLETE …]``
+    这类内部标记（#54）就换成通用完成句。``exit_code`` 只进日志，回执文案统一
+    一句完成提示。
     """
     cmd = " ".join(str(command or "").split())
     if len(cmd) > _BACKGROUND_COMMAND_MAX_CHARS:
         cmd = cmd[:_BACKGROUND_COMMAND_MAX_CHARS] + "…"
     if not cmd:
-        return _unwrap_important_text(text)
+        return _fallback_receipt_text(text)
 
     elapsed_s: int | None = None
     if started_at is not None:

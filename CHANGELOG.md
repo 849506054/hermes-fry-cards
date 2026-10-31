@@ -30,6 +30,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 变更 / Changed
 - 换卡与强制拆卡沿用工具展示开关，隐藏工具时骨架不再生成工具面板。
 
+## [0.6.1] - 2026-10-31
+
+### 修复 / Fixed
+- **委派（子任务）完成回执上屏网关内部标记行**（#54）：委派类后台完成事件（`delegate_task`
+  子任务批次）走 `BG_COMPLETION` 通道时 `command` / `started_at` 等字段全空，
+  `background_completion_text` 兜底取去包裹后的首行——但委派通知不是 `[IMPORTANT: …]`
+  形态，首行仍是 `[ASYNC DELEGATION BATCH COMPLETE — …]` 内部标记，直接上屏。兜底分支
+  现识别内部标记：首行形如 `[大写标记 …]`（标记词全大写；`[2026-10-30 …]` 时间戳以数字
+  开头不命中）或含 `BATCH COMPLETE` 就不上屏，改给通用句 `✅ 后台任务已完成`；shell
+  后台任务的 `[IMPORTANT: …]` 拆包裹首行兜底照旧透传。
+
+### 测试 / Tests
+- 重建缺失的 `tools/clarify_gateway.py`：`tests/test_clarify_buttons.py` 随 0f3bf76 入库
+  但依赖的 `tools/clarify_gateway.py` 从未提交，任何新 checkout 上全量 pytest 收集即失败。
+  按 `tests/samples/` 归档的真实 Hermes 源码用法 + 插件侧 `clarify.py` 调用点反推 API 契约
+  重建（`register` / `wait_for_response` / `resolve_gateway_clarify` /
+  `get_pending_for_session` / `resolve_text_response_for_session` / `mark_awaiting_text` /
+  `clear_session` / `get_clarify_timeout` / `CANCELLED` / `SKIPPED`，及插件直接访问的
+  `_lock` / `_entries`）；模块注明为随仓参考实现，部署环境由 Hermes 自带 tools 包提供。
+  `conftest.py` 把仓库根加入 sys.path，裸 pytest 也能导入。全量 **1062 passed**，
+  ruff / mypy 零新增。
+
+---
+
 ## [0.6.0] - 2026-10-29
 
 ### 修复 / Fixed

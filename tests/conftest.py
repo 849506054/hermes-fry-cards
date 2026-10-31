@@ -8,8 +8,15 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
+
+# 仓库根入 sys.path：tests/test_clarify_buttons.py 依赖随仓的 tools 包
+# （真实部署里该模块由 Hermes 的 tools 包提供），裸 ``pytest`` 不带 CWD 时也要能导入。
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 _TMP_HOME = Path(tempfile.mkdtemp(prefix="fry-cards-tests-"))
 os.environ["HERMES_HOME"] = str(_TMP_HOME)

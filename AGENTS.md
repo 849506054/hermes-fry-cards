@@ -57,7 +57,10 @@ gateway/run.py (Hermes)
        ├─ on_background_completion (BG_COMPLETION, optional) → controller.on_background_completion() in
        │    gateway/run_notifications.py's _inject_watch_notification — watch/completion notices merge into
        │    the live card (session_key resolution) or go out as a standalone static card; True skips the
-       │    plain-text synthetic injection (#47)
+       │    plain-text synthetic injection (#47). Delegation-type completion events carry no
+       │    command/started_at fields, so background_completion_text's fallback must not render the
+       │    gateway's internal marker line ([ASYNC DELEGATION BATCH COMPLETE …], #54) — bracketed
+       │    uppercase-marker first lines fall back to the generic ✅ 后台任务已完成
        └─ on_session_compressed → controller.on_compression() (optional, seal card on context compaction)
 
 cron/scheduler.py (Hermes)

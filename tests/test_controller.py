@@ -2969,6 +2969,36 @@ class TestBackgroundCompletionText:
         line = background_completion_text("x", command="ls", started_at=200.0, now=100.0)
         assert line == "✅ 后台任务已完成 — `ls`"
 
+    def test_delegation_marker_is_replaced_with_generic_text(self) -> None:
+        """委派完成事件（#54）字段全空，兜底首行是内部标记，不上屏."""
+        text = "[ASYNC DELEGATION BATCH COMPLETE — deleg_e009913b]"
+        assert background_completion_text(text) == "✅ 后台任务已完成"
+
+    def test_batch_complete_without_bracket_is_replaced(self) -> None:
+        assert background_completion_text("3 subtasks BATCH COMPLETE") == (
+            "✅ 后台任务已完成"
+        )
+
+    def test_bracketed_marker_with_lowercase_tail_is_replaced(self) -> None:
+        """标记词大写、后缀小写（deleg_…）也要命中."""
+        assert background_completion_text("[BG_JOB] run_42 finished") == (
+            "✅ 后台任务已完成"
+        )
+
+    def test_timestamp_line_is_not_treated_as_marker(self) -> None:
+        """``[2026-10-30 …]`` 以数字开头不是标记词，照常透传首行."""
+        assert background_completion_text("[2026-10-30 09:05] done") == (
+            "[2026-10-30 09:05] done"
+        )
+
+    def test_fallback_keeps_plain_first_line(self) -> None:
+        """既有兜底行为不变：去包裹后的首行不是标记就原样上屏."""
+        text = (
+            "[IMPORTANT: Background process proc_2 completed (exit code 0).\n"
+            "Command: echo hi]"
+        )
+        assert background_completion_text(text) == "Background process proc_2 completed (exit code 0)."
+
 
 # ── _complete_header_enabled: 快回复去 header 阈值 ──────────────────────────
 def _mock_cfg(header_enabled: bool = True, min_duration: float = 0.0) -> MagicMock:
