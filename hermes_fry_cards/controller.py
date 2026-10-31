@@ -1226,6 +1226,10 @@ class StreamCardController(StreamingController):
             session.mark_failed(reason="agent_returned_error")
 
         completed = await self._complete_session_wait(session)
+        _logger.info(
+            "complete_session_wait: msg=%s completed=%s state=%s",
+            message_id[:12], completed, session.state,
+        )
         if completed:
             self._maybe_send_completion_notice(session, is_error=is_error)
         else:
@@ -1555,7 +1559,33 @@ class StreamCardController(StreamingController):
         if answer and session.segment_state:
             final_answer = strip_reasoning_tags(answer)
             if final_answer:
+                _before = [
+                    seg.text for seg in session.segment_state.segments
+                    if seg.type.value == "answer"
+                ]
                 session.segment_state.on_completion_answer(final_answer, replaced=answer_rewritten)
+                _after = [
+                    seg.text for seg in session.segment_state.segments
+                    if seg.type.value == "answer"
+                ]
+                _logger.info(
+                    "completion_answer: msg=%s replaced=%s final_len=%d answers_before=%s answers_after=%s",
+                    session.message_id[:12],
+                    answer_rewritten,
+                    len(final_answer),
+                    [len(t) for t in _before],
+                    [len(t) for t in _after],
+                )
+            else:
+                _logger.info(
+                    "completion_answer: msg=%s skipped empty_after_strip raw_len=%d",
+                    session.message_id[:12], len(answer),
+                )
+        else:
+            _logger.info(
+                "completion_answer: msg=%s skipped answer_len=%d has_state=%s",
+                session.message_id[:12], len(answer or ""), session.segment_state is not None,
+            )
 
         # duration 为 0 时 fallback 到 session 已运行时间
         _duration = duration

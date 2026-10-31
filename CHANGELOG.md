@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 变更 / Changed
 - 换卡与强制拆卡沿用工具展示开关，隐藏工具时骨架不再生成工具面板。
 
+## [0.6.1.3] - 2026-10-31
+
+### 变更 / Changed
+- **补两条完成路径诊断日志**：`completion_answer`（完成回调拿到的定稿长度、`replaced` 标志、处理前后各 answer 段长度）与
+  `complete_session_wait`（封卡是否成功、会话状态）。2026-10-31 13:52 的实测里，打回后卡上正文停在 39 字旧稿、
+  84 字定稿没有上卡，两类候选原因（定稿没进 `on_completion_answer` / 进去了但封卡未重绘）从现有日志分不开，
+  这两行一次就能定死。
+
 ## [0.6.1.2] - 2026-10-31
 
 ### 修复 / Fixed
