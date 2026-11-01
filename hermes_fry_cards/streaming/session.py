@@ -60,6 +60,7 @@ class CardSession:
         "footer",
         "guard",
         "image_resolver",
+        "last_activity",
         "message_id",
         "notice_element_count",
         "reasoning_timeline",
@@ -99,6 +100,9 @@ class CardSession:
         self.sequence = 1
         self._loop = loop
         self.created_at = time.time()
+        # 空闲判定的基准时间：每收到一次内容/事件就刷新。存活时长不能当空闲用，
+        # 长任务（十几分钟）跑在一半会被误判成死会话弃掉，卡就僵在聊天里。
+        self.last_activity = self.created_at
         self.deferred_background_review_closed = False
         self.deferred_background_reviews: list[tuple[str, Callable[[str], Any]]] = []
         self.deferred_background_review_lock = Lock()
@@ -139,6 +143,10 @@ class CardSession:
         else:
             _logger.info("session marked FAILED: msg=%s state=%s (no reason given)", self.message_id[:12], self.state)
         self.state = SessionState.FAILED
+
+    def touch(self) -> None:
+        """刷新空闲基准：会话仍在产出内容就不算闲置."""
+        self.last_activity = time.time()
 
     def active_segments(self) -> list[Segment]:
         if self.segment_state is None:

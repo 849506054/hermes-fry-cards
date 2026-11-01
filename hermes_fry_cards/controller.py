@@ -478,14 +478,20 @@ class StreamCardController(StreamingController):
         message_id: str | None,
         session_key: str | None = None,
     ) -> CardSession | None:
-        """按 message_id 解析会话；无 ID（合成轮次）时按 session_key 兜底."""
+        """按 message_id 解析会话；无 ID（合成轮次）时按 session_key 兜底.
+
+        解析成功即刷新 last_activity：所有内容入口都经此，空闲判定因此量的是
+        「多久没动静」，不是会话活了多久。
+        """
         if message_id:
             session = self._sessions.get(message_id)
             if session is not None and not session.state.is_terminal:
+                session.touch()
                 return session
         if session_key:
             session = self._session_keys.get(session_key)
             if session is not None and not session.state.is_terminal:
+                session.touch()
                 return session
         return None
 
@@ -771,6 +777,7 @@ class StreamCardController(StreamingController):
             return None
         existing = self._sessions.get(message_id)
         if existing is not None and not existing.state.is_terminal:
+            existing.touch()
             return message_id
 
         self._prune_stale_sessions()
@@ -1624,10 +1631,38 @@ class StreamCardController(StreamingController):
 
     def _prune_stale_sessions(self) -> None:
         now = time.time()
-        stale = [mid for mid, s in self._sessions.items() if mid is not None and now - s.created_at > self._session_ttl]
+        stale = [
+            mid for mid, s in self._sessions.items()
+            if mid is not None and now - s.last_activity > self._session_ttl
+        ]
         for mid in stale:
-            _logger.warning("stale_pruned: msg=%s ttl=%.0fs", mid[:12], self._session_ttl)
+            session = self._sessions.get(mid)
+            idle = now - session.last_activity if session is not None else -1
+            _logger.warning("stale_pruned: msg=%s idle=%.0fs ttl=%.0fs", mid[:12], idle, self._session_ttl)
+            if session is not None:
+                self._seal_abandoned_card(session)
             self._cleanup(mid)
+
+    def _seal_abandoned_card(self, session: CardSession) -> None:
+        """闲置回收的卡就地封口：只关流式模式，不改内容。
+
+        会话被回收后再没人更新这张卡，不封口它就永远挂着「思考中」停在半截，
+        平铺时间线上还会留一排空的正文元素（占位空格撑出的高度）。
+        """
+        card_id = session.card_id
+        loop = getattr(session, "_loop", None)
+        if not card_id or self._client is None or loop is None or loop.is_closed():
+            return
+        seq = int(getattr(session, "sequence", 0) or 0) + 1
+
+        async def _seal() -> None:
+            try:
+                await self._client.cardkit_close_streaming(card_id, sequence=seq)
+                _logger.info("delivery_closed: id=%s reason=stale_session_sealed", card_id)
+            except Exception:
+                _logger.warning("stale card seal failed: card=%s", card_id, exc_info=True)
+
+        self._fire_and_forget(_seal(), loop)
 
     @staticmethod
     def _on_bg_task_done(fut: asyncio.Future[Any] | ConcurrentFuture) -> None:

@@ -606,7 +606,15 @@ class StreamingController:
                     )
                     seg.dirty = False
             except Exception as e:
-                _logger.debug("CardKit stream element failed: %s el=%s", e, seg.el_id, exc_info=True)
+                # 正文只靠这条更新写入，失败必须可见：debug 级会把「标题有、正文空」
+                # 这类线上故障整个吞掉（agent.log 的 INFO 里看不出异常）。
+                _logger.warning(
+                    "CardKit stream element failed: msg=%s el=%s type=%s err=%s",
+                    session.message_id[:12],
+                    seg.text_el_id if seg.type == SegmentType.REASONING else seg.el_id,
+                    seg.type.value,
+                    e,
+                )
 
         # 载荷自适应降频（#46/#52）：按本 flush 实际推送量 + 最大单元素全文
         # 调整下一轮节流窗口；元素级档位优先（客户端重绘量由最大单元素决定）。

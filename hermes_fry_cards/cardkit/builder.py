@@ -1083,7 +1083,15 @@ def build_complete_card(
         elements.append(unified_panel)
 
     if not has_answer:
-        elements.append({"tag": "markdown", "content": _T["done"][0], "text_size": body_text_size})
+        # 有思考段却没有正文 = 回合在正文写出前被截断（服务重启、上游断流），
+        # 落 Done. 会被读成「回复就一个 Done」；只有真的无过程可陈时才留 Done.。
+        cut_off = bool(reasoning_rounds) or bool(tool_steps_total)
+        key = "interrupted_no_answer" if cut_off else "done"
+        en, zh = _T[key]
+        elements.append({
+            "tag": "markdown", "content": en, "i18n_content": _i18n(en, zh),
+            "text_size": body_text_size,
+        })
 
     # 进行中的提示（忙碌回执 / 重定向）落底部：正文之后、footer 之前（#43 反馈）。
     # 元素 id 接在顶部提示序号之后派生，两个区不撞 id。

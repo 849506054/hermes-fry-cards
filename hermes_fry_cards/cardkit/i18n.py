@@ -32,6 +32,12 @@ _T: dict[str, tuple[str, str]] = {
     "thinking_panel": ("Thinking", "思考中"),
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),
+    # 有思考过程却没有正文：回合被截断（服务重启、上游中断），不是「做完了没话说」。
+    # 这类卡原先落一行 Done.，用户读成「回复只有一个 Done」，实际是内容没送达。
+    "interrupted_no_answer": (
+        "This turn was cut off before the reply was written; nothing was delivered. Send the request again.",
+        "本轮在正文写出之前被打断，内容没有送达。请重新发起。",
+    ),
     # 通知区（#43）：提示渲染 Hermes 原文，不再套「💡 提示」标签（#43 反馈），
     # 下列词条仅供外部引用/排查保留。
     "notice": ("Notice", "提示"),

@@ -15,11 +15,15 @@ from ..cardkit.builder import (
     _streaming_element,
 )
 from ..cardkit.i18n import _T, _i18n
+from ..cardkit.markdown import clamp_utf8
 from .segments import Segment, SegmentType
 from .tooluse import ToolDisplayStep
 
 ELEMENT_THRESHOLD = 180  # 飞书硬上限 200，预留 20（18 给波动 + 2 footer 预留）
 FOOTER_RESERVE = 2  # footer 元素预留（hr + markdown）
+# 思考阶段建段那一刻随 add_elements 一起发出的正文首屏预算（字节）。取小值：
+# add_elements 的载荷与元素数一起算容量，首屏太长会提前撞拆卡阈值。
+_REASONING_INITIAL_BYTES = 2000
 
 
 def estimate_answer_elements(text: str) -> int:
@@ -151,6 +155,18 @@ def find_tool_split_offset(
     return None
 
 
+def _reasoning_initial_body(text: str) -> str:
+    """建段那一刻就能上屏的正文首屏（拿不到内容时留占位空格）。
+
+    正文原先只靠后续 stream 写入：会话被回收、stream 失败或卡片换到新 session 时，
+    卡上就只剩标题下面一排占位空格撑出的空洞。这里按 add_elements 的载荷预算取
+    一小段首屏，后续增量照常覆盖同一元素。
+    """
+    if not text or not text.strip():
+        return " "
+    return clamp_utf8(text, max_bytes=_REASONING_INITIAL_BYTES, preserve_tail=False) or " "
+
+
 def build_add_segment_action(
     seg: Segment, all_steps: list[ToolDisplayStep], *, text_size: str = "normal_v2",
     reasoning_timeline: bool = False,
@@ -167,12 +183,13 @@ def build_add_segment_action(
                 "params": {
                     "type": "insert_before", "target_element_id": PROCESS_ANCHOR_ELEMENT_ID,
                     "elements": _build_reasoning_stage(
-                        " ", seg.elapsed_ms, element_id=seg.el_id, text_element_id=seg.text_el_id,
+                        _reasoning_initial_body(seg.text), seg.elapsed_ms,
+                        element_id=seg.el_id, text_element_id=seg.text_el_id,
                     ),
                 },
             }
         element = _build_reasoning_panel(
-            " ", seg.elapsed_ms, expanded=True,
+            _reasoning_initial_body(seg.text), seg.elapsed_ms, expanded=True,
             element_id=seg.el_id, text_element_id=seg.text_el_id,
         )
     elif seg.type == SegmentType.ANSWER:

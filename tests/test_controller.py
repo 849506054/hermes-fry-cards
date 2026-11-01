@@ -527,6 +527,7 @@ def test_prune_stale_sessions_ignores_none_key_and_prunes_valid_key() -> None:
         session_key=None,
         card_msg_id=None,
         created_at=time.time() - ctrl._session_ttl - 1,
+        last_activity=time.time() - ctrl._session_ttl - 1,
         flush=_DummyFlush(),
         image_resolver=None,
     )
@@ -534,8 +535,10 @@ def test_prune_stale_sessions_ignores_none_key_and_prunes_valid_key() -> None:
         message_id="msg",
         anchor_id=None,
         session_key=None,
+        card_id=None,
         card_msg_id=None,
         created_at=time.time() - ctrl._session_ttl - 1,
+        last_activity=time.time() - ctrl._session_ttl - 1,
         flush=_DummyFlush(),
         image_resolver=None,
     )
@@ -547,6 +550,65 @@ def test_prune_stale_sessions_ignores_none_key_and_prunes_valid_key() -> None:
     assert ctrl._sessions[None] is stale_session  # type: ignore[index]
     assert "msg" not in ctrl._sessions
     assert valid_stale_session.flush.completed
+
+
+def test_prune_stale_sessions_keeps_active_long_running_turn() -> None:
+    """空闲判据量的是「多久没动静」：跑了很久但一直有增量的回合不被回收。"""
+    ctrl = StreamCardController()
+    busy = SimpleNamespace(
+        message_id="busy",
+        anchor_id=None,
+        session_key=None,
+        card_id=None,
+        card_msg_id=None,
+        created_at=time.time() - ctrl._session_ttl - 60,
+        last_activity=time.time() - 5,
+        flush=_DummyFlush(),
+        image_resolver=None,
+    )
+    ctrl._sessions["busy"] = busy  # type: ignore[assignment]
+
+    ctrl._prune_stale_sessions()
+
+    assert ctrl._sessions["busy"] is busy  # type: ignore[index]
+    assert not busy.flush.completed
+
+
+def test_prune_stale_sessions_seals_abandoned_card() -> None:
+    """被回收的会话带活卡时，封口动作必须被排出去，否则卡永远挂在「思考中」。"""
+    sealed: list = []
+    ctrl = StreamCardController()
+    stale = SimpleNamespace(
+        message_id="stale",
+        anchor_id=None,
+        session_key=None,
+        card_id="card-1",
+        card_msg_id=None,
+        sequence=7,
+        created_at=time.time() - ctrl._session_ttl - 1,
+        last_activity=time.time() - ctrl._session_ttl - 1,
+        flush=_DummyFlush(),
+        image_resolver=None,
+    )
+    ctrl._sessions["stale"] = stale  # type: ignore[assignment]
+    ctrl._seal_abandoned_card = lambda session: sealed.append(  # type: ignore[assignment]
+        (session.card_id, session.sequence)
+    )
+
+    ctrl._prune_stale_sessions()
+
+    assert sealed == [("card-1", 7)]
+    assert "stale" not in ctrl._sessions
+
+
+def test_seal_abandoned_card_tolerates_missing_loop_and_sequence() -> None:
+    """封口对拿不到事件循环或序号的会话直接跳过，不抛异常拖垮回收。"""
+    ctrl = StreamCardController()
+    ctrl._client = object()  # type: ignore[assignment]
+    no_loop = SimpleNamespace(card_id="card-2", flush=_DummyFlush())
+    ctrl._seal_abandoned_card(no_loop)  # type: ignore[arg-type]
+    no_seq = SimpleNamespace(card_id="card-3", _loop=asyncio.new_event_loop(), flush=_DummyFlush())
+    ctrl._seal_abandoned_card(no_seq)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
