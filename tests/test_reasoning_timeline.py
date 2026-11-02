@@ -43,10 +43,11 @@ def stages(count=4):
     return state
 
 
-def test_streaming_outer_is_expanded_and_has_no_tool_panel():
+def test_streaming_outer_is_collapsed_and_has_no_tool_panel():
+    """流式思考外框与工具面板同形态：一行标题、默认不展开（用户拍板 2026-11-02）。"""
     card = build_streaming_card_v2(show_reasoning=True, show_tool_use=False)
     panel = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
-    assert panel["expanded"] is True
+    assert panel["expanded"] is False
     assert not any(n.get("element_id", "").startswith("tool_panel") for n in nodes(card))
 
 

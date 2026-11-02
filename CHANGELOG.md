@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.1] - 2026-11-02
+
+### 变更 / Changed
+- **流式思考外框默认不展开**：思考时间线外框改为与工具面板同形态——一行标题原地显示、默认收起，
+  想读细节点开即可；封卡后的统一面板仍按 `panel_expanded`（默认收起）。阶段插入与耗时刷新
+  路径不变，收起只改可见状态，不改变框内元素结构。
+
+### 合并 / Merged
+- 跟版上游 v0.6.2：#55 群聊非管理员工具隔离（新增 `TOOL_GATING` 注入点，升级需
+  `uninstall` + `install` 重注入）、#56 完成态诊断日志补全树递归元素数。
+
 ## [0.6.0.2] - 2026-10-30
 
 ### 修复 / Fixed

@@ -823,9 +823,9 @@ def build_streaming_tool_use_pending_panel() -> dict[str, Any]:
 
 
 def build_streaming_process_pending_panel() -> dict[str, Any]:
-    """展开的思考时间线；阶段按到达顺序插到内部锚点前。"""
+    """收起的思考时间线外框（与工具面板同形态：一行标题、默认不展开）。"""
     panel = _collapsible_panel(
-        expanded=True,
+        expanded=False,
         title_el={
             "tag": "plain_text",
             "content": _T["process_panel"][0],
