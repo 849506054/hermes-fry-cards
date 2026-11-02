@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.2] - 2026-11-02
+
+### 变更 / Changed
+- **思考外框标题带段数**：与工具面板「工具执行中 · 4 步」对齐，外框标题为「💭 思考中 · N 段」，
+  每落一段思考就刷新一次，收起状态下也能看出进度。用「段」不用「轮」：聊天语境里的「轮」
+  指一次消息往来，而这里数的是同一回复内被工具切开的思考阶段；封卡摘要同步改为
+  「思考了 N 段 · 耗时 Xs」。
+
 ## [0.6.2.1] - 2026-11-02
 
 ### 变更 / Changed

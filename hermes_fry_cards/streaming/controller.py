@@ -47,6 +47,7 @@ from .segment_helper import (
     ELEMENT_THRESHOLD,
     FOOTER_RESERVE,
     build_add_segment_action,
+    build_process_panel_header_action,
     build_reasoning_finalized_action,
     build_tool_update_action,
     estimate_answer_elements,
@@ -461,6 +462,11 @@ class StreamingController:
                         seg, all_steps, text_size=self._cfg.body_text_size,
                         reasoning_timeline=session.reasoning_timeline,
                     ))
+                    if session.reasoning_timeline and seg.type == SegmentType.REASONING:
+                        # 外框标题随阶段落地刷新轮数（与工具面板「工具执行中 · 4 步」同形态）
+                        actions.append(build_process_panel_header_action(
+                            sum(1 for s in segments[:i + 1] if s.type == SegmentType.REASONING)
+                        ))
                 if (
                     seg.type == SegmentType.TOOL
                     and i + 1 < len(segments)

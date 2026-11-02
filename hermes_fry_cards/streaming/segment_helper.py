@@ -8,6 +8,7 @@ from ..cardkit.builder import (
     _LOADING_ELEMENT_ID,
     MAX_TOOL_PANEL_STEPS,
     PROCESS_ANCHOR_ELEMENT_ID,
+    PROCESS_PANEL_ELEMENT_ID,
     _build_reasoning_panel,
     _build_reasoning_stage,
     _build_tool_panel,
@@ -207,6 +208,37 @@ def build_add_segment_action(
             "type": "insert_before",
             "target_element_id": target_element_id,
             "elements": [element],
+        },
+    }
+
+
+def build_process_panel_header_action(rounds: int) -> dict[str, Any]:
+    """刷新思考外框标题的轮数。
+
+    与工具面板同形态：一行「工具执行中 · 4 步」对应一行「💭 思考中 · 3 段」，
+    段数随阶段落地增长，收起状态下也能看出进度。
+    """
+    en, zh = _T["thinking_running"]
+    if rounds > 0:
+        tpl_en, tpl_zh = _T["stages_short"]
+        en = f"{en} · {tpl_en.format(rounds, 's' if rounds > 1 else '')}"
+        zh = f"{zh} · {tpl_zh.format(rounds)}"
+    content = en
+    return {
+        "action": "partial_update_element",
+        "params": {
+            "element_id": PROCESS_PANEL_ELEMENT_ID,
+            "partial_element": {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": content,
+                        "i18n_content": _i18n(content, zh),
+                        "text_color": "grey",
+                        "text_size": "notation",
+                    },
+                },
+            },
         },
     }
 

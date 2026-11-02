@@ -26,10 +26,12 @@ _T: dict[str, tuple[str, str]] = {
     "tool_omitted": ("… and {} earlier tool steps", "…另有 {} 步工具调用"),
     "tool_pending": ("🛠️ Tool use pending", "🛠️ 等待工具执行"),
     "process_panel": ("💭 Thinking process", "💭 思考过程"),
-    "thought_rounds": ("{} thinking rounds", "思考了 {} 轮"),
+    "thought_rounds": ("{} thinking stages", "思考了 {} 段"),
     "steps": ("{} step{}", "{} 步"),
+    "stages_short": ("{} stage{}", "{} 段"),
     "thought": ("Thought", "思考"),
     "thinking_panel": ("Thinking", "思考中"),
+    "thinking_running": ("💭 Thinking", "💭 思考中"),
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),
     # 有思考过程却没有正文：回合被截断（服务重启、上游中断），不是「做完了没话说」。

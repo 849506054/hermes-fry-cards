@@ -16,6 +16,7 @@ from hermes_fry_cards.controller import StreamCardController
 from hermes_fry_cards.feishu import FeishuClient
 from hermes_fry_cards.streaming.segment_helper import (
     build_add_segment_action,
+    build_process_panel_header_action,
     build_reasoning_finalized_action,
 )
 from hermes_fry_cards.streaming.segments import SegmentState
@@ -51,6 +52,23 @@ def test_streaming_outer_is_collapsed_and_has_no_tool_panel():
     assert not any(n.get("element_id", "").startswith("tool_panel") for n in nodes(card))
 
 
+def test_streaming_outer_title_starts_without_round_count():
+    card = build_streaming_card_v2(show_reasoning=True, show_tool_use=False)
+    panel = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
+    assert panel["header"]["title"]["content"] == "💭 Thinking"
+    assert panel["header"]["title"]["i18n_content"]["zh_cn"] == "💭 思考中"
+
+
+def test_process_panel_header_tracks_round_count():
+    """标题形态对齐工具面板：「工具执行中 · 4 步」→「💭 思考中 · 3 段」。"""
+    action = build_process_panel_header_action(3)
+    assert action["action"] == "partial_update_element"
+    assert action["params"]["element_id"] == PROCESS_PANEL_ELEMENT_ID
+    title = action["params"]["partial_element"]["header"]["title"]
+    assert title["content"] == "💭 Thinking · 3 stages"
+    assert title["i18n_content"]["zh_cn"] == "💭 思考中 · 3 段"
+
+
 def test_stage_completion_leaves_user_expansion_state_unchanged():
     seg = stages(1).segments[0]
     partial = build_reasoning_finalized_action(seg, reasoning_timeline=True)["params"]["partial_element"]
@@ -77,7 +95,7 @@ def test_reasoning_survives_hidden_tools_and_keeps_chronological_order(duration)
     # 封卡后只留一行轮数摘要，逐步标题、耗时与正文都不进卡
     assert len(outer["elements"]) == 1
     assert outer["elements"][0]["tag"] == "markdown"
-    assert "思考了 4 轮" in outer["elements"][0]["content"]
+    assert "思考了 4 段" in outer["elements"][0]["content"]
     assert "验证用阶段" not in json.dumps(outer, ensure_ascii=False)
     assert not any(n.get("element_id", "").startswith("tool_panel") for n in nodes(card))
     assert "验证用最终正文" in json.dumps(card, ensure_ascii=False)
@@ -108,7 +126,7 @@ def test_sealed_summary_counts_all_rounds(tmp_path):
     )
     outer = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
     assert len(outer["elements"]) == 1
-    assert "思考了 57 轮" in outer["elements"][0]["content"]
+    assert "思考了 57 段" in outer["elements"][0]["content"]
 
 
 def test_many_rounds_keep_distinct_timeline_segments():

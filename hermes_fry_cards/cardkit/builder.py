@@ -828,8 +828,8 @@ def build_streaming_process_pending_panel() -> dict[str, Any]:
         expanded=False,
         title_el={
             "tag": "plain_text",
-            "content": _T["process_panel"][0],
-            "i18n_content": _t("process_panel"),
+            "content": _T["thinking_running"][0],
+            "i18n_content": _t("thinking_running"),
             "text_color": "grey",
             "text_size": "notation",
         },
@@ -1028,7 +1028,7 @@ def build_complete_card(
                         expanded=panel_expanded, text_element_id=text_el_id,
                     ))
                 else:
-                    # 封卡后只留一行「思考了 N 轮 · 耗时 Xs」，逐步内容与耗时都不进卡。
+                    # 封卡后只留一行「思考了 N 段 · 耗时 Xs」，逐步内容与耗时都不进卡。
                     unified_children.extend(_build_reasoning_summary(reasoning_rounds))
                     break
             elif entry["kind"] == "tools":
