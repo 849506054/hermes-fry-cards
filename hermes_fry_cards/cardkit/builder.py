@@ -72,14 +72,12 @@ def _display_model(name: str) -> str:
     return name
 
 
-def _collapsible_panel(
-    *,
-    expanded: bool,
-    title_el: dict,
-    elements: list[dict],
-    vertical_spacing: str = "4px",
-    icon_position: str = "right",
-) -> dict:
+def _panel_header(title_el: dict, *, icon_position: str = "right") -> dict:
+    """折叠面板 header 的完整结构。
+
+    ``partial_update_element`` 传 header 时飞书按整块替换：只给 title 会把右侧的
+    展开箭头一并抹掉（卡片上标题还在、箭头没了）。所以每次更新标题都带上 icon 五件套。
+    """
     icon_el = {
         "tag": "standard_icon",
         "token": "down-small-ccm_outlined",
@@ -88,15 +86,26 @@ def _collapsible_panel(
     if icon_position == "right":
         icon_el["color"] = "grey"
     return {
+        "title": title_el,
+        "vertical_align": "center",
+        "icon": icon_el,
+        "icon_position": icon_position,
+        "icon_expanded_angle": -180,
+    }
+
+
+def _collapsible_panel(
+    *,
+    expanded: bool,
+    title_el: dict,
+    elements: list[dict],
+    vertical_spacing: str = "4px",
+    icon_position: str = "right",
+) -> dict:
+    return {
         "tag": "collapsible_panel",
         "expanded": expanded,
-        "header": {
-            "title": title_el,
-            "vertical_align": "center",
-            "icon": icon_el,
-            "icon_position": icon_position,
-            "icon_expanded_angle": -180,
-        },
+        "header": _panel_header(title_el, icon_position=icon_position),
         "border": {"color": "grey", "corner_radius": "5px"},
         "vertical_spacing": vertical_spacing,
         "padding": "8px 8px 8px 8px",

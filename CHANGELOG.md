@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.3] - 2026-11-02
+
+### 修复 / Fixed
+- **思考外框刷新标题后展开箭头消失**：`partial_update_element` 传 `header` 时飞书按整块替换，
+  只给 title 就把右侧箭头一起抹掉了。header 结构提成 `_panel_header()`，`_collapsible_panel()`
+  与两处标题刷新共用同一份，工具面板与思考外框不再各写一套。
+
 ## [0.6.2.2] - 2026-11-02
 
 ### 变更 / Changed

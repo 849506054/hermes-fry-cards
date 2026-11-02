@@ -9,6 +9,7 @@ from ..cardkit.builder import (
     MAX_TOOL_PANEL_STEPS,
     PROCESS_ANCHOR_ELEMENT_ID,
     PROCESS_PANEL_ELEMENT_ID,
+    _panel_header,
     _build_reasoning_panel,
     _build_reasoning_stage,
     _build_tool_panel,
@@ -229,15 +230,13 @@ def build_process_panel_header_action(rounds: int) -> dict[str, Any]:
         "params": {
             "element_id": PROCESS_PANEL_ELEMENT_ID,
             "partial_element": {
-                "header": {
-                    "title": {
-                        "tag": "plain_text",
-                        "content": content,
-                        "i18n_content": _i18n(content, zh),
-                        "text_color": "grey",
-                        "text_size": "notation",
-                    },
-                },
+                "header": _panel_header({
+                    "tag": "plain_text",
+                    "content": content,
+                    "i18n_content": _i18n(content, zh),
+                    "text_color": "grey",
+                    "text_size": "notation",
+                }),
             },
         },
     }
@@ -262,15 +261,14 @@ def build_reasoning_finalized_action(seg: Segment, *, reasoning_timeline: bool =
         "params": {
             "element_id": seg.el_id,
             "partial_element": {
-                "header": {
-                    "title": {
-                        "tag": "plain_text",
-                        "content": f"💭 {en_label}",
-                        "i18n_content": _i18n(f"💭 {en_label}", f"💭 {zh_label}"),
-                        "text_color": "grey",
-                        "text_size": "notation",
-                    },
-                },
+                # 整块替换，必须带全 header，否则收尾后展开箭头消失
+                "header": _panel_header({
+                    "tag": "plain_text",
+                    "content": f"💭 {en_label}",
+                    "i18n_content": _i18n(f"💭 {en_label}", f"💭 {zh_label}"),
+                    "text_color": "grey",
+                    "text_size": "notation",
+                }),
             },
         },
     }

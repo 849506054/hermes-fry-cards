@@ -64,9 +64,14 @@ def test_process_panel_header_tracks_round_count():
     action = build_process_panel_header_action(3)
     assert action["action"] == "partial_update_element"
     assert action["params"]["element_id"] == PROCESS_PANEL_ELEMENT_ID
-    title = action["params"]["partial_element"]["header"]["title"]
+    header = action["params"]["partial_element"]["header"]
+    title = header["title"]
     assert title["content"] == "💭 Thinking · 3 stages"
     assert title["i18n_content"]["zh_cn"] == "💭 思考中 · 3 段"
+    # 飞书按整块替换 header：少给 icon 展开箭头就没了（与工具面板同一套结构）
+    assert header["icon"]["token"] == "down-small-ccm_outlined"
+    assert header["icon_position"] == "right"
+    assert header["icon_expanded_angle"] == -180
 
 
 def test_stage_completion_leaves_user_expansion_state_unchanged():
