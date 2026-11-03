@@ -16,7 +16,7 @@ def process_panel(card):
 
 def test_native_fold_control_uses_bottom_right_header():
     panel = process_panel(build_streaming_card_v2(show_reasoning=True, show_tool_use=False))
-    assert panel["expanded"] is False
+    assert panel["expanded"] is True
     assert panel["elements"][-1]["element_id"] == PROCESS_ANCHOR_ELEMENT_ID
     assert panel["header"]["position"] == "bottom"
     assert panel["header"]["icon_position"] == "right"

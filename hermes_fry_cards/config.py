@@ -177,6 +177,15 @@ class Config:
         return bool(sec.get("panel_expanded", False))
 
     @property
+    def process_expanded(self) -> bool:
+        """运行中过程框建卡时是否展开.
+
+        走 ``_reload()`` 按文件 mtime 读取，改配置后下一张卡即按新值建，不必重启网关。
+        """
+        sec = self._reload().get("streaming") or {}
+        return bool(sec.get("process_expanded", True)) if isinstance(sec, dict) else True
+
+    @property
     def content_lang(self) -> str:
         """内容层提示语文案语言（markdown 正文内嵌的表格转换/截断提示）.
 

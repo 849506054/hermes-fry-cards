@@ -215,6 +215,7 @@ class StreamingController:
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
                 notice=notice_text,
+                process_expanded=self._cfg.process_expanded,
             )
             card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -1107,6 +1108,7 @@ class StreamingController:
                 text_size=self._cfg.body_text_size,
                 width_mode=self._cfg.width_mode,
                 notice=notice_text,
+                process_expanded=self._cfg.process_expanded,
             )
             new_card_id = await self._client.cardkit_create(card)
             if session.synthetic:

@@ -56,6 +56,7 @@ window.FryI18n = (function () {
 
     "legend.panel": ["统一面板（header 字段自由组合）", "Unified Panel (header fields, free combination)"],
     "lbl.panel-expanded": ["完成态面板保持展开", "Keep completed panel expanded"],
+    "lbl.process-expanded": ["运行中过程框保持展开", "Keep streaming process frame expanded"],
     "lbl.show-reasoning": ["展示推理过程", "Show reasoning"],
     "lbl.show-tool-use": ["展示工具调用面板", "Show tool-use panel"],
     "lbl.show-context": ["面板 header 显示上下文", "Show context in panel header"],

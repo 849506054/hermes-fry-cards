@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.9] - 2026-11-03
+
+### 新增 / Added
+
+- `streaming.process_expanded`：运行中过程框建卡时是否展开，默认 true，跟原设计一致。该键走按 mtime 读取的配置路径，改完 config.yaml 后下一张卡即生效，不用重启网关；已建好的卡不受影响。
+- Studio 统一面板分组新增对应勾选项。
+
 ## [0.6.2.8] - 2026-11-03
 
 ### 变更 / Changed

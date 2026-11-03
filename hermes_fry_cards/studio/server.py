@@ -230,6 +230,7 @@ _STREAMING_SCALARS: dict[str, str] = {
     "content_lang": "lang",
     "chat_types": "chat_types",
     "panel_expanded": "bool",
+    "process_expanded": "bool",
     "width_mode": "width",
     "flush_interval_ms": "flushms",
 }
@@ -756,6 +757,7 @@ def collect_state(home: Path | None = None) -> dict[str, Any]:
         "content_lang": cfg.content_lang,
         "chat_types": sorted(chat) if chat is not None else None,
         "panel_expanded": cfg.panel_expanded,
+        "process_expanded": cfg.process_expanded,
         "completion_notice": cfg.completion_notice,
         "completion_notice_text": cfg.completion_notice_text,
         "width_mode": cfg.width_mode,
@@ -981,6 +983,7 @@ def build_preview(payload: Any, home: Path | None = None) -> dict[str, Any]:
             header_enabled=common["header_enabled"],
             text_size=common["body_text_size"],
             width_mode=common["width_mode"],
+            process_expanded=bool(sv.get("process_expanded", True)),
         )
     else:
         card = build_complete_card(

@@ -38,7 +38,7 @@ def assert_header(header, reasoning, tools, *, streaming=True):
 def test_initial_native_headers(reasoning, tools):
     card = build_streaming_card_v2(show_reasoning=reasoning, show_tool_use=tools)
     for panel in panels(card):
-        assert not panel['expanded']
+        assert panel['expanded']
         assert_header(panel['header'], 0, 0)
     assert 'callback' not in json.dumps(card)
     assert 'process_collapse' not in json.dumps(card)

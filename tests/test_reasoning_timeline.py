@@ -44,11 +44,11 @@ def stages(count=4):
     return state
 
 
-def test_streaming_outer_is_collapsed_and_has_no_tool_panel():
-    """流式思考外框与工具面板同形态：一行标题、默认不展开（用户拍板 2026-11-02）。"""
+def test_streaming_outer_keeps_original_expanded_default():
+    """流式思考外框回到原设计：默认展开，标题仍只占一行（streaming.process_expanded 控制）。"""
     card = build_streaming_card_v2(show_reasoning=True, show_tool_use=False)
     panel = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
-    assert panel["expanded"] is False
+    assert panel["expanded"] is True
     assert not any(n.get("element_id", "").startswith("tool_panel") for n in nodes(card))
 
 

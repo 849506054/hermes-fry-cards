@@ -232,6 +232,7 @@
     setCheck("f-enabled", s.enabled);
     setVal("f-width", s.width_mode);
     setCheck("f-panel-expanded", s.panel_expanded);
+    setCheck("f-process-expanded", s.process_expanded);
     setVal("f-panel-text-size", d.panel_text_size);
     setCheck("f-completion-notice", s.completion_notice);
     setVal("f-completion-notice-text", s.completion_notice_text);
@@ -333,6 +334,7 @@
         content_lang: $("#f-content-lang").value,
         chat_types: chatTypes,
         panel_expanded: $("#f-panel-expanded").checked,
+        process_expanded: $("#f-process-expanded").checked,
         completion_notice: $("#f-completion-notice").checked,
         completion_notice_text: $("#f-completion-notice-text").value,
         width_mode: $("#f-width").value,

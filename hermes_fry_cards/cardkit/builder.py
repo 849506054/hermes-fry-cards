@@ -840,16 +840,16 @@ def _context_progress_with_text(used: int, total: int, width: int = 8) -> str:
     return f"{used}/{total} [{bar}] {pct:.0f}%"
 
 
-def build_streaming_tool_use_pending_panel() -> dict[str, Any]:
-    panel = _collapsible_panel(expanded=False, title_el=_process_title(), elements=[])
+def build_streaming_tool_use_pending_panel(*, expanded: bool = True) -> dict[str, Any]:
+    panel = _collapsible_panel(expanded=expanded, title_el=_process_title(), elements=[])
     panel["element_id"] = TOOL_PANEL_ELEMENT_ID
     return panel
 
 
-def build_streaming_process_pending_panel() -> dict[str, Any]:
+def build_streaming_process_pending_panel(*, expanded: bool = True) -> dict[str, Any]:
     """Native bottom header controls the complete reasoning timeline."""
     panel = _collapsible_panel(
-        expanded=False, title_el=_process_title(),
+        expanded=expanded, title_el=_process_title(),
         elements=[{"tag": "markdown", "content": " ", "element_id": PROCESS_ANCHOR_ELEMENT_ID,
                    "text_size": "notation"}],
     )
@@ -868,15 +868,19 @@ def build_streaming_card_v2(
     text_size: str = "normal_v2",
     width_mode: str = "default",
     notice: str | None = None,
+    process_expanded: bool = True,
 ) -> dict[str, Any]:
-    """CardKit 2.0 流式占位卡片 — 工具面板合并到底部."""
+    """CardKit 2.0 流式占位卡片 — 工具面板合并到底部.
+
+    ``process_expanded`` 决定过程框建卡时是否展开，取自配置 ``streaming.process_expanded``。
+    """
     elements: list[dict] = []
 
     if show_streaming_element:
         elements.append(_streaming_element(text_size=text_size))
 
     if show_reasoning:
-        elements.append(build_streaming_process_pending_panel())
+        elements.append(build_streaming_process_pending_panel(expanded=process_expanded))
 
     # 工具面板放在底部（answer之后，loading之前）
     if show_tool_use:
@@ -885,7 +889,7 @@ def build_streaming_card_v2(
             panel["header"] = _panel_header(_process_title(0, len(tool_steps)))
             elements.append(panel)
         else:
-            elements.append(build_streaming_tool_use_pending_panel())
+            elements.append(build_streaming_tool_use_pending_panel(expanded=process_expanded))
 
     if notice:
         # 通知区：流式态只显示最新一条（Hermes 原文），落卡片底部（loading 之前），
