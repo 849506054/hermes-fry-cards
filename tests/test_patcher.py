@@ -26,6 +26,7 @@ from hermes_fry_cards.patcher import (
     Patcher,
     PatcherError,
     _answer_hook,
+    _clarify_hook,
     _complete_hook,
     _cron_deliver_hook,
     _followup_complete_hook,
@@ -301,6 +302,46 @@ class TestVerify:
         )
         with pytest.raises(PatcherError, match="abort anchor"):
             _patcher(p).verify_target()
+
+
+class TestGeneratedClarifyHook:
+    @pytest.mark.parametrize("batched", [True, False])
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_callback_contract_and_lifecycle(self, batched, raises, caplog):
+        """Forward the core callback contract unchanged and always resume on exit."""
+        questions = [{"qid": "q1", "question": "Choose", "choices": ["A", "B"],
+                      "multi_select": True},
+                     {"qid": "q2", "question": "Details", "choices": [],
+                      "multi_select": False}]
+        result = {"answers": {"q1": "A, B", "q2": "detail"}, "outcome": "submitted"}
+        calls = []
+
+        def callback(*args, **kwargs):
+            calls.append((args, kwargs))
+            if raises:
+                raise RuntimeError("callback failed")
+            return result
+
+        agent = SimpleNamespace(clarify_callback=callback)
+        ctx = SimpleNamespace(event_message_id="msg", _status_chat_id="chat", session_key="sk")
+        namespace = {"agent": agent, "ctx": ctx}
+        with patch("hermes_fry_cards.patch.on_clarify_enter") as enter, \
+                patch("hermes_fry_cards.patch.on_clarify_exit") as leave:
+            exec(compile(_clarify_hook(""), "<clarify-hook>", "exec"), namespace)
+            args, kwargs = ((questions,), {}) if batched else (("Choose", ["A", "B"]), {"multi_select": True})
+            with caplog.at_level(logging.INFO, logger="hermes_fry_cards"):
+                if raises:
+                    with pytest.raises(RuntimeError, match="callback failed"):
+                        agent.clarify_callback(*args, **kwargs)
+                else:
+                    assert agent.clarify_callback(*args, **kwargs) is result
+            assert calls == [(args, kwargs)]
+            if batched:
+                assert calls[0][0][0] is questions
+            expected = dict(message_id="msg", chat_id="chat", session_key="sk")
+            enter.assert_called_once_with(**expected)
+            leave.assert_called_once_with(**expected)
+            assert "clarify_callback: msg=msg" in caplog.text
 
 
 class TestGeneratedAnswerHook:

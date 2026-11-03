@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -179,7 +180,7 @@ class TestClickHandling:
             loop=None,
         )
         t.join(timeout=10)
-        assert box.get("r") == "X, Z"
+        assert json.loads(box["r"]) == ["X", "Z"]
 
     def test_other_flips_to_text_capture(self):
         inst = FakeAdapter()
@@ -366,6 +367,43 @@ class TestApplyPatch:
         # A failed optional import is cached and does not repeat on later clicks.
         assert clarify._get_callback_toast(inst) is None
         assert imports == [clarify._TOAST_MODULE]
+
+    @pytest.mark.parametrize("action", ["toggle", "other", "choose"])
+    def test_callback_classes_load_after_patch_application(self, action, caplog):
+        """Mirror the adapter import phase where SDK callback names are still None."""
+        class Target(FakeAdapter):
+            _on_card_action_trigger = staticmethod(lambda data: "original")
+
+        clarify.apply_patch(
+            Target, SendResult=object, CallBackCard=None, P2CardActionTriggerResponse=None,
+        )
+        assert Target._hl_CallBackCard is None
+        assert Target._hl_P2CardActionTriggerResponse is None
+        inst = Target()
+        cid = f"lazy-{action}"
+        _register(cid, ["A", "B"], multi=action == "toggle")
+        with caplog.at_level("INFO", logger="hermes_fry_cards"):
+            response = inst._hl_handle_clarify(
+                event=_event(),
+                action_value={"hermes_clarify_action": action, "clarify_id": cid, "idx": 0},
+                loop=None,
+            )
+        assert isinstance(response, P2CardActionTriggerResponse)
+        assert isinstance(response.card, CallBackCard)
+        assert isinstance(response.card.data, dict)
+        assert "callback_sdk_loaded" in caplog.text
+        assert inst._hl_CallBackCard is CallBackCard
+        assert inst._hl_P2CardActionTriggerResponse is P2CardActionTriggerResponse
+        if action == "toggle":
+            buttons = [b for e in response.card.data["elements"] if e.get("tag") == "action"
+                       for b in e["actions"]]
+            assert buttons[0]["type"] == "primary"
+            assert any(b["value"]["hermes_clarify_action"] == "submit" for b in buttons)
+        elif action == "other":
+            assert any(e.get("tag") == "form" for e in response.card.data["elements"])
+        else:
+            assert response.card.data["header"]["template"] == "green"
+        cg.clear_session(f"sk-{cid}")
 
     def test_none_class_returns_false(self):
         assert clarify.apply_patch(None, SendResult=object) is False

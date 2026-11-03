@@ -277,8 +277,21 @@ async def send_clarify(
 
 
 def _empty_trigger_response(self: Any) -> Any:
-    P2 = self._hl_P2CardActionTriggerResponse
-    return P2() if P2 else None
+    # Hermes binds SDK names when connecting; patch installation can precede it.
+    if (getattr(self, "_hl_P2CardActionTriggerResponse", None) is None
+            or getattr(self, "_hl_CallBackCard", None) is None):
+        from lark_oapi.event.callback.model.p2_card_action_trigger import (
+            CallBackCard,
+            P2CardActionTriggerResponse,
+        )
+
+        if getattr(self, "_hl_P2CardActionTriggerResponse", None) is None:
+            self._hl_P2CardActionTriggerResponse = P2CardActionTriggerResponse
+        if getattr(self, "_hl_CallBackCard", None) is None:
+            self._hl_CallBackCard = CallBackCard
+        _logger.info("callback_sdk_loaded: response=%s card=%s",
+                     self._hl_P2CardActionTriggerResponse.__name__, self._hl_CallBackCard.__name__)
+    return self._hl_P2CardActionTriggerResponse()
 
 
 def _callback_card(
@@ -431,6 +444,7 @@ def handle_clarify_card_action(
 
     # Single-select "choose" or multi-select "submit" → resolve the wait.
     resolved_text: Optional[str] = None
+    response_value: str | None = None
     if action == "choose":
         try:
             idx = int(action_value.get("idx"))
@@ -443,11 +457,14 @@ def handle_clarify_card_action(
         if not picked:
             return _empty_trigger_response(self)
         resolved_text = ", ".join(picked)
+        response_value = json.dumps(picked, ensure_ascii=False)
     if resolved_text is None:
         return _empty_trigger_response(self)
 
     try:
-        resolved = _cg.resolve_gateway_clarify(clarify_id, resolved_text)
+        resolved = _cg.resolve_gateway_clarify(
+            clarify_id, response_value if response_value is not None else resolved_text,
+        )
     except Exception:
         _logger.warning("[fry-cards] resolve_gateway_clarify failed for %s", clarify_id, exc_info=True)
         resolved = False
