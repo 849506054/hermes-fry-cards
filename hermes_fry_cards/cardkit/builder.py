@@ -88,10 +88,18 @@ def _panel_header(title_el: dict, *, icon_position: str = "right") -> dict:
     return {
         "title": title_el,
         "vertical_align": "center",
+        "position": "bottom",
         "icon": icon_el,
         "icon_position": icon_position,
         "icon_expanded_angle": -180,
     }
+
+
+def _process_title(reasoning_count: int = 0, tool_count: int = 0) -> dict:
+    en = _T["reasoning_count"][0].format(reasoning_count) + " · " + _T["tool_count"][0].format(tool_count)
+    zh = _T["reasoning_count"][1].format(reasoning_count) + " · " + _T["tool_count"][1].format(tool_count)
+    return {"tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh),
+            "text_color": "grey", "text_size": "notation"}
 
 
 def _collapsible_panel(
@@ -540,13 +548,10 @@ def _render_panel_field(
             return v, v
         return None, None
     if name == "reasoning":
-        if reasoning_count > 0:
-            return f"💭{reasoning_count}", f"💭{reasoning_count}"
-        return None, None
+        return (_T["reasoning_count"][0].format(reasoning_count),
+                _T["reasoning_count"][1].format(reasoning_count))
     if name == "tools":
-        if tool_count > 0:
-            return f"🔧{tool_count}", f"🔧{tool_count}"
-        return None, None
+        return (_T["tool_count"][0].format(tool_count), _T["tool_count"][1].format(tool_count))
     if name == "elapsed":
         if panel_elapsed_ms > 0:
             v = f"⏱️ {_format_elapsed(panel_elapsed_ms)}"
@@ -584,6 +589,7 @@ def _build_panel_header(
     """组装统一面板 header 文本，返回 (en, zh)。无效/缺数据字段自动隐藏."""
     if not fields:
         fields = list(_PANEL_DEFAULT_FIELDS)
+    fields = list(dict.fromkeys([*fields, "reasoning", "tools"]))
     en_parts: list[str] = []
     zh_parts: list[str] = []
     for name in fields:
@@ -816,40 +822,17 @@ def _context_progress_with_text(used: int, total: int, width: int = 8) -> str:
 
 
 def build_streaming_tool_use_pending_panel() -> dict[str, Any]:
-    panel = _collapsible_panel(
-        expanded=False,
-        title_el={
-            "tag": "plain_text",
-            "content": _T["tool_pending"][0],
-            "i18n_content": _t("tool_pending"),
-            "text_color": "grey",
-            "text_size": "notation",
-        },
-        elements=[],
-    )
+    panel = _collapsible_panel(expanded=False, title_el=_process_title(), elements=[])
     panel["element_id"] = TOOL_PANEL_ELEMENT_ID
     return panel
 
 
 def build_streaming_process_pending_panel() -> dict[str, Any]:
-    """收起的思考时间线外框（与工具面板同形态：一行标题、默认不展开）。"""
+    """Native bottom header controls the complete reasoning timeline."""
     panel = _collapsible_panel(
-        expanded=False,
-        title_el={
-            "tag": "plain_text",
-            "content": _T["thinking_running"][0],
-            "i18n_content": _t("thinking_running"),
-            "text_color": "grey",
-            "text_size": "notation",
-        },
-        elements=[
-            {
-                "tag": "markdown",
-                "content": " ",
-                "element_id": PROCESS_ANCHOR_ELEMENT_ID,
-                "text_size": "notation",
-            }
-        ],
+        expanded=False, title_el=_process_title(),
+        elements=[{"tag": "markdown", "content": " ", "element_id": PROCESS_ANCHOR_ELEMENT_ID,
+                   "text_size": "notation"}],
     )
     panel["element_id"] = PROCESS_PANEL_ELEMENT_ID
     return panel
@@ -879,7 +862,9 @@ def build_streaming_card_v2(
     # 工具面板放在底部（answer之后，loading之前）
     if show_tool_use:
         if tool_steps:
-            elements.append(_build_tool_panel(tool_steps, elapsed_ms, running=True))
+            panel = _build_tool_panel(tool_steps, elapsed_ms, running=True, expanded=False)
+            panel["header"] = _panel_header(_process_title(0, len(tool_steps)))
+            elements.append(panel)
         else:
             elements.append(build_streaming_tool_use_pending_panel())
 
@@ -926,6 +911,7 @@ def build_complete_card(
     footer_data: dict | None = None,
     is_error: bool = False,
     is_aborted: bool = False,
+    is_continuation: bool = False,
     footer_fields: list[list[str]] | None = None,
     footer_show_label: bool = True,
     footer_enabled: bool = True,
@@ -936,6 +922,9 @@ def build_complete_card(
     header_enabled: bool = False,
     body_text_size: str = "normal_v2",
     show_tool_use: bool = True,
+    show_reasoning: bool = True,
+    reasoning_count: int | None = None,
+    tool_count: int | None = None,
     width_mode: str = "default",
     notices: list[str] | None = None,
     progress_notices: list[str] | None = None,
@@ -959,9 +948,15 @@ def build_complete_card(
     # 终态据此交错渲染（不再「先所有思考、再所有工具」两堆堆叠）。
     timeline: list[dict] = []
 
+    if reasoning_count is None:
+        reasoning_count = sum(s.type == SegmentType.REASONING and bool(s.text) for s in segments)
+    if tool_count is None:
+        tool_count = len({i for s in segments if s.type == SegmentType.TOOL
+                          for i in range(s.tool_offset, min(s.tool_end_offset or len(all_tool_steps),
+                                                            len(all_tool_steps)))})
     for seg in segments:
         if seg.type == SegmentType.REASONING:
-            if seg.text:
+            if show_reasoning and seg.text:
                 # 尾部窗口钳制（#52）：与流式 reasoning 同一预算。完成态整卡重建把
                 # 全文再发一遍，28KB 级 reasoning 叠加正文会越过 ~30KB 卡片 JSON 上限；
                 # 钳制后完成态与流式期观感也保持一致（同一份头部摘要+尾部结论）。
@@ -1005,9 +1000,10 @@ def build_complete_card(
         _min_duration_ms = float(Config().unified_panel_min_duration) * 1000
     except Exception:
         _min_duration_ms = 5000
-    _show_unified_panel = bool(tool_steps_total) or (
-        bool(reasoning_rounds)
-        and (not show_tool_use or _panel_duration_ms >= _min_duration_ms)
+    _show_unified_panel = (show_reasoning or show_tool_use) and (
+        bool(tool_count) or (
+            bool(reasoning_count) and (not show_tool_use or _panel_duration_ms >= _min_duration_ms)
+        )
     )
     if _show_unified_panel:
         # 状态边框颜色：完成=绿色, 中断=黄色, 异常=红色
@@ -1067,8 +1063,8 @@ def build_complete_card(
         header_en, header_zh = _build_panel_header(
             panel_fields,
             footer_data or {},
-            reasoning_count=len(reasoning_rounds),
-            tool_count=len(tool_steps_total),
+            reasoning_count=reasoning_count,
+            tool_count=tool_count,
             panel_elapsed_ms=panel_elapsed_ms,
             show_context=_panel_cfg.show_context,
             context_mode=_panel_cfg.context_display_mode,
@@ -1079,11 +1075,10 @@ def build_complete_card(
             "element_id": UNIFIED_PANEL_ELEMENT_ID,
             "expanded": panel_expanded,
             "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": header_en,
+                **_panel_header({
+                    "tag": "plain_text", "content": header_en,
                     "i18n_content": _i18n(header_en, header_zh),
-                },
+                }),
                 "text_color": "grey", "text_size": panel_text_size,
             },
             "border": {"color": border_color, "corner_radius": "5px"},
@@ -1095,7 +1090,7 @@ def build_complete_card(
         # 有思考段却没有正文 = 回合在正文写出前被截断（服务重启、上游断流），
         # 落 Done. 会被读成「回复就一个 Done」；只有真的无过程可陈时才留 Done.。
         cut_off = bool(reasoning_rounds) or bool(tool_steps_total)
-        key = "interrupted_no_answer" if cut_off else "done"
+        key = "continued" if is_continuation else ("interrupted_no_answer" if cut_off else "done")
         en, zh = _T[key]
         elements.append({
             "tag": "markdown", "content": en, "i18n_content": _i18n(en, zh),
@@ -1120,7 +1115,7 @@ def build_complete_card(
 
     summary_text = ""
     for seg in reversed(segments):
-        if seg.type in (SegmentType.ANSWER, SegmentType.REASONING) and seg.text:
+        if seg.text and (seg.type == SegmentType.ANSWER or (show_reasoning and seg.type == SegmentType.REASONING)):
             summary_text = seg.text
             break
     summary = summary_text[:120].replace("\n", " ").replace("```", "").strip()

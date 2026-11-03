@@ -22,6 +22,7 @@ from .feishu import (
     FeishuClientConfig,
 )
 from .streaming.controller import StreamingController
+from .streaming.segments import SegmentType
 from .streaming.session import CardSession, SessionState
 from .streaming.text import strip_reasoning_tags
 from .streaming.unavailable_guard import extract_api_code, is_terminal_api_code
@@ -861,13 +862,10 @@ class StreamCardController(StreamingController):
         session = self._resolve_session(message_id, session_key)
         if session is None or session.guard.should_skip("on_reasoning"):
             return False
-        if not self._cfg.show_reasoning:
-            return False
-
         if session.segment_state is None:
             return False
 
-        session.segment_state.on_reasoning_delta(text)
+        session.segment_state.on_reasoning_delta(text, visible=self._cfg.show_reasoning)
         self._schedule_flush(session)
         return True
 
@@ -1213,6 +1211,8 @@ class StreamCardController(StreamingController):
             return False
 
         session.segment_state.mark_completed()
+        session.flush.mark_completed()
+        await session.flush.wait_for_flush()
         _logger.info(
             "on_completed_wait: msg=%s has_card=%s state=%s",
             message_id[:12],
@@ -1228,6 +1228,7 @@ class StreamCardController(StreamingController):
             tokens=tokens,
             context=context,
             answer_rewritten=answer_rewritten,
+            preserve_partial=is_error,
         )
         if is_error:
             session.mark_failed(reason="agent_returned_error")
@@ -1562,36 +1563,30 @@ class StreamCardController(StreamingController):
         tokens: dict | None,
         context: dict | None,
         answer_rewritten: bool = False,
+        preserve_partial: bool = False,
     ) -> None:
-        if answer and session.segment_state:
-            final_answer = strip_reasoning_tags(answer)
-            if final_answer:
-                _before = [
-                    seg.text for seg in session.segment_state.segments
-                    if seg.type.value == "answer"
-                ]
-                session.segment_state.on_completion_answer(final_answer, replaced=answer_rewritten)
-                _after = [
-                    seg.text for seg in session.segment_state.segments
-                    if seg.type.value == "answer"
-                ]
-                _logger.info(
-                    "completion_answer: msg=%s replaced=%s final_len=%d answers_before=%s answers_after=%s",
-                    session.message_id[:12],
-                    answer_rewritten,
-                    len(final_answer),
-                    [len(t) for t in _before],
-                    [len(t) for t in _after],
+        if session.segment_state is not None:
+            final_answer = strip_reasoning_tags(answer or "")
+            if not final_answer.strip():
+                final_answer = ""
+            before = [
+                seg.text for seg in session.segment_state.segments
+                if seg.type == SegmentType.ANSWER
+            ]
+            if final_answer or not preserve_partial:
+                session.segment_state.on_completion_answer(
+                    final_answer, replaced=answer_rewritten, start_index=session.split_index,
                 )
-            else:
-                _logger.info(
-                    "completion_answer: msg=%s skipped empty_after_strip raw_len=%d",
-                    session.message_id[:12], len(answer),
-                )
-        else:
+            after = [
+                seg.text for seg in session.segment_state.segments
+                if seg.type == SegmentType.ANSWER
+            ]
             _logger.info(
-                "completion_answer: msg=%s skipped answer_len=%d has_state=%s",
-                session.message_id[:12], len(answer or ""), session.segment_state is not None,
+                "completion_answer: msg=%s mode=final_only replaced=%s "
+                "final_len=%d answers_before=%s answers_after=%s partial=%s",
+                session.message_id[:12], answer_rewritten, len(final_answer),
+                [len(t) for t in before], [len(t) for t in after],
+                preserve_partial and not final_answer,
             )
 
         # duration 为 0 时 fallback 到 session 已运行时间

@@ -63,6 +63,8 @@ class CardSession:
         "last_activity",
         "message_id",
         "notice_element_count",
+        "process_count_base",
+        "process_header_counts",
         "reasoning_timeline",
         "segment_state",
         "sequence",
@@ -124,12 +126,15 @@ class CardSession:
         self.clarify_pending_split: bool = False
         self.tool_panel_created: bool = False
         self.reasoning_timeline: bool = False
+        self.process_header_counts: tuple[int, int] = (0, 0)
+        self.process_count_base: tuple[int, int] = (0, 0)
 
     @property
     def has_card(self) -> bool:
         return bool(self.card_id or self.card_msg_id)
 
     def set_card(self, *, card_id: str, card_msg_id: str) -> None:
+        self.process_header_counts = (0, 0)
         self.card_id = card_id
         self.card_msg_id = card_msg_id
 
@@ -147,6 +152,13 @@ class CardSession:
     def touch(self) -> None:
         """刷新空闲基准：会话仍在产出内容就不算闲置."""
         self.last_activity = time.time()
+
+    @property
+    def process_counts(self) -> tuple[int, int]:
+        return (
+            self.process_count_base[0] + (self.segment_state.reasoning_count if self.segment_state else 0),
+            self.process_count_base[1] + len(self.tool_use.build_display_steps()),
+        )
 
     def active_segments(self) -> list[Segment]:
         if self.segment_state is None:

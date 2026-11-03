@@ -1086,9 +1086,9 @@ class TestAwaitedCompletion:
             ) is True
 
         answers = [
-            seg.text for seg in session.segment_state.segments if seg.type == "answer"
+            seg.text for seg in session.segment_state.segments if seg.type == "answer" and seg.text
         ]
-        assert answers == ["先检查它是否安装", "现在安装并验证", "最终结果：已成功安装并通过验证。"]
+        assert answers == ["最终结果：已成功安装并通过验证。"]
 
     @pytest.mark.asyncio
     async def test_streamed_final_answer_is_not_duplicated(self) -> None:
@@ -1108,7 +1108,7 @@ class TestAwaitedCompletion:
             ) is True
 
         assert [seg.text for seg in session.segment_state.segments] == [
-            "此前文本。最终结果：已完成。"
+            "最终结果：已完成。"
         ]
 
     @pytest.mark.asyncio
@@ -1195,7 +1195,7 @@ class TestAwaitedCompletion:
                 ) is True
 
         assert [seg.text for seg in session.segment_state.segments] == [
-            "interim", "final answer"
+            "final answer"
         ]
 
     @pytest.mark.asyncio
@@ -1791,7 +1791,8 @@ class TestDoFlush:
         assert await ctrl._do_split_card(session, 5, [], set(), {}, []) is True
 
         contents = [element["content"] for element in sealed_cards[0]["body"]["elements"]]
-        assert contents == ["page content 2", "page content 3", "page content 4"]
+        assert contents == ["This turn continues in the next card."]
+        assert "page content" not in str(sealed_cards[0])
         assert sealed_cards[0]["config"]["width_mode"] == "compact"
         next_card = ctrl._client.cardkit_create.await_args.args[0]
         assert next_card["config"]["width_mode"] == "compact"
@@ -2104,7 +2105,8 @@ class TestDoFlush:
 
         await ctrl._do_flush(session)
 
-        partials = [a for a in batch_calls[0] if a["action"] == "partial_update_element"]
+        partials = [a for a in batch_calls[0] if a["action"] == "partial_update_element"
+                    and a["params"]["element_id"] == session.segment_state.segments[0].el_id]
         assert len(partials) == 1
         assert "2.5s" in partials[0]["params"]["partial_element"]["header"]["title"]["content"]
 
@@ -2263,6 +2265,7 @@ class TestDoFlush:
         s3.segment_state.on_reasoning_delta("t")
         s3.segment_state.segments[0].created = True
         s3.segment_state.segments[0].dirty = False
+        s3.process_header_counts = (1, 0)
         ctrl._sessions["m3"] = s3
         await ctrl._do_flush(s3)
 

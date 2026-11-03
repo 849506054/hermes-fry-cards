@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.6.2.6] - 2026-11-03
+
+### 变更 / Changed
+
+- 思考与工具框采用底部原生标题栏，右侧箭头由飞书客户端控制展开和收起。
+- 两种模式同时显示全轮思考段数和工具调用步数，明细遵循各自显示开关；初始、流式更新、换卡和封卡共享计数。
+- 思考计数独立于面板数量上限；隐藏思考仅累计计数。移除自定义收起按钮、回调与排队状态。
+
+## [0.6.2.5] - 2026-11-03
+
+### 修复 / Fixed
+- **封卡正文使用完整定稿**：完成事件覆盖全部正文预览，定稿作为当前卡片唯一正文。
+  流式预览独立更新，思考与工具过程保留既有展示；换卡封存过程，完整定稿落在最后一张卡。
+  成功但正文为空时清空旁白，中断或错误缺少定稿时保留部分正文。
+  完成前等在途写入结束，完成后的迟到增量保持定稿不变。
+
+## [0.6.2.4] - 2026-11-03
+
+### 新增 / Added
+- **思考外框底部「收起」入口**：时间线外框内容末尾追加 text 按钮「收起」，点击后经现有
+  clarify 回调路由进 panel_actions，按 open_chat_id + open_message_id 精确定位被点卡片，
+  并入该卡 flush 写入者的 sequence 单发 `expanded:false`；重复点击合并，换卡/封卡/回收时
+  结束待处理请求，过期卡给 toast 提示。
+
 ## [0.6.2.3] - 2026-11-02
 
 ### 修复 / Fixed

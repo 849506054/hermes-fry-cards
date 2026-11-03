@@ -12,11 +12,6 @@ class SegmentType(StrEnum):
     TOOL = "tool"
 
 
-# 判定「流式段尾与完成文本开头重叠」所需的最小重叠长度：低于此值多为偶然同字，
-# 按新段追加（保留工具间旁白语义）；落后流式的真实重叠通常达数百字。
-_MIN_OVERLAP_TAIL = 8
-
-
 class Segment:
     """单个内容段 — reasoning / answer / tool."""
 
@@ -79,8 +74,8 @@ class SegmentState:
     """
 
     __slots__ = (
-        "_completion_answers",
         "_counter",
+        "_last_content_kind",
         "_notice_live_seq",
         "completed_seen",
         "max_answer_segments",
@@ -88,13 +83,12 @@ class SegmentState:
         "notice_element_id",
         "notice_element_text",
         "notices",
-        "rewrite_target",
+        "reasoning_count",
         "segments",
     )
 
     def __init__(self, max_reasoning_panels: int | None = 3, max_answer_segments: int = 8) -> None:
         self._counter = 0
-        self._completion_answers: set[str] = set()
         self.segments: list[Segment] = []
         self.notices: list[NotificationSlot] = []
         # 建卡时画进卡片、可被首段正文原地接管的提示元素（#issue：提示元素未被正文覆盖）。
@@ -113,41 +107,14 @@ class SegmentState:
         # 同一个 tool_panel element_id 只占一个面板——不设上限的只有 answer，
         # 20 轮工具调用就能产生 20 个 answer 段把卡片元素推向飞书 200 硬上限。
         self.max_answer_segments = max_answer_segments
-        # 本卡是否已经收到过一次完成事件。收尾闸门打回重写时，网关先交付第一版
-        # （完成事件在此刻到达），随后同一 message 上又流入重写稿的增量；第二版
-        # 不会再触发完成事件（实测 2026-10-31 12:08：on_completed_wait 只有一次，
-        # 之后 5 秒重写稿作为第二段 answer 上卡，旧稿段留着）。所以「完成之后
-        # 还来的 answer 增量」是本轮唯一的重写信号。
+        # 完成事件确定本轮正文；后续增量保持预览期边界。
         self.completed_seen = False
-        # 重写稿落地的目标 answer 段 element_id：定下来后所有增量都写回这一段，
-        # 旧稿段清空，卡上只留一段正文。
-        self.rewrite_target: str | None = None
+        self.reasoning_count = 0
+        self._last_content_kind = None
 
     def mark_completed(self) -> None:
-        """记下本卡收到过完成事件，供 ``on_answer_delta`` 识别打回后的重写稿。"""
+        """结束本轮预览，后续正文由完成事件更新。"""
         self.completed_seen = True
-
-    def _rewrite_into_first_answer(self, text: str) -> bool:
-        """完成之后又来的 answer 增量：并入第一个 answer 段，其余 answer 段清空.
-
-        行首增量把旧稿整段作废（``text`` 覆盖），后续增量追加在同一段上。
-        返回 False 表示本卡还没有 answer 段，交给常规新建路径。
-        """
-        answers = [s for s in self.segments if s.type == SegmentType.ANSWER]
-        if not answers:
-            return False
-        target = answers[0]
-        if self.rewrite_target is None:
-            self.rewrite_target = target.el_id
-            target.text = text
-            for stale in answers[1:]:
-                stale.text = ""
-                stale.dirty = False
-                stale.created = False
-        else:
-            target.text += text
-        target.dirty = True
-        return True
 
     def add_notice(self, text: str, kind: str = "notice") -> None:
         """记录一条状态提示（Hermes 原文），随完成态卡片一起渲染.
@@ -310,8 +277,15 @@ class SegmentState:
                 seg.elapsed_ms = (now - seg.start_time) * 1000
                 break
 
-    def on_reasoning_delta(self, text: str) -> None:
-        """处理 reasoning 增量，同类型追加否则新建 segment."""
+    def on_reasoning_delta(self, text: str, *, visible: bool = True) -> None:
+        """Count logical reasoning stages independently of rendered panel limits."""
+        if not text or self.completed_seen:
+            return
+        if self._last_content_kind != SegmentType.REASONING:
+            self.reasoning_count += 1
+        self._last_content_kind = SegmentType.REASONING
+        if not visible:
+            return
         if self.segments and self.segments[-1].type == SegmentType.REASONING:
             self.segments[-1].text += text
             self.segments[-1].dirty = True
@@ -328,31 +302,11 @@ class SegmentState:
                     return
         self._new_reasoning(text)
 
-    def _drop_repeated_answers(self) -> None:
-        """清掉与后面某段正文完全重复的 answer 段，同一轮只留最后一段。
-
-        2026-10-31 19:38 产线：收尾语「收工。有事随时喊我。」在工具调用前后各写了一遍，
-        中间夹着 tool 段，第二遍因此起了一个新 answer 段；封卡时两段都画上去，卡上正文
-        出现两遍。旁白与最终答案不同时仍各留一段（见
-        ``test_interlude_then_final_keeps_two_segments``），只收敛「去掉首尾空白后完全相同」
-        的重复段。
-        """
-        answers = [s for s in self.segments if s.type == SegmentType.ANSWER and s.text.strip()]
-        if len(answers) < 2:
-            return
-        last_by_text = {s.text.strip(): s for s in answers}
-        for seg in answers:
-            if last_by_text.get(seg.text.strip()) is not seg:
-                seg.text = ""
-                seg.dirty = False
-                seg.created = False
-
     def on_answer_delta(self, text: str) -> None:
         """处理 answer 增量，同类型追加否则新建 segment."""
-        # 完成事件已到、正文还在来 = 收尾闸门打回后的重写稿（见 __init__ 的
-        # completed_seen 注释）：写回第一个 answer 段并作废旧稿，卡上只留定稿。
-        if self.completed_seen and self._rewrite_into_first_answer(text):
+        if self.completed_seen or not text:
             return
+        self._last_content_kind = SegmentType.ANSWER
         if self.segments and self.segments[-1].type == SegmentType.ANSWER:
             self.segments[-1].text += text
             self.segments[-1].dirty = True
@@ -378,85 +332,36 @@ class SegmentState:
             return
         self._new_answer(text)
 
-    def on_completion_answer(self, text: str, *, replaced: bool = False) -> None:
-        """Append final completion text once, preserving interim answer segments.
+    def on_completion_answer(
+        self, text: str, *, replaced: bool = False, start_index: int = 0,
+    ) -> None:
+        """Use the complete answer as the sole body on the active card.
 
-        ``replaced=True`` = 本轮答案被收尾闸门打回后重写（调用方从 finish_reason 判定）：
-        流式段里的旧稿不是合法历史，定稿落到第一个 answer 段，其余 answer 段清空，
-        否则封卡后正文出现旧稿+定稿两段。
+        ``start_index`` locates the current card after a rollover. Segment objects
+        retain their positions so reasoning/tool ranges and split indices stay stable.
+        ``replaced`` remains accepted for hook compatibility; every final replaces.
         """
-        if not text or text in self._completion_answers:
-            return
-        # 工具调用前后各写一遍同一段话：先把重复段收敛掉，再走常规接续判定。
-        self._drop_repeated_answers()
-        if replaced:
-            # 打回重写：本轮流式出来的每一段 answer 都属于被打回的那一版，全部让位给定稿。
-            # 只替换最后一段会漏掉重写轮之前/之间的段落 —— 重写轮常常在 reasoning 或
-            # 工具之后重新起一段，旧稿段原样留在卡片上，封卡后就是旧稿+定稿两段
-            # （2026-10-30 产线：404 字旧稿段 + 236 字定稿段）。
-            _answers = [s for s in self.segments if s.type == SegmentType.ANSWER]
-            if _answers:
-                _target = _answers[0]
-                _target.text = text
-                _target.dirty = True
-                for _stale in _answers[1:]:
-                    _stale.text = ""
-                    _stale.dirty = False
-                    _stale.created = False
-                self._completion_answers.add(text)
-                return
-        elif any(
-            segment.type == SegmentType.ANSWER and segment.text.endswith(text)
-            for segment in self.segments
-        ):
-            self._completion_answers.add(text)
-            return
-
-        # 流式落后（卡片只推到答案前缀就收尾）时，完成文本就是同一段答案的完整版本：
-        # 与已有 ANSWER 段去重叠后原地接上，而不是再追加一段（否则封卡后正文出现两遍）。
-        #
-        # 多段合并：reasoning / tool 会把一轮回复切成多个 answer 段，而 final_response 是
-        # 全文。旧实现只跟「最后一个」answer 段去重，前面的段仍留着被 final 覆盖的开头，
-        # 封卡后开头（表格+正文）出现两遍。判据用「按序拼接的段文本是 final 的子序列」：
-        # 流式前缀可能缺行（表格分隔行还没推到）而非严格前缀，子序列容得下这种差异。
-        _answer_segs = [s for s in self.segments if s.type == SegmentType.ANSWER and s.text]
-        if len(_answer_segs) >= 2:
-            _joined = "".join(s.text for s in _answer_segs)
-            _it = iter(text)
-            if all(_ch in _it for _ch in _joined):
-                _first, *_rest = _answer_segs
-                _first.text = text
-                _first.dirty = True
-                for _stale in _rest:
-                    _stale.text = ""
-                    _stale.dirty = False
-                    _stale.created = False
-                self._completion_answers.add(text)
-                return
-
-        for segment in reversed(self.segments):
+        self.mark_completed()
+        target = None
+        for index, segment in enumerate(self.segments):
             if segment.type != SegmentType.ANSWER:
                 continue
-            if text.startswith(segment.text):
-                self._completion_answers.add(text)
-                segment.text = text
-                segment.dirty = True
-                return
-            for overlap in range(len(segment.text), _MIN_OVERLAP_TAIL - 1, -1):
-                if segment.text.endswith(text[:overlap]):
-                    self._completion_answers.add(text)
-                    segment.text = segment.text[:-overlap] + text
-                    segment.dirty = True
-                    return
-            break
-
-        self._completion_answers.add(text)
-        self._new_answer(text)
+            segment.text = ""
+            segment.dirty = False
+            if index >= start_index:
+                target = segment
+        if text:
+            if target is None:
+                target = self._new_answer(text)
+            else:
+                target.text = text
+                target.dirty = True
 
     def on_tool_event(self, tool_step_count: int) -> None:
         """处理工具调用事件，同类型标记 dirty 否则新建 segment 并终结前序 tool segment."""
         if tool_step_count <= 0:
             return
+        self._last_content_kind = SegmentType.TOOL
         if self.segments and self.segments[-1].type == SegmentType.TOOL:
             self.segments[-1].dirty = True
             return

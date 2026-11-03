@@ -474,7 +474,7 @@ def handle_clarify_card_action(
 
 
 def _on_card_action_trigger_patched(self: Any, data: Any) -> Any:
-    """Wrap the adapter's card-action router; intercept clarify buttons."""
+    """Route clarify buttons through the existing callback hook."""
     try:
         event = getattr(data, "event", None)
         action = getattr(event, "action", None)

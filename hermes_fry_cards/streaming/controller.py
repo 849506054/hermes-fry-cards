@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from ..cardkit.builder import (
     LOADING_ELEMENT_ID,
     NOTICE_ELEMENT_ID,
+    PROCESS_PANEL_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
     build_background_card,
     build_complete_card,
@@ -158,18 +159,20 @@ class StreamingController:
         reasoning = split.get("reasoning_text")
         answer = split.get("answer_text")
 
-        if reasoning and self._cfg.show_reasoning:
-            segment_state.on_reasoning_delta(reasoning)
+        if reasoning:
+            segment_state.on_reasoning_delta(reasoning, visible=self._cfg.show_reasoning)
         if answer:
             segment_state.on_answer_delta(answer)
-        if not (reasoning and self._cfg.show_reasoning) and not answer:
+        if not reasoning and not answer:
             return False
         self._schedule_flush(session)
         return True
 
     def _skeleton_element_count(self, session: CardSession) -> int:
-        """沿用面板/header 的保守预算；时间线外框和锚点共四格。"""
-        return 5 if session.reasoning_timeline else 1
+        """Budget for the native timeline frame and insertion anchor."""
+        if session.reasoning_timeline:
+            return 5
+        return 1
 
     def _timeline_byte_estimate(self, segments: list[Segment]) -> int:
         """为完成卡预留 JSON 开销，按各段实际 UTF-8 窗口估算。"""
@@ -346,7 +349,10 @@ class StreamingController:
 
             # show_tool_use=False: 流式态跳过所有 TOOL segment 处理
             # （新建与 dirty 更新两条路径），只保留 reasoning/answer
-            if seg.type == SegmentType.TOOL and not self._cfg.show_tool_use:
+            if (
+                (seg.type == SegmentType.TOOL and not self._cfg.show_tool_use)
+                or (seg.type == SegmentType.REASONING and not self._cfg.show_reasoning)
+            ):
                 if not seg.created:
                     seg.created = True  # 防止 next flush 再次进入 not created 分支
                 seg.dirty = False
@@ -462,11 +468,6 @@ class StreamingController:
                         seg, all_steps, text_size=self._cfg.body_text_size,
                         reasoning_timeline=session.reasoning_timeline,
                     ))
-                    if session.reasoning_timeline and seg.type == SegmentType.REASONING:
-                        # 外框标题随阶段落地刷新轮数（与工具面板「工具执行中 · 4 步」同形态）
-                        actions.append(build_process_panel_header_action(
-                            sum(1 for s in segments[:i + 1] if s.type == SegmentType.REASONING)
-                        ))
                 if (
                     seg.type == SegmentType.TOOL
                     and i + 1 < len(segments)
@@ -546,12 +547,33 @@ class StreamingController:
                     seg.created = True
                     seg.dirty = False
 
+        counts = session.process_counts
+        for element_id, visible in (
+            (PROCESS_PANEL_ELEMENT_ID, self._cfg.show_reasoning),
+            (TOOL_PANEL_ELEMENT_ID, self._cfg.show_tool_use),
+        ):
+            if not visible:
+                continue
+            header_action = build_process_panel_header_action(*counts, element_id=element_id)
+            existing = [a for a in actions if a.get("params", {}).get("element_id") == element_id
+                        and "header" in a.get("params", {}).get("partial_element", {})]
+            for action in existing:
+                action["params"]["partial_element"]["header"] = header_action["params"]["partial_element"]["header"]
+            if not existing and counts != session.process_header_counts:
+                actions.append(header_action)
         if actions:
+            _logger.info(
+                "process counters: msg=%s reasoning=%s tools=%s show_reasoning=%s show_tools=%s",
+                session.message_id[:12], *counts,
+                self._cfg.show_reasoning, self._cfg.show_tool_use,
+            )
             payload_bytes += len(json.dumps(actions, ensure_ascii=False, default=str))
             if not await self._do_batch_update(
                 session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,
             ):
                 return
+
+        session.process_header_counts = counts
 
         # ── 步骤 1.5: 通知槽位同步 — 流式期到达的提示（含后台回执）当场可见 ──
         # 提示只进 notices 不会自己上屏：建卡之后才到的回执必须补一次元素更新，
@@ -626,6 +648,7 @@ class StreamingController:
         # 载荷自适应降频（#46/#52）：按本 flush 实际推送量 + 最大单元素全文
         # 调整下一轮节流窗口；元素级档位优先（客户端重绘量由最大单元素决定）。
         session.flush.adapt_payload_size(payload_bytes, max_element_bytes=max_element_bytes)
+        # A click arriving during a write is handled before releasing the writer.
 
     async def _sync_notice_slot(self, session: CardSession, segment_state: SegmentState) -> int:
         """把最新一条提示画到卡片通知槽，返回本次推送的载荷字节数.
@@ -1010,16 +1033,13 @@ class StreamingController:
         old_card_id = card_id or session.card_id
         if not old_card_id:
             return
-        if session.image_resolver:
-            await _resolve_answer_images(
-                seal_segments,
-                session.image_resolver,
-                log_prefix="CardKit seal",
-            )
+        # 中途换卡只封存过程；完整回答由最后一张卡承载。
+        seal_segments = [s for s in seal_segments if s.type != SegmentType.ANSWER]
         all_steps = session.tool_use.build_display_steps()
         seal_card = build_complete_card(
             segments=seal_segments,
             all_tool_steps=all_steps,
+            is_continuation=True,
             footer_data=session.footer,
             footer_fields=[],
             footer_show_label=False,
@@ -1030,6 +1050,9 @@ class StreamingController:
             header_enabled=False,
             body_text_size=self._cfg.body_text_size,
             show_tool_use=self._cfg.show_tool_use,
+            show_reasoning=self._cfg.show_reasoning,
+            reasoning_count=session.process_counts[0],
+            tool_count=session.process_counts[1],
             width_mode=self._cfg.width_mode,
         )
         try:
@@ -1072,9 +1095,7 @@ class StreamingController:
         assert self._client is not None
         try:
             # 换卡沿用工具展示开关；隐藏的工具段只保留内部阶段边界。
-            need_tool_panel = self._cfg.show_tool_use and (
-                session.tool_panel_created or any(s.type == SegmentType.TOOL for s in session.active_segments())
-            )
+            need_tool_panel = self._cfg.show_tool_use
             notice_text = _latest_notice(session)
             self._configure_reasoning_timeline(session)
             card = build_streaming_card_v2(
@@ -1219,7 +1240,8 @@ class StreamingController:
                 sequence=old_seq,
             )
 
-            # 重置内容，新卡承载 clarify 后的输出
+            # Retain full-turn counters while starting a fresh detail range.
+            session.process_count_base = session.process_counts
             session.segment_state = SegmentState(max_reasoning_panels=self._cfg.max_reasoning_panels)
             self._configure_reasoning_timeline(session)
             session.split_index = 0
@@ -1285,7 +1307,6 @@ class StreamingController:
 
         await session.flush.wait_for_flush()
         session.flush.mark_completed()
-
         segment_state = session.segment_state
         is_error = session.state == SessionState.FAILED
         is_aborted = session.state == SessionState.ABORTED
@@ -1328,6 +1349,9 @@ class StreamingController:
             header_enabled=self._complete_header_enabled(session, all_tool_steps),
             body_text_size=self._cfg.body_text_size,
             show_tool_use=self._cfg.show_tool_use,
+            show_reasoning=self._cfg.show_reasoning,
+            reasoning_count=session.process_counts[0],
+            tool_count=session.process_counts[1],
             width_mode=self._cfg.width_mode,
             notices=top_notices,
             progress_notices=progress_notices,

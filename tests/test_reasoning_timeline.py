@@ -52,11 +52,11 @@ def test_streaming_outer_is_collapsed_and_has_no_tool_panel():
     assert not any(n.get("element_id", "").startswith("tool_panel") for n in nodes(card))
 
 
-def test_streaming_outer_title_starts_without_round_count():
+def test_streaming_outer_title_starts_with_both_zero_counts():
     card = build_streaming_card_v2(show_reasoning=True, show_tool_use=False)
     panel = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
-    assert panel["header"]["title"]["content"] == "💭 Thinking"
-    assert panel["header"]["title"]["i18n_content"]["zh_cn"] == "💭 思考中"
+    assert panel["header"]["title"]["content"] == "💭 Thinking 0 stages · 🔧 Tools 0 steps"
+    assert panel["header"]["title"]["i18n_content"]["zh_cn"] == "💭 思考 0 段 · 🔧 工具 0 步"
 
 
 def test_process_panel_header_tracks_round_count():
@@ -66,8 +66,8 @@ def test_process_panel_header_tracks_round_count():
     assert action["params"]["element_id"] == PROCESS_PANEL_ELEMENT_ID
     header = action["params"]["partial_element"]["header"]
     title = header["title"]
-    assert title["content"] == "💭 Thinking · 3 stages"
-    assert title["i18n_content"]["zh_cn"] == "💭 思考中 · 3 段"
+    assert title["content"] == "💭 Thinking 3 stages · 🔧 Tools 0 steps"
+    assert title["i18n_content"]["zh_cn"] == "💭 思考 3 段 · 🔧 工具 0 步"
     # 飞书按整块替换 header：少给 icon 展开箭头就没了（与工具面板同一套结构）
     assert header["icon"]["token"] == "down-small-ccm_outlined"
     assert header["icon_position"] == "right"

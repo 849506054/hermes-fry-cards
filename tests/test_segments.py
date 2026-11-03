@@ -258,47 +258,37 @@ class TestAnswerSegmentCap:
         assert sum(1 for s in state.segments if s.type == SegmentType.ANSWER) == 2
 
 
-class TestCompletionOverlapDedup:
-    """流式丢尾时 on_completion_answer 必须原地接上，而不是追加第二段（#19）。
-
-    回归：长回复只流到 985/1097 字就收尾（丢尾）时，原 endswith 守卫只认
-    「流式段以完整完成文本结尾」，判假 → 完整文本被 _new_answer 追加成第二段
-    ANSWER，封卡后正文出现两遍。
-    """
+class TestCompletionFinalBody:
+    """完成事件决定正文内容；预览切分与定稿独立。"""
 
     @staticmethod
     def _answer_texts(state: SegmentState) -> list[str]:
-        """非空 ANSWER 段文本（合并后被清空的段不参与断言）."""
         return [s.text for s in state.segments if s.type == SegmentType.ANSWER and s.text]
 
-    def test_lagging_stream_merged_in_place(self) -> None:
-        """场景 B：流式落后（本次事故形态）→ 单段完整文本."""
+    def test_lagging_preview_uses_complete_final(self) -> None:
         final = "答案" + "正文" * 500
         state = SegmentState()
         state.on_answer_delta(final[:985])
         state.on_completion_answer(final)
         assert self._answer_texts(state) == [final]
 
-    def test_fully_streamed_still_noop(self) -> None:
-        """场景 A：流式已完整送达 → endswith 守卫吞掉，1 段不变."""
+    def test_fully_streamed_final_is_exact(self) -> None:
         final = "答案" + "正文" * 500
         state = SegmentState()
         state.on_answer_delta(final)
         state.on_completion_answer(final)
         assert self._answer_texts(state) == [final]
 
-    def test_interlude_then_final_keeps_two_segments(self) -> None:
-        """场景 C：工具间旁白 + 最终答案（#13 场景）→ 旁白保留，不往回合并."""
+    def test_interlude_then_final_keeps_only_final(self) -> None:
         interlude = "调用工具中"
         final = "答案" + "正文" * 500
         state = SegmentState()
         state.on_answer_delta(interlude)
         state.on_tool_event(1)
         state.on_completion_answer(final)
-        assert self._answer_texts(state) == [interlude, final]
+        assert self._answer_texts(state) == [final]
 
     def test_completion_replay_is_idempotent(self) -> None:
-        """场景 D：完成回调重放同一文本 → 仍 1 段."""
         final = "答案" + "正文" * 500
         state = SegmentState()
         state.on_answer_delta(final[:985])
@@ -306,29 +296,22 @@ class TestCompletionOverlapDedup:
         state.on_completion_answer(final)
         assert self._answer_texts(state) == [final]
 
-    def test_interlude_and_lagging_merged_via_overlap(self) -> None:
-        """场景 E：旁白与落后答案同段 → 去重叠后原地接上，旁白不丢."""
+    def test_interlude_and_partial_preview_use_final(self) -> None:
         interlude = "过渡语。"
         final = "答案" + "正文" * 500
         state = SegmentState()
         state.on_answer_delta(interlude + final[:985])
         state.on_completion_answer(final)
-        assert self._answer_texts(state) == [interlude + final]
+        assert self._answer_texts(state) == [final]
 
-    def test_short_coincidental_overlap_not_merged(self) -> None:
-        """场景 F：偶然短重叠（<8 字）→ 不吞并，按新段追加."""
+    def test_short_overlap_uses_final(self) -> None:
         state = SegmentState()
         state.on_answer_delta("第一段尾。")
         state.on_tool_event(1)
         state.on_completion_answer("。完全不同的完成文本(长度足够超过阈值)")
-        assert self._answer_texts(state) == ["第一段尾。", "。完全不同的完成文本(长度足够超过阈值)"]
+        assert self._answer_texts(state) == ["。完全不同的完成文本(长度足够超过阈值)"]
 
     def test_repeated_answer_after_tool_collapses_to_one(self) -> None:
-        """2026-10-31 产线：收尾语在工具调用后又写一遍 → 卡上只留一段。
-
-        两段规范化后完全相同（第二段只是多了尾部换行），属于同一段正文被画了两遍，
-        不是旁白+答案，必须收敛成一段。
-        """
         sentence = "收工。有事随时喊我。"
         state = SegmentState()
         state.on_answer_delta(sentence)
@@ -338,22 +321,15 @@ class TestCompletionOverlapDedup:
         assert self._answer_texts(state) == [sentence + "\n\n"]
         assert sum(1 for s in state.segments if s.type == SegmentType.ANSWER and s.text) == 1
 
-    def test_repeated_answer_kept_when_texts_differ(self) -> None:
-        """旁白与答案不同仍各留一段（与上一条同批守护）。"""
+    def test_distinct_preview_replaced_by_final(self) -> None:
         state = SegmentState()
         state.on_answer_delta("先查一下日志。")
         state.on_tool_event(1)
         state.on_answer_delta("查完了，结论是这样。")
         state.on_completion_answer("查完了，结论是这样。")
-        assert self._answer_texts(state) == ["先查一下日志。", "查完了，结论是这样。"]
+        assert self._answer_texts(state) == ["查完了，结论是这样。"]
 
-    def test_multi_answer_split_by_reasoning_merged(self) -> None:
-        """场景 G：reasoning 把一轮回复切成多个 answer 段 → 合并成一段，开头不出现两遍.
-
-        回归：on_completion_answer 只跟「最后一个」ANSWER 段去重，被 reasoning/tool
-        切开的其余段仍留着被 final 覆盖的开头，封卡后「表格+正文」出现两遍。
-        流式前缀可能缺行（表格分隔行还没推到），故判据是「按序拼接是 final 的子序列」。
-        """
+    def test_reasoning_split_preview_uses_final(self) -> None:
         head = "升级已验证生效：\n\n| 判据 | 值 |"
         tail = "\n| 注入时刻 | 22:00:48 |"
         final = head + "\n|---|---|" + tail + "\n\n正文。"
@@ -365,8 +341,7 @@ class TestCompletionOverlapDedup:
         state.on_completion_answer(final)
         assert self._answer_texts(state) == [final]
 
-    def test_multi_answer_split_by_tool_merged(self) -> None:
-        """场景 H：tool 交替产生的多个 answer 段 → 合并成一段."""
+    def test_tool_split_preview_uses_final(self) -> None:
         state = SegmentState()
         state.on_answer_delta("开头A")
         state.on_tool_event(1)
@@ -376,46 +351,53 @@ class TestCompletionOverlapDedup:
         state.on_completion_answer("开头A接续B接续C结尾")
         assert self._answer_texts(state) == ["开头A接续B接续C结尾"]
 
-    def test_multi_answer_unrelated_final_not_merged(self) -> None:
-        """场景 I：多段拼接不是 final 子序列（旁白 + 异答案）→ 不合并，段全部保留."""
+    def test_boundary_overlap_preview_uses_final(self) -> None:
+        final = ("是的，补订这条链路现在整个都在 Telegram 上。" + "正文" * 200
+                 + "对照之下，飞书侧只有一条每日巡检。" + "结尾" * 60)
+        cut = final.index("对照之下，") + len("对照之下，")
+        head = final[:cut]
+        tail = final[cut - len("对照之下，"):]  # 第二段又把句首发了一遍
+        state = SegmentState()
+        state.on_answer_delta(head)
+        state.on_reasoning_delta("想" * 200)
+        state.on_answer_delta(tail)
+        state.on_completion_answer(final)
+        assert self._answer_texts(state) == [final]
+
+    def test_multi_answer_unrelated_final_replaces_preview(self) -> None:
         state = SegmentState()
         state.on_answer_delta("第一句旁白。")
         state.on_reasoning_delta("想")
         state.on_answer_delta("第二句旁白。")
         state.on_completion_answer("完全不同的最终答案")
-        assert self._answer_texts(state) == ["第一句旁白。", "第二句旁白。", "完全不同的最终答案"]
+        assert self._answer_texts(state) == ["完全不同的最终答案"]
 
 class TestRewriteAfterCompletion:
-    """完成事件之后又来的正文 = 收尾闸门打回后的重写稿（2026-10-31 产线形态）。
-
-    实测：网关先交付第一版并触发 on_completed_wait，5 秒后同一 message 上又流入
-    重写稿，但不再有完成事件。旧行为把它当新段追加，卡上留下旧稿+定稿两段。
-    """
+    """完成事件决定正文内容；预览切分与定稿独立。"""
 
     @staticmethod
     def _answer_texts(state):
-        return [s.text for s in state.segments if s.type == SegmentType.ANSWER]
+        return [s.text for s in state.segments if s.type == SegmentType.ANSWER and s.text]
 
-    def test_rewrite_after_completion_replaces_draft(self) -> None:
+    def test_late_delta_preserves_final(self) -> None:
         state = SegmentState()
         state.on_answer_delta("旧稿" * 100)
         state.on_reasoning_delta("重写中")
-        state.mark_completed()
-        state.on_answer_delta("定稿")
+        state.on_completion_answer("定稿")
+        state.on_answer_delta("迟到增量")
         state.on_answer_delta("续写")
-        assert [t for t in self._answer_texts(state) if t] == ["定稿续写"]
+        assert [t for t in self._answer_texts(state) if t] == ["定稿"]
 
-    def test_rewrite_clears_interlude_answers(self) -> None:
+    def test_final_clears_interlude_answers(self) -> None:
         state = SegmentState()
         state.on_answer_delta("先看一下配置。")
         state.on_tool_event(1)
         state.on_answer_delta("旧稿")
-        state.mark_completed()
-        state.on_answer_delta("定稿")
+        state.on_completion_answer("定稿")
+        state.on_answer_delta("迟到增量")
         assert [t for t in self._answer_texts(state) if t] == ["定稿"]
 
     def test_answers_before_completion_still_append(self) -> None:
-        """没有完成事件的正常轮次：工具前后旁白仍各占一段，行为不变。"""
         state = SegmentState()
         state.on_answer_delta("先看一下配置。")
         state.on_tool_event(1)
@@ -424,11 +406,11 @@ class TestRewriteAfterCompletion:
 
 
 class TestCompletionAnswerReplaced:
-    """收尾闸门打回重写（replaced=True）：流式段里的旧稿不是合法历史，用定稿整段替换。"""
+    """完成事件决定正文内容；预览切分与定稿独立。"""
 
     @staticmethod
     def _answer_texts(state):
-        return [s.text for s in state.segments if s.type == SegmentType.ANSWER]
+        return [s.text for s in state.segments if s.type == SegmentType.ANSWER and s.text]
 
     def test_draft_replaced_by_final(self) -> None:
         state = SegmentState()
@@ -438,7 +420,6 @@ class TestCompletionAnswerReplaced:
         assert self._answer_texts(state) == ["重写后的定稿"]
 
     def test_interlude_also_replaced_when_whole_turn_rewritten(self) -> None:
-        """被打回的是整轮回答：工具前后的段落都属于旧稿，定稿只留一段。"""
         state = SegmentState()
         state.on_answer_delta("先看一下配置。")
         state.on_tool_event(1)
@@ -447,7 +428,6 @@ class TestCompletionAnswerReplaced:
         assert [t for t in self._answer_texts(state) if t] == ["定稿"]
 
     def test_draft_before_rewrite_segment_is_cleared(self) -> None:
-        """产线形态：旧稿段在前，重写轮在 reasoning 之后另起一段。"""
         state = SegmentState()
         state.on_answer_delta("旧稿" * 100)
         state.on_reasoning_delta("重写中")
@@ -460,9 +440,9 @@ class TestCompletionAnswerReplaced:
         state.on_completion_answer("定稿", replaced=True)
         assert self._answer_texts(state) == ["定稿"]
 
-    def test_default_path_keeps_prefix(self) -> None:
+    def test_default_path_uses_final(self) -> None:
         state = SegmentState()
         state.on_answer_delta("此前文本。最终结果: 已完成。")
         state.on_completion_answer("最终结果: 已完成。")
-        assert self._answer_texts(state) == ["此前文本。最终结果: 已完成。"]
+        assert self._answer_texts(state) == ["最终结果: 已完成。"]
 

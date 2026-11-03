@@ -155,8 +155,18 @@ class FlushController:
     def _create_flush_task(self, do_flush: Callable[[], Awaitable[None]]) -> asyncio.Task[None]:
         task = self._loop.create_task(self._do_flush(do_flush))
         self._pending_flush_tasks.add(task)
-        task.add_done_callback(self._pending_flush_tasks.discard)
+        task.add_done_callback(self._flush_task_done)
         return task
+
+    def _flush_task_done(self, task: asyncio.Task[None]) -> None:
+        """Release drain waiters after queued or active writes have settled."""
+        self._pending_flush_tasks.discard(task)
+        if self._pending_flush_tasks or self._flush_in_progress:
+            return
+        resolvers, self._flush_resolvers = self._flush_resolvers, []
+        for future in resolvers:
+            if not future.done():
+                future.set_result(None)
 
     def _do_flush_task(self, do_flush: Callable[[], Awaitable[None]]) -> None:
         self._pending_timer = None
