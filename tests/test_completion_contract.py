@@ -193,4 +193,3 @@ async def test_error_completion_without_final_preserves_partial():
     ctrl._complete_session_wait = AsyncMock(return_value=True)
     assert await ctrl.on_completed_wait(message_id=session.message_id, is_error=True)
     assert answers(session.segment_state) == ["部分回答"]
-

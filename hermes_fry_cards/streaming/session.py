@@ -73,6 +73,7 @@ class CardSession:
         "split_index",
         "state",
         "synthetic",
+        "tool_elapsed_base_ms",
         "tool_panel_created",
         "tool_panel_estimate",
         "tool_use",
@@ -128,6 +129,7 @@ class CardSession:
         self.reasoning_timeline: bool = False
         self.process_header_counts: tuple[int, int] = (0, 0)
         self.process_count_base: tuple[int, int] = (0, 0)
+        self.tool_elapsed_base_ms: float = 0.0
 
     @property
     def has_card(self) -> bool:
@@ -159,6 +161,10 @@ class CardSession:
             self.process_count_base[0] + (self.segment_state.reasoning_count if self.segment_state else 0),
             self.process_count_base[1] + len(self.tool_use.build_display_steps()),
         )
+
+    @property
+    def total_tool_elapsed_ms(self) -> float:
+        return self.tool_elapsed_base_ms + self.tool_use.execution_elapsed_ms
 
     def active_segments(self) -> list[Segment]:
         if self.segment_state is None:

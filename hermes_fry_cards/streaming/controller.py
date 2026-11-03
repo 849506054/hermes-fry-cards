@@ -1053,6 +1053,7 @@ class StreamingController:
             show_reasoning=self._cfg.show_reasoning,
             reasoning_count=session.process_counts[0],
             tool_count=session.process_counts[1],
+            total_tool_elapsed_ms=session.total_tool_elapsed_ms,
             width_mode=self._cfg.width_mode,
         )
         try:
@@ -1241,6 +1242,7 @@ class StreamingController:
             )
 
             # Retain full-turn counters while starting a fresh detail range.
+            session.tool_elapsed_base_ms = session.total_tool_elapsed_ms
             session.process_count_base = session.process_counts
             session.segment_state = SegmentState(max_reasoning_panels=self._cfg.max_reasoning_panels)
             self._configure_reasoning_timeline(session)
@@ -1352,6 +1354,7 @@ class StreamingController:
             show_reasoning=self._cfg.show_reasoning,
             reasoning_count=session.process_counts[0],
             tool_count=session.process_counts[1],
+            total_tool_elapsed_ms=session.total_tool_elapsed_ms,
             width_mode=self._cfg.width_mode,
             notices=top_notices,
             progress_notices=progress_notices,

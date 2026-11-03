@@ -72,7 +72,7 @@ def _display_model(name: str) -> str:
     return name
 
 
-def _panel_header(title_el: dict, *, icon_position: str = "right") -> dict:
+def _panel_header(title_el: dict, *, icon_position: str = "right", position: str = "bottom") -> dict:
     """折叠面板 header 的完整结构。
 
     ``partial_update_element`` 传 header 时飞书按整块替换：只给 title 会把右侧的
@@ -88,7 +88,7 @@ def _panel_header(title_el: dict, *, icon_position: str = "right") -> dict:
     return {
         "title": title_el,
         "vertical_align": "center",
-        "position": "bottom",
+        "position": position,
         "icon": icon_el,
         "icon_position": icon_position,
         "icon_expanded_angle": -180,
@@ -96,8 +96,11 @@ def _panel_header(title_el: dict, *, icon_position: str = "right") -> dict:
 
 
 def _process_title(reasoning_count: int = 0, tool_count: int = 0) -> dict:
-    en = _T["reasoning_count"][0].format(reasoning_count) + " · " + _T["tool_count"][0].format(tool_count)
-    zh = _T["reasoning_count"][1].format(reasoning_count) + " · " + _T["tool_count"][1].format(tool_count)
+    en, zh = (
+        _T["reasoning_count_streaming"][locale].format(reasoning_count)
+        + " · " + _T["tool_count_streaming"][locale].format(tool_count)
+        for locale in (0, 1)
+    )
     return {"tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh),
             "text_color": "grey", "text_size": "notation"}
 
@@ -478,6 +481,19 @@ def _build_reasoning_stage(
     ]
 
 
+def _build_process_summary(
+    text: str, *, zh_text: str | None = None, element_id: str | None = None,
+) -> dict[str, Any]:
+    """Shared typography for completed reasoning and tool summaries."""
+    content = f"<font color='grey'>{text}</font>"
+    element: dict[str, Any] = {"tag": "markdown", "content": content, "text_size": "notation"}
+    if zh_text is not None:
+        element["i18n_content"] = _i18n(content, f"<font color='grey'>{zh_text}</font>")
+    if element_id:
+        element["element_id"] = element_id
+    return element
+
+
 def _build_reasoning_summary(rounds: list[dict]) -> list[dict[str, Any]]:
     """封卡后的思考摘要：只报轮数，逐步耗时与正文都不进卡。"""
     if not rounds:
@@ -486,10 +502,7 @@ def _build_reasoning_summary(rounds: list[dict]) -> list[dict[str, Any]]:
     label = _content_t("thought_rounds").format(len(rounds))
     if total_ms > 0:
         label = f"{label} · {_content_t('elapsed').format(_format_elapsed(total_ms))}"
-    return [{
-        "tag": "markdown", "content": f"<font color='grey'>💭 {label}</font>",
-        "text_size": "notation",
-    }]
+    return [_build_process_summary(f"💭 {label}")]
 
 
 def _build_reasoning_panel(
@@ -547,6 +560,9 @@ def _render_panel_field(
             v = f"🍟 {_display_model(v)}"
             return v, v
         return None, None
+    if name == "process_counts":
+        return (_T["process_counts_compact"][0].format(reasoning_count, tool_count),
+                _T["process_counts_compact"][1].format(reasoning_count, tool_count))
     if name == "reasoning":
         return (_T["reasoning_count"][0].format(reasoning_count),
                 _T["reasoning_count"][1].format(reasoning_count))
@@ -589,7 +605,10 @@ def _build_panel_header(
     """组装统一面板 header 文本，返回 (en, zh)。无效/缺数据字段自动隐藏."""
     if not fields:
         fields = list(_PANEL_DEFAULT_FIELDS)
-    fields = list(dict.fromkeys([*fields, "reasoning", "tools"]))
+    fields = list(dict.fromkeys(
+        "process_counts" if name in ("reasoning", "tools") else name
+        for name in [*fields, "reasoning", "tools"]
+    ))
     en_parts: list[str] = []
     zh_parts: list[str] = []
     for name in fields:
@@ -925,6 +944,7 @@ def build_complete_card(
     show_reasoning: bool = True,
     reasoning_count: int | None = None,
     tool_count: int | None = None,
+    total_tool_elapsed_ms: float | None = None,
     width_mode: str = "default",
     notices: list[str] | None = None,
     progress_notices: list[str] | None = None,
@@ -986,6 +1006,9 @@ def build_complete_card(
         elif seg.type == SegmentType.ANSWER and seg.text:
             has_answer = True
             _append_content_elements(elements, seg.text, text_size=body_text_size)
+
+    if total_tool_elapsed_ms is None:
+        total_tool_elapsed_ms = sum(max(0, step.get("elapsed_ms", 0) or 0) for step in all_tool_steps)
 
     # 推理+工具合并成底部一个统一面板（在答案之后、footer 之前）
     # 短回复或无工具调用时不展示统一面板（避免冗余 header）
@@ -1050,6 +1073,12 @@ def build_complete_card(
                     compact=True,
                 )
                 unified_children.append(tool_panel)
+        elapsed_label = _format_elapsed(total_tool_elapsed_ms)
+        en_summary = _T["tool_totals_summary"][0].format(tool_count, elapsed_label)
+        zh_summary = _T["tool_totals_summary"][1].format(tool_count, elapsed_label)
+        unified_children.append(_build_process_summary(
+            en_summary, zh_text=zh_summary, element_id="tool_totals",
+        ))
         # header: 字段化组合（默认 🍟 model · 💭n · 🔧n · context · ⏱️ elapsed），
         # 与 footer 共用字段池，可经 display.platforms.feishu.panel_fields 自由组合
         from ..config import Config
@@ -1078,7 +1107,7 @@ def build_complete_card(
                 **_panel_header({
                     "tag": "plain_text", "content": header_en,
                     "i18n_content": _i18n(header_en, header_zh),
-                }),
+                }, position="top"),
                 "text_color": "grey", "text_size": panel_text_size,
             },
             "border": {"color": border_color, "corner_radius": "5px"},

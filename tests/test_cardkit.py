@@ -888,7 +888,8 @@ class TestBuildSegmentCompleteCard:
             all_tool_steps=[_STEP_SUCCESS],
         )
         unified = _unified_panel(card)
-        assert [e.get("tag") for e in unified["elements"]] == ["collapsible_panel"]
+        assert [e.get("tag") for e in unified["elements"]] == ["collapsible_panel", "markdown"]
+        assert unified["elements"][-1]["element_id"] == "tool_totals"
         assert "🔧" in str(unified["elements"][0].get("header", {}))
 
     def test_tool_end_offset_zero_uses_all_steps(self) -> None:
@@ -932,8 +933,8 @@ class TestBuildSegmentCompleteCard:
             show_tool_use=False,
         )
         panel = next(e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel")
-        assert panel["elements"] == []
-        assert "Tools 2 steps" in panel["header"]["title"]["content"]
+        assert [e["element_id"] for e in panel["elements"]] == ["tool_totals"]
+        assert "🔧2" in panel["header"]["title"]["content"]
         # 但 answer 依然在
         assert any(e.get("tag") == "markdown" and "hello" in str(e.get("content", ""))
                    for e in card["body"]["elements"])
@@ -980,8 +981,8 @@ class TestPanelHeaderFields:
         panel = self._panel(self._card(footer_data={"duration": 8.0, "model": "deepseek-v4"}))
         title = panel["header"]["title"]["content"]
         assert "🍟 deepseek-v4" in title
-        assert "💭 Thinking 1 stages" in title
-        assert "🔧 Tools 1 steps" in title
+        assert "💭1" in title
+        assert "🔧1" in title
         assert "⏱️ 8.0s" in title
 
     def test_custom_fields_speed_cache(self) -> None:
@@ -997,7 +998,7 @@ class TestPanelHeaderFields:
         title = panel["header"]["title"]["content"]
         assert "Cache hit 54%" in title
         assert "208 tok/s" in title
-        assert "💭 Thinking 1 stages" in title
+        assert "💭1" in title
 
     def test_header_i18n_zh(self) -> None:
         panel = self._panel(self._card(
@@ -1015,14 +1016,14 @@ class TestPanelHeaderFields:
 
     def test_all_hidden_falls_back_to_placeholder(self) -> None:
         panel = self._panel(self._card(panel_fields=["model"], footer_data={"duration": 8.0}))
-        assert panel["header"]["title"]["content"] == "💭 Thinking 1 stages · 🔧 Tools 1 steps"
+        assert panel["header"]["title"]["content"] == "💭1·🔧1"
 
     def test_context_hidden_when_no_data(self) -> None:
         panel = self._panel(self._card(
             panel_fields=["context"],
             footer_data={"duration": 8.0},
         ))
-        assert panel["header"]["title"]["content"] == "💭 Thinking 1 stages · 🔧 Tools 1 steps"
+        assert panel["header"]["title"]["content"] == "💭1·🔧1"
 
 
 class TestBuildCronCard:

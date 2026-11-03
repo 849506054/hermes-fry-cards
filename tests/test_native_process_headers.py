@@ -21,14 +21,17 @@ def panels(card):
     return [e for e in card['body']['elements'] if e['tag'] == 'collapsible_panel']
 
 
-def assert_header(header, reasoning, tools):
-    assert header['position'] == 'bottom'
+def assert_header(header, reasoning, tools, *, streaming=True):
+    assert header['position'] == ('bottom' if streaming else 'top')
     assert header['icon_position'] == 'right'
     assert header['icon']['token'] == 'down-small-ccm_outlined'
     assert header['icon_expanded_angle'] == -180
     zh = header['title']['i18n_content']['zh_cn']
-    assert f'思考 {reasoning} 段' in zh
-    assert f'工具 {tools} 步' in zh
+    if streaming:
+        assert zh == f'💭 已思考 {reasoning} 段 · 🔧 工具执行中 {tools} 步'
+    else:
+        assert f'💭{reasoning}·🔧{tools}' in zh
+        assert '已思考' not in zh and '执行中' not in zh
 
 
 @pytest.mark.parametrize('reasoning,tools', [(True, False), (False, True), (True, True)])
@@ -98,7 +101,7 @@ async def test_stream_and_final_separate_count_from_detail(reasoning, tools):
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
-    assert_header(panels(final)[0]['header'], 2, 1)
+    assert_header(panels(final)[0]['header'], 2, 1, streaming=False)
     if not reasoning:
         assert 'THOUGHT_DETAILS' not in json.dumps(final)
     if not tools:
@@ -151,7 +154,7 @@ async def test_clarify_rollover_keeps_full_turn_counts():
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
-    assert_header(panels(final)[0]['header'], 3, 3)
+    assert_header(panels(final)[0]['header'], 3, 3, streaming=False)
 
 
 @pytest.mark.asyncio

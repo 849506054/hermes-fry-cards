@@ -262,6 +262,18 @@ class ToolUseTracker:
             return 0.0
         return (time.time() - self._session.started_at) * 1000
 
+    @property
+    def execution_elapsed_ms(self) -> float:
+        """Sum per-call execution time; intervals between calls contribute nothing."""
+        if self._session is None:
+            return 0.0
+        now = time.time()
+        return sum(
+            max(0.0, (now - step.started_at) * 1000)
+            if step.status == ToolStatus.RUNNING else max(0.0, step.elapsed_ms)
+            for step in self._session.steps
+        )
+
     def record_start(self, name: str, detail: str = "") -> None:
         if self._session is None:
             self._session = ToolSession(started_at=time.time())
