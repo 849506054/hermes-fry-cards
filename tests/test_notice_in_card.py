@@ -367,8 +367,8 @@ def test_on_busy_ack_accepts_ctrl_keyword() -> None:
 
 
 @pytest.mark.asyncio
-async def test_session_compressed_seals_active_card() -> None:
-    """触发压缩时封卡：把当前会话活跃卡片封死为完成态."""
+async def test_session_compressed_preserves_active_card() -> None:
+    """压缩后当前卡继续由本轮完成事件收尾."""
     ctrl = _setup_ctrl()
     session = _streaming(ctrl, "msg_comp", key="key_comp")
     session.card_id = "card_comp"
@@ -376,8 +376,8 @@ async def test_session_compressed_seals_active_card() -> None:
     ctrl._complete_session_after_creation = AsyncMock(side_effect=lambda s: sealed.append(s.card_id) or True)
 
     assert await ctrl.on_session_compressed(session_key="key_comp") is True
-    assert session.state == SessionState.COMPLETED
-    assert sealed == ["card_comp"]
+    assert session.state == SessionState.STREAMING
+    assert sealed == []
 
 
 def test_on_compression_sync_entry() -> None:
@@ -389,8 +389,8 @@ def test_on_compression_sync_entry() -> None:
     ctrl._complete_session = lambda s: closed.append(s.card_id)
 
     assert ctrl.on_compression(session_key="key_sync") is True
-    assert session.state == SessionState.COMPLETED
-    assert closed == ["card_sync"]
+    assert session.state == SessionState.STREAMING
+    assert closed == []
 
 
 def test_on_session_compressed_skips_when_no_active_session() -> None:

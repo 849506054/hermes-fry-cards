@@ -597,32 +597,8 @@ class StreamCardController(StreamingController):
         session_key: str | None = None,
         message_id: str | None = None,
     ) -> bool:
-        """会话触发上下文压缩时封卡.
-
-        当触发上下文压缩（例如会话分裂、in-place compaction 或手动压缩），
-        之前的上下文历史已缩减/重写。旧卡片必须立即封印，确保卡片停止转圈、
-        渲染完成态，后续消息或新轮次从新卡开始。
-        """
-        if not self.enabled:
-            return False
-        session = self._resolve_session(message_id, session_key)
-        if session is None or session.state.is_terminal:
-            return False
-
-        session.state = SessionState.COMPLETED
-        session.compression_sealed = True
-        session.flush.mark_completed()
-        _logger.info(
-            "session_compressed: msg=%s key=%s card=%s sealing",
-            session.message_id[:12],
-            session_key or "",
-            (session.card_id or "")[:12],
-        )
-        if session.has_card:
-            return await self._complete_session_after_creation(session)
-        else:
-            self._cleanup_session(session)
-            return True
+        """Keep the turn's active card through a context compression event."""
+        return self.on_compression(session_key=session_key, message_id=message_id)
 
     def on_compression(
         self,
@@ -630,22 +606,24 @@ class StreamCardController(StreamingController):
         session_key: str | None = None,
         message_id: str | None = None,
     ) -> bool:
-        """同步入口：触发压缩封卡."""
+        """Observe context rotation; the normal completion hook owns final delivery.
+
+        The gateway reports a session-id change after the agent run. The inbound
+        message still owns the same card, including any queued streaming writes.
+        Return whether that turn has an active card; this is an observation only.
+        """
         if not self.enabled:
             return False
-        session = self._resolve_session(message_id, session_key)
+        session = (
+            self._sessions.get(message_id) if message_id
+            else self._session_keys.get(session_key) if session_key else None
+        )
         if session is None or session.state.is_terminal:
             return False
-        session.state = SessionState.COMPLETED
-        session.compression_sealed = True
-        session.flush.mark_completed()
         _logger.info(
-            "session_compressed_sync: msg=%s key=%s card=%s sealing",
-            session.message_id[:12],
-            session_key or "",
-            (session.card_id or "")[:12],
+            "session_compressed_retained: msg=%s key=%s card=%s state=%s",
+            session.message_id, session.session_key or "", session.card_id or "", session.state,
         )
-        self._complete_session(session)
         return True
 
     def _fire_and_forget(
@@ -1195,10 +1173,9 @@ class StreamCardController(StreamingController):
         if not self.enabled:
             return False
         requested_id = message_id
-        sealed = self._sessions.get(message_id) if message_id else None
         session = self._completion_session(message_id, session_key)
         if session is None:
-            return self._compression_seal_covers_answer(sealed, answer)
+            return False
         message_id = session.message_id
 
         if not await self._wait_for_card_creation(session):
@@ -1503,36 +1480,6 @@ class StreamCardController(StreamingController):
 
     def _cleanup_session(self, session: CardSession) -> None:
         self._dispose_session(session)
-
-    def _compression_seal_covers_answer(self, session: CardSession | None, answer: str) -> bool:
-        """压缩封卡是否已经把本轮正文写进卡片.
-
-        上下文压缩会在收尾钩子之前封卡并把会话标成 COMPLETED，钩子随即查不到会话，
-        返回「未投递」，网关于是把同一份回复按纯文本再发一遍（卡片+纯文本两份）。
-        这里比对卡内已封存的正文与最终答案：一致就视为已投递，让网关跳过纯文本补发。
-        不一致（预览不全、答案被改写）时仍走原路，宁可重复也不能丢内容。
-        """
-        if session is None or session.state != SessionState.COMPLETED:
-            return False
-        if not getattr(session, "compression_sealed", False) or not session.has_card:
-            return False
-        if session.segment_state is None:
-            return False
-        sealed_text = "".join(
-            seg.text for seg in session.segment_state.segments if seg.type == SegmentType.ANSWER
-        ).strip()
-        final_text = strip_reasoning_tags(answer or "").strip()
-        if not sealed_text or not final_text:
-            return False
-        # 卡片正文必须覆盖最终答案：等长相等，或更长且包含。半截预览（封存文本更短）不算覆盖。
-        covered = final_text == sealed_text or (
-            len(sealed_text) >= len(final_text) and final_text in sealed_text
-        )
-        _logger.info(
-            "compression_seal_delivery: msg=%s covered=%s sealed_len=%d final_len=%d",
-            (session.message_id or "")[:12], covered, len(sealed_text), len(final_text),
-        )
-        return covered
 
     def _completion_session(
         self, message_id: str | None, session_key: str | None = None

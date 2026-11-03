@@ -374,13 +374,10 @@ def _redirect_resolved_hook(indent: str) -> str:
 
 
 def _bg_completion_hook(indent: str) -> str:
-    """后台完成通知接管：活跃卡并入通知区，无卡走静态卡（#47）.
+    """Show the receipt before normal result admission.
 
-    ``_inject_watch_notification`` 把完成通知合成内部消息注入——纯文本气泡
-    直达，不经过卡片管线（无 START 钩子可拦）。这个锚点挂在内部标记处理
-    之前：fry 按会话活跃卡并入通知区，或独立静态卡直接投聊天；返回 True
-    时注入点 ``return True`` 跳过 Hermes 注入（外层语义同「adapter 已接受」，
-    不会重试/重排队）。False 时 Hermes 照常注入，无损降级。
+    The runtime callback yields False after rendering, preserving gateway wake and
+    durable acknowledgement. Keep the emitted hook compatible with installed images.
     """
     return _make_hook(
         indent,
@@ -441,7 +438,7 @@ def _bg_busy_suppress_hook(indent: str) -> str:
 
 
 def _compression_hook(indent: str) -> str:
-    """会话触发上下文压缩时封卡（#43 增强）."""
+    """Notify the plugin of context rotation; final delivery belongs to completion."""
     return _make_hook(
         indent,
         MK_COMPRESSION,

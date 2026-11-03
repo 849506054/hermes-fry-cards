@@ -727,7 +727,7 @@ def on_session_compressed(
     message_id: str | None = None,
     **kwargs: Any,
 ) -> bool:
-    """[注入点 14] 上下文压缩触发 — 封印当前会话的活跃卡片."""
+    """[注入点 14] 上下文压缩通知，保留本轮活跃卡至正常完成事件."""
     try:
         ctrl = ctrl or get_controller()
         if not ctrl.enabled:
@@ -798,21 +798,18 @@ async def on_background_completion(
     session_id: str | None = None,
     **kwargs: Any,
 ) -> bool:
-    """[可选注入点] run_notifications 的 watch/completion 通知接管（#47）.
+    """Display the receipt, then let Hermes admit the complete result and wake its owner.
 
-    该路径把完成通知合成内部消息注入，纯文本气泡直达，不经过卡片管线。
-    返回 True 表示 fry 已接管本次投递（并入活跃卡通知区或独立静态卡），
-    注入点应跳过 Hermes 的合成消息注入；False 时 Hermes 照常注入，无损降级。
-
-    ``text`` 是给模型看的内部文案；``command`` / ``started_at`` / ``exit_code``
-    从 evt 透传给控制器，用来拼一句用户看得懂的回执。``session_id`` 是网关的
-    进程会话 id，只用于登记「回执已由卡片投递」（见 ``suppress_busy_receipt``）。
+    The installed hook interprets True as an early return from event injection.
+    This callback always yields False so the existing gateway admission, retry,
+    and durable acknowledgement paths own result delivery. The controller's bool
+    describes only the visible receipt; its busy-receipt bookkeeping stays local.
     """
     try:
         ctrl = ctrl or get_controller()
         if not ctrl.enabled:
             return False
-        return bool(await ctrl.on_background_completion(
+        receipt_sent = bool(await ctrl.on_background_completion(
             chat_id=chat_id,
             session_key=session_key,
             text=text,
@@ -821,6 +818,11 @@ async def on_background_completion(
             exit_code=exit_code,
             session_id=session_id,
         ))
+        _logger.info(
+            "background_receipt_wake_passthrough: key=%s sid=%s receipt=%s",
+            session_key or "", session_id or "", receipt_sent,
+        )
+        return False
     except Exception as exc:
         _logger.warning("on_background_completion error: %s", exc, exc_info=True)
         return False
