@@ -50,6 +50,7 @@ class CardSession:
         "card_msg_id",
         "chat_id",
         "clarify_pending_split",
+        "compression_sealed",
         "create_task",
         "created_at",
         "deferred_background_review_closed",
@@ -125,6 +126,8 @@ class CardSession:
         self.split_disabled = False
         self.split_index: int = 0
         self.clarify_pending_split: bool = False
+        # 压缩封卡标记：本轮卡在收尾前被上下文压缩封掉，收尾钩子据此抑制网关的纯文本补发。
+        self.compression_sealed: bool = False
         self.tool_panel_created: bool = False
         self.reasoning_timeline: bool = False
         self.process_header_counts: tuple[int, int] = (0, 0)
