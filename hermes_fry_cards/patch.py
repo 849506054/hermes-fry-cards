@@ -643,6 +643,8 @@ def on_message_interrupted(
         chat_type=chat_type,
         anchor_id=anchor_id,
         session_key=session_key,
+        # Hermes 已判定 was_interrupted：新消息自己另起一轮，旧轮残段不归新卡。
+        map_completion=False,
     )
 
 
@@ -678,7 +680,7 @@ def on_turn_redirected(
     chat_type: str = "",
     anchor_id: str | None = None,
     session_key: str | None = None,
-    redirected: bool = False,
+    redirected: bool | None = None,
     text: str = "",
     message_id: str | None = None,
     **kwargs: Any,
@@ -691,6 +693,11 @@ def on_turn_redirected(
     ``on_interrupted`` + ``_interrupt_map``，完成回调仍按映射落到新卡。
     其余模式只把提示写进当前卡的通知槽。
     支持 ``message_id`` 别名与缺省 ``chat_id``，兼容镜像烘入的不同模板。
+
+    ``redirected`` 是 Hermes 的权威判定：唯一说明「这一轮是被重定向到新消息，还是被真正
+    打断」的信号（run_busy 传 ``redirected=('redirected' in locals() and bool(redirected))``）。
+    为假时 Hermes 已经中断在跑的这一轮、把新消息排成自己的一轮，这里只写提示、不换卡；
+    只有老模板完全不传该参数（None）时才退回旧启发式。
     """
     try:
         ctrl = ctrl or get_controller()
@@ -700,7 +707,10 @@ def on_turn_redirected(
         old_msg = old_message_id or (old_session.message_id if old_session else message_id) or ""
         new_msg = new_message_id or message_id or (old_session.message_id if old_session else "")
         target_chat = chat_id or (old_session.chat_id if old_session else "")
-        is_redirect = redirected or (bool(new_msg and old_msg and new_msg != old_msg)) or bool(message_id and not text)
+        is_redirect = (
+            redirected if redirected is not None
+            else (bool(new_msg and old_msg and new_msg != old_msg) or bool(message_id and not text))
+        )
 
         if is_redirect:
             ctrl.on_interrupted(
@@ -710,6 +720,7 @@ def on_turn_redirected(
                 chat_type=chat_type,
                 anchor_id=anchor_id,
                 session_key=session_key,
+                map_completion=True,
             )
             if text.strip():
                 ctrl.on_redirected_notice(text=text, message_id=new_msg, session_key=session_key)

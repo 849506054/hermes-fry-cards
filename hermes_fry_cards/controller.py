@@ -238,6 +238,9 @@ class StreamCardController(StreamingController):
         # REDIRECT 与 REDIRECT_RESOLVED 两个注入点对同一事件各调一次，间隔只有几毫秒；
         # 两次调用的 old_message_id 可能都指向刚建好的新会话（同 id），幂等判据分不出来。
         self._interrupt_dedup: dict[str, float] = {}
+        # 真打断（Hermes was_interrupted）后旧轮完成事件的归属：卡已在 on_interrupted 封口，
+        # 这条完成只吞掉、不落任何卡，见 _consume_interrupted_tail。
+        self._interrupted_tails: dict[str, float] = {}
         # #43：重定向提示早于新卡登记时按 session_key 暂存，注册时补写
         self._pending_notices: dict[str, list[str]] = {}
         self._initialized = False
@@ -985,8 +988,15 @@ class StreamCardController(StreamingController):
         chat_type: str = "",
         anchor_id: str | None = None,
         session_key: str | None = None,
+        map_completion: bool = True,
     ) -> None:
-        """用户发送新消息导致前一条消息被中断 — abort A + create B（幂等）."""
+        """用户发送新消息导致前一条消息被中断 — abort A + create B（幂等）.
+
+        ``map_completion`` 只在 Hermes 真把正在跑的回合重定向到新消息时置真
+        （run_busy 的 ``redirected=True``）：那一轮没有被打断，它的完成事件属于新卡。
+        普通打断（run_turn 的 ``was_interrupted``）下新消息会自己另起一轮，旧轮的残段
+        由 ``_consume_interrupted_tail`` 吞掉，不能落到新卡上。
+        """
         if not self.enabled:
             return
 
@@ -1082,10 +1092,13 @@ class StreamCardController(StreamingController):
                     new_message_id[:12],
                 )
 
-        self._interrupt_map[old_message_id] = new_message_id
-        for key, val in list(self._interrupt_map.items()):
-            if val == old_message_id and key != old_message_id:
-                self._interrupt_map[key] = new_message_id
+        if map_completion:
+            self._interrupt_map[old_message_id] = new_message_id
+            for key, val in list(self._interrupt_map.items()):
+                if val == old_message_id and key != old_message_id:
+                    self._interrupt_map[key] = new_message_id
+        else:
+            self._interrupted_tails[old_message_id] = time.monotonic()
 
     def _reuse_interrupted_session(
         self,
@@ -1173,6 +1186,10 @@ class StreamCardController(StreamingController):
         if not self.enabled:
             return False
         requested_id = message_id
+        # 打断回合的尾巴先于任何归属解析吞掉：session_key 兜底此时已指向新消息的会话，
+        # 先解析就会把旧轮的空/半截定稿写进新卡。
+        if self._consume_interrupted_tail(requested_id):
+            return True
         session = self._completion_session(message_id, session_key)
         if session is None:
             return False
@@ -1481,6 +1498,22 @@ class StreamCardController(StreamingController):
     def _cleanup_session(self, session: CardSession) -> None:
         self._dispose_session(session)
 
+    def _consume_interrupted_tail(self, message_id: str | None) -> bool:
+        """被打断回合的完成事件：Hermes 自己也按 "Interrupted: discard the response" 处理.
+
+        旧卡在 on_interrupted 已经封口，尾段不再写任何卡；这里返回 True 让网关把这一轮
+        当作已投递，不把被打断的半句当纯文本补发。
+        """
+        if not message_id:
+            return False
+        now = time.monotonic()
+        for key in [k for k, at in self._interrupted_tails.items() if now - at > 300]:
+            self._interrupted_tails.pop(key, None)
+        if self._interrupted_tails.pop(message_id, None) is None:
+            return False
+        _logger.info("interrupted_tail_consumed: msg=%s", message_id[:12])
+        return True
+
     def _completion_session(
         self, message_id: str | None, session_key: str | None = None
     ) -> CardSession | None:
@@ -1556,6 +1589,9 @@ class StreamCardController(StreamingController):
             if final_answer or not preserve_partial:
                 session.segment_state.on_completion_answer(
                     final_answer, replaced=answer_rewritten, start_index=session.split_index,
+                    # 只有「原始 final 就是空的」（被打断）才保留已上屏正文；
+                    # 只含思考标签的 final 仍按无正文处理，清掉预览。
+                    keep_streamed=not final_answer and not (answer or "").strip(),
                 )
             after = [
                 seg.text for seg in session.segment_state.segments
