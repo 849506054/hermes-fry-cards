@@ -196,3 +196,47 @@ async def test_batch_missing_body_matches_reasoning_text_id(tmp_path):
     await ctrl._do_flush(session)
     assert ctrl._client.node(seg.text_el_id)["content"] == seg.text
     assert seg.created
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("append_during_batch", [False, True])
+async def test_new_stage_writes_only_new_and_changed_text(tmp_path, append_during_batch):
+    ctrl, session, _ = await setup(tmp_path)
+    state = session.segment_state
+    assert state is not None
+    assert isinstance(ctrl._client, MemoryCard)
+    state.on_answer_delta("existing answer")
+    await ctrl._do_flush(session)
+    answer = state.segments[-1]
+    original_batch = ctrl._client.cardkit_batch_update
+    old = None
+
+    for stage in range(20):
+        state.on_reasoning_delta(f"stage {stage}\nsecond line")
+        current = state.segments[-1]
+        pending = old if append_during_batch else None
+
+        async def batch_with_delta(*args, pending=pending, **kwargs):
+            await original_batch(*args, **kwargs)
+            if pending is not None:
+                pending.text += " late"
+                pending.dirty = True
+
+        ctrl._client.cardkit_batch_update = batch_with_delta
+        ctrl._client.calls.clear()
+        await ctrl._do_flush(session)
+        expected = [current.text_el_id]
+        if pending is not None:
+            expected.insert(0, pending.text_el_id)
+        writes = [call[1] for call in ctrl._client.calls
+                  if call[0] == "stream" and not call[1].endswith("_count")]
+        assert writes == expected
+        assert ctrl._client.node(answer.el_id)["content"] == answer.text
+        for seg in state.segments:
+            if seg.type.value == "reasoning":
+                assert ctrl._client.node(seg.text_el_id)["content"] == seg.text
+        ctrl._client.cardkit_batch_update = original_batch
+        session.tool_use.record_start(f"tool{stage}")
+        state.on_tool_event(stage + 1)
+        await ctrl._do_flush(session)
+        old = current

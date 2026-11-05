@@ -55,8 +55,8 @@ def test_streaming_outer_keeps_original_expanded_default():
 def test_streaming_outer_title_starts_with_both_zero_counts():
     card = build_streaming_card_v2(show_reasoning=True, show_tool_use=False)
     panel = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
-    assert panel["header"]["title"]["content"] == "💭 Thinking 0 stages · 🔧 Tools 0 steps"
-    assert panel["header"]["title"]["i18n_content"]["zh_cn"] == "💭 已思考 0 段 · 🔧 工具执行中 0 步"
+    assert panel["header"]["title"]["element_id"] == f"{PROCESS_PANEL_ELEMENT_ID}_count"
+    assert panel["header"]["title"]["content"] == "💭 已思考 0 段 · 🔧 工具执行中 0 步"
 
 
 def test_process_panel_header_tracks_round_count():

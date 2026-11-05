@@ -26,7 +26,7 @@ def assert_header(header, reasoning, tools, *, streaming=True):
     assert header['icon_position'] == 'right'
     assert header['icon']['token'] == 'down-small-ccm_outlined'
     assert header['icon_expanded_angle'] == -180
-    zh = header['title']['i18n_content']['zh_cn']
+    zh = header['title'].get('i18n_content', {}).get('zh_cn', header['title']['content'])
     if streaming:
         assert zh == f'💭 已思考 {reasoning} 段 · 🔧 工具执行中 {tools} 步'
     else:
@@ -88,11 +88,11 @@ async def test_stream_and_final_separate_count_from_detail(reasoning, tools):
     ids = [PROCESS_PANEL_ELEMENT_ID] if reasoning else []
     ids += [TOOL_PANEL_ELEMENT_ID] if tools else []
     for element_id in ids:
-        headers = [a['params']['partial_element']['header'] for a in actions
-                   if a.get('params', {}).get('element_id') == element_id
-                   and 'header' in a['params'].get('partial_element', {})]
-        assert headers
-        assert_header(headers[-1], 2, 1)
+        counts = [call.args[2] for call in ctrl._client.cardkit_stream_element.call_args_list
+                  if call.args[1] == f'{element_id}_count']
+        assert counts[-1] == '💭 已思考 2 段 · 🔧 工具执行中 1 步'
+        assert all('header' not in a['params'].get('partial_element', {}) for a in actions
+                   if a.get('params', {}).get('element_id') == element_id)
     sent = json.dumps(actions) + str(ctrl._client.cardkit_stream_element.call_args_list)
     if not reasoning:
         assert 'THOUGHT_DETAILS' not in sent
@@ -127,10 +127,9 @@ async def test_rollover_retains_turn_counts():
     session.set_card(card_id='next-card', card_msg_id='next-msg')
     ctrl.on_reasoning(message_id=session.message_id, text='new reasoning')
     await ctrl._do_flush(session)
-    headers = [a['params']['partial_element']['header']
-               for c in ctrl._client.cardkit_batch_update.call_args_list for a in c.args[1]
-               if a.get('params', {}).get('element_id') == PROCESS_PANEL_ELEMENT_ID]
-    assert_header(headers[-1], 2, 1)
+    counts = [c.args[2] for c in ctrl._client.cardkit_stream_element.call_args_list
+              if c.args[1] == f'{PROCESS_PANEL_ELEMENT_ID}_count']
+    assert counts[-1] == '💭 已思考 2 段 · 🔧 工具执行中 1 步'
 
 
 @pytest.mark.asyncio
@@ -146,11 +145,9 @@ async def test_clarify_rollover_keeps_full_turn_counts():
     ctrl.on_reasoning(message_id=session.message_id, text='after clarification')
     ctrl.on_tool_update(message_id=session.message_id, tool_name='terminal', status='started')
     await ctrl._do_flush(session)
-    headers = [a['params']['partial_element']['header']
-               for c in ctrl._client.cardkit_batch_update.call_args_list for a in c.args[1]
-               if a.get('params', {}).get('element_id') == PROCESS_PANEL_ELEMENT_ID
-               and 'header' in a.get('params', {}).get('partial_element', {})]
-    assert_header(headers[-1], 3, 3)
+    counts = [c.args[2] for c in ctrl._client.cardkit_stream_element.call_args_list
+              if c.args[1] == f'{PROCESS_PANEL_ELEMENT_ID}_count']
+    assert counts[-1] == '💭 已思考 3 段 · 🔧 工具执行中 3 步'
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
@@ -184,3 +181,68 @@ def test_hidden_reasoning_is_filtered_from_interrupted_summary():
     card = build_complete_card(segments=state.segments, all_tool_steps=[], show_reasoning=False,
                                show_tool_use=True, is_aborted=True)
     assert 'PRIVATE_REASONING' not in json.dumps(card)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reasoning,tools', [(True, False), (False, True), (True, True)])
+@pytest.mark.parametrize('lang', ['zh', 'en'])
+async def test_counts_write_addressable_text_and_preserve_header(reasoning, tools, lang, monkeypatch):
+    from copy import deepcopy
+
+    from hermes_fry_cards.cardkit import i18n
+    from hermes_fry_cards.feishu import FeishuAPIError
+
+    monkeypatch.setattr(i18n, '_CONTENT_LANG_CACHE', lang)
+    ctrl, session = setup(reasoning, tools)
+    assert session.segment_state is not None
+    assert isinstance(ctrl._client, AsyncMock)
+    card = build_streaming_card_v2(show_reasoning=reasoning, show_tool_use=tools)
+    headers = {p['element_id']: deepcopy(p['header']) for p in panels(card)}
+    targets = {f'{ident}_count' for ident in headers}
+    for ident, header in headers.items():
+        assert header['title']['element_id'] == f'{ident}_count'
+        assert len(header['title']['element_id']) <= 20
+        assert 'i18n_content' not in header['title']
+        assert header['title']['content'].startswith('💭 已思考' if lang == 'zh' else '💭 Thinking')
+
+    def apply_batch(cid, actions, *, sequence):
+        for action in actions:
+            params = action['params']
+            if params.get('element_id') in headers:
+                assert 'header' not in params.get('partial_element', {})
+
+    ctrl._client.cardkit_batch_update.side_effect = apply_batch
+    session.segment_state.on_reasoning_delta('body')
+    session.tool_use.record_start('fixture-tool')
+    session.segment_state.on_tool_event(1)
+    await ctrl._do_flush(session)
+    calls = ctrl._client.cardkit_stream_element.call_args_list
+    assert {c.args[1] for c in calls if c.args[1] in targets} == targets
+    expected = '💭 已思考 1 段 · 🔧 工具执行中 1 步' if lang == 'zh' else '💭 Thinking 1 stages · 🔧 Tools 1 steps'
+    assert all(c.args[2] == expected for c in calls if c.args[1] in targets)
+    ctrl._client.reset_mock(side_effect=False)
+    await ctrl._do_flush(session)
+    assert not ctrl._client.cardkit_stream_element.call_args_list
+
+    # A failed count write stays pending while the ordinary body still advances.
+    async def fail_count(cid, eid, text, *, sequence):
+        if eid in targets:
+            raise FeishuAPIError('temporary failure', code=500)
+    ctrl._client.cardkit_stream_element.side_effect = fail_count
+    session.segment_state.on_reasoning_delta('next body')
+    await ctrl._do_flush(session)
+    assert session.process_header_counts == (1, 1)
+    if reasoning:
+        assert any(c.args[2] == 'next body' for c in ctrl._client.cardkit_stream_element.call_args_list)
+    ctrl._client.cardkit_stream_element.side_effect = None
+    await ctrl._do_flush(session)
+    assert session.process_header_counts == (2, 1)
+
+    # Server-closed streaming uses the existing text-only element update path.
+    ctrl._client.reset_mock(side_effect=False)
+    session.stream_closed = True
+    session.segment_state.reasoning_count += 1
+    await ctrl._do_flush(session)
+    updates = [a for call in ctrl._client.cardkit_batch_update.call_args_list for a in call.args[1]]
+    assert {a['params']['element_id'] for a in updates} == targets
+    assert all(set(a['params']['partial_element']) == {'content'} for a in updates)

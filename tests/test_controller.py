@@ -1628,7 +1628,8 @@ class TestDoFlush:
         assert session.segment_state.segments[1].dirty is False
         # step2: stream_element called with answer text
         ctrl._client.cardkit_stream_element.assert_called()
-        assert "hello world" in ctrl._client.cardkit_stream_element.call_args[0][2]
+        assert any("hello world" in call.args[2]
+                   for call in ctrl._client.cardkit_stream_element.call_args_list)
         # step3: tool created
         tool_seg = session.segment_state.segments[2]
         assert tool_seg.created is True
@@ -1656,7 +1657,9 @@ class TestDoFlush:
         ctrl._client.cardkit_close_streaming.assert_not_called()
         ctrl._client.cardkit_update.assert_not_called()
         ctrl._client.cardkit_batch_update.assert_called_once()
-        assert ctrl._client.cardkit_stream_element.call_count == 2
+        body_writes = [c for c in ctrl._client.cardkit_stream_element.call_args_list
+                       if not c.args[1].endswith("_count")]
+        assert len(body_writes) == 2
 
     @pytest.mark.asyncio
     async def test_big_payload_widens_throttle_after_flush(self) -> None:

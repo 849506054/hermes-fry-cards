@@ -13,6 +13,7 @@ from ..cardkit.builder import (
     NOTICE_ELEMENT_ID,
     PROCESS_PANEL_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
+    _process_title,
     build_background_card,
     build_complete_card,
     build_cron_card,
@@ -48,7 +49,6 @@ from .segment_helper import (
     ELEMENT_THRESHOLD,
     FOOTER_RESERVE,
     build_add_segment_action,
-    build_process_panel_header_action,
     build_reasoning_finalized_action,
     build_tool_update_action,
     estimate_answer_elements,
@@ -548,19 +548,6 @@ class StreamingController:
                     seg.dirty = False
 
         counts = session.process_counts
-        for element_id, visible in (
-            (PROCESS_PANEL_ELEMENT_ID, self._cfg.show_reasoning),
-            (TOOL_PANEL_ELEMENT_ID, self._cfg.show_tool_use),
-        ):
-            if not visible:
-                continue
-            header_action = build_process_panel_header_action(*counts, element_id=element_id)
-            existing = [a for a in actions if a.get("params", {}).get("element_id") == element_id
-                        and "header" in a.get("params", {}).get("partial_element", {})]
-            for action in existing:
-                action["params"]["partial_element"]["header"] = header_action["params"]["partial_element"]["header"]
-            if not existing and counts != session.process_header_counts:
-                actions.append(header_action)
         if actions:
             _logger.info(
                 "process counters: msg=%s reasoning=%s tools=%s show_reasoning=%s show_tools=%s",
@@ -572,8 +559,6 @@ class StreamingController:
                 session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,
             ):
                 return
-
-        session.process_header_counts = counts
 
         # ── 步骤 1.5: 通知槽位同步 — 流式期到达的提示（含后台回执）当场可见 ──
         # 提示只进 notices 不会自己上屏：建卡之后才到的回执必须补一次元素更新，
@@ -653,6 +638,35 @@ class StreamingController:
                     seg.type.value,
                     e,
                 )
+
+        # Count text has its own ID; the native panel header remains in place.
+        if counts != session.process_header_counts:
+            counts_written = True
+            for panel_id, visible in (
+                (PROCESS_PANEL_ELEMENT_ID, self._cfg.show_reasoning),
+                (TOOL_PANEL_ELEMENT_ID, self._cfg.show_tool_use),
+            ):
+                if not visible:
+                    continue
+                title = _process_title(*counts, element_id=f"{panel_id}_count")
+                session.sequence += 1
+                try:
+                    await self._stream_or_update(
+                        session, title["element_id"], title["content"], kind="process_count",
+                    )
+                    payload_bytes += len(title["content"].encode("utf-8"))
+                    _logger.info(
+                        "CardKit count text: msg=%s el=%s reasoning=%d tools=%d seq=%d",
+                        session.message_id[:12], title["element_id"], *counts, session.sequence,
+                    )
+                except Exception as error:
+                    counts_written = False
+                    _logger.warning(
+                        "CardKit count text failed: msg=%s el=%s seq=%d err=%s",
+                        session.message_id[:12], title["element_id"], session.sequence, error,
+                    )
+            if counts_written:
+                session.process_header_counts = counts
 
         # 载荷自适应降频（#46/#52）：按本 flush 实际推送量 + 最大单元素全文
         # 调整下一轮节流窗口；元素级档位优先（客户端重绘量由最大单元素决定）。
@@ -855,12 +869,6 @@ class StreamingController:
             for seg in segments:
                 if seg.type == SegmentType.REASONING and pre_flush_reasoning_elapsed.get(seg.el_id, 0) > 0:
                     seg.reasoning_finalized = True
-            if new_el_ids:
-                for seg in segments:
-                    if seg.el_id in new_el_ids or not seg.created:
-                        continue
-                    if seg.type in (SegmentType.REASONING, SegmentType.ANSWER) and seg.text:
-                        seg.dirty = True
             current_tool_steps = session.tool_use.build_display_steps()
             # 合并面板：工具面板是共享元素，element_count 按面板总估算的增量统一累加一次，
             # 避免多个工具段各自差值导致重复计数（element_count 虚高 → 过度拆卡）。

@@ -95,12 +95,19 @@ def _panel_header(title_el: dict, *, icon_position: str = "right", position: str
     }
 
 
-def _process_title(reasoning_count: int = 0, tool_count: int = 0) -> dict:
+def _process_title(
+    reasoning_count: int = 0, tool_count: int = 0, *, element_id: str | None = None,
+) -> dict:
     en, zh = (
         _T["reasoning_count_streaming"][locale].format(reasoning_count)
         + " · " + _T["tool_count_streaming"][locale].format(tool_count)
         for locale in (0, 1)
     )
+    if element_id:
+        content = (_content_t("reasoning_count_streaming").format(reasoning_count)
+                   + " · " + _content_t("tool_count_streaming").format(tool_count))
+        return {"tag": "plain_text", "element_id": element_id, "content": content,
+                "text_color": "grey", "text_size": "notation"}
     return {"tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh),
             "text_color": "grey", "text_size": "notation"}
 
@@ -841,7 +848,10 @@ def _context_progress_with_text(used: int, total: int, width: int = 8) -> str:
 
 
 def build_streaming_tool_use_pending_panel(*, expanded: bool = True) -> dict[str, Any]:
-    panel = _collapsible_panel(expanded=expanded, title_el=_process_title(), elements=[])
+    panel = _collapsible_panel(
+        expanded=expanded, title_el=_process_title(element_id=f"{TOOL_PANEL_ELEMENT_ID}_count"),
+        elements=[],
+    )
     panel["element_id"] = TOOL_PANEL_ELEMENT_ID
     return panel
 
@@ -849,7 +859,8 @@ def build_streaming_tool_use_pending_panel(*, expanded: bool = True) -> dict[str
 def build_streaming_process_pending_panel(*, expanded: bool = True) -> dict[str, Any]:
     """Native bottom header controls the complete reasoning timeline."""
     panel = _collapsible_panel(
-        expanded=expanded, title_el=_process_title(),
+        expanded=expanded,
+        title_el=_process_title(element_id=f"{PROCESS_PANEL_ELEMENT_ID}_count"),
         elements=[{"tag": "markdown", "content": " ", "element_id": PROCESS_ANCHOR_ELEMENT_ID,
                    "text_size": "notation"}],
     )
@@ -886,7 +897,9 @@ def build_streaming_card_v2(
     if show_tool_use:
         if tool_steps:
             panel = _build_tool_panel(tool_steps, elapsed_ms, running=True, expanded=False)
-            panel["header"] = _panel_header(_process_title(0, len(tool_steps)))
+            panel["header"] = _panel_header(_process_title(
+                0, len(tool_steps), element_id=f"{TOOL_PANEL_ELEMENT_ID}_count",
+            ))
             elements.append(panel)
         else:
             elements.append(build_streaming_tool_use_pending_panel(expanded=process_expanded))

@@ -271,7 +271,6 @@ def build_tool_update_action(
             "element_id": element_id,
             "partial_element": {
                 "elements": panel["elements"],
-                "header": panel["header"],
             },
         },
     }
