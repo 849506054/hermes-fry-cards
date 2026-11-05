@@ -334,6 +334,7 @@ class SegmentState:
 
     def on_completion_answer(
         self, text: str, *, replaced: bool = False, start_index: int = 0,
+        keep_streamed: bool = False,
     ) -> None:
         """Use the complete answer as the sole body on the active card.
 
@@ -342,6 +343,13 @@ class SegmentState:
         ``replaced`` remains accepted for hook compatibility; every final replaces.
         """
         self.mark_completed()
+        if not text and keep_streamed:
+            # 被打断的回合没有最终答案（原始 final 为空）时保留已上屏的正文：
+            # 用户已经看到的回答不该因为一条空 final 消失。
+            for seg in self.segments:
+                if seg.type == SegmentType.ANSWER:
+                    seg.dirty = False
+            return
         target = None
         for index, segment in enumerate(self.segments):
             if segment.type != SegmentType.ANSWER:

@@ -66,7 +66,7 @@ def segment_state_for_log(segments: list[Segment], el_id: str) -> str:
     if not el_id:
         return "-"
     for i, seg in enumerate(segments):
-        if seg.el_id != el_id:
+        if el_id not in (seg.el_id, seg.text_el_id):
             continue
         state = f"{i}:{seg.el_id}/{seg.type.value} c={int(seg.created)} d={int(seg.dirty)} est={seg.element_estimate}"
         if seg.type == SegmentType.TOOL:

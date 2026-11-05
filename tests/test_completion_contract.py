@@ -39,6 +39,29 @@ def test_empty_final_clears_preview_and_preserves_process():
     assert state.segments[0].text == "思考"
 
 
+@pytest.mark.asyncio
+async def test_interrupted_empty_final_keeps_streamed_answer():
+    """原始 final 为空（回合被打断）：已上屏的正文保留，不被空定稿清掉."""
+    ctrl, session = make_session()
+    session.segment_state.on_answer_delta("已经流出的半段")
+    ctrl._apply_completion_payload(
+        session=session, answer="", duration=1, model="", tokens=None, context=None,
+    )
+    assert answers(session.segment_state) == ["已经流出的半段"]
+
+
+@pytest.mark.asyncio
+async def test_thinking_only_final_still_clears_preview():
+    """只含思考标签的 final 仍按无正文处理，预览要清掉."""
+    ctrl, session = make_session()
+    session.segment_state.on_answer_delta("中途旁白")
+    ctrl._apply_completion_payload(
+        session=session, answer="<think>仅思考</think>", duration=1, model="",
+        tokens=None, context=None,
+    )
+    assert answers(session.segment_state) == []
+
+
 def test_completion_is_idempotent_and_late_delta_stays_out():
     state = SegmentState()
     state.on_answer_delta("旧稿")
@@ -117,7 +140,7 @@ async def test_rollover_card_keeps_process_and_continuation_status():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("final", ["", "<think>仅思考</think>"])
+@pytest.mark.parametrize("final", ["<think>仅思考</think>"])
 async def test_empty_success_final_clears_interlude(final):
     ctrl, session = make_session()
     session.segment_state.on_answer_delta("中途旁白")

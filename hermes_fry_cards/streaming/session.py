@@ -72,6 +72,7 @@ class CardSession:
         "split_disabled",
         "split_index",
         "state",
+        "stream_closed",
         "synthetic",
         "tool_elapsed_base_ms",
         "tool_panel_created",
@@ -123,6 +124,8 @@ class CardSession:
         # 完成态重建前由 controller 按 notices 条数写入，拆卡/切卡时随基线一起重置。
         self.notice_element_count: int = 0
         self.split_disabled = False
+
+        self.stream_closed = False
         self.split_index: int = 0
         self.clarify_pending_split: bool = False
         self.tool_panel_created: bool = False
