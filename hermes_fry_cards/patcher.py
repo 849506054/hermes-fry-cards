@@ -529,6 +529,7 @@ def _complete_hook(indent: str) -> str:
             "        message_id=_lark_completion_id,",
             "        answer=response,",
             "        is_error=bool(agent_result.get('failed')),",
+            "        is_interrupted=bool(agent_result.get('interrupted')),",
             "        answer_rewritten=_lark_answer_rewritten,",
             "        duration=locals().get('_response_time', locals().get('_turn_seconds')),",
             "        model=agent_result.get('model', ''),",

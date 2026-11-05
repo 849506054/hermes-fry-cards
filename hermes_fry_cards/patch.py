@@ -390,6 +390,7 @@ async def on_message_completed_wait(
     context: dict[str, Any] | None = None,
     session_key: str | None = None,
     answer_rewritten: bool = False,
+    is_interrupted: bool = False,
 ) -> bool:
     """[注入点 2] return 前 — message.completed，等待卡片完成收尾.
 
@@ -407,6 +408,7 @@ async def on_message_completed_wait(
             context=context,
             session_key=session_key,
             answer_rewritten=answer_rewritten,
+            is_interrupted=is_interrupted,
         )
     )
 

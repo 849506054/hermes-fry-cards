@@ -1181,6 +1181,7 @@ class StreamCardController(StreamingController):
         context: dict | None = None,
         session_key: str | None = None,
         answer_rewritten: bool = False,
+        is_interrupted: bool = False,
     ) -> bool:
         """消息处理完成，并等待卡片真正收尾后返回是否已发送."""
         if not self.enabled:
@@ -1225,19 +1226,24 @@ class StreamCardController(StreamingController):
             tokens=tokens,
             context=context,
             answer_rewritten=answer_rewritten,
-            preserve_partial=is_error,
+            preserve_partial=is_error or is_interrupted,
         )
         if is_error:
             session.mark_failed(reason="agent_returned_error")
+        elif is_interrupted:
+            session.state = SessionState.ABORTED
+            _logger.info("completion interrupted: msg=%s", message_id[:12])
 
         completed = await self._complete_session_wait(session)
+        if completed and is_interrupted and not is_error:
+            session.state = SessionState.ABORTED
         _logger.info(
             "complete_session_wait: msg=%s completed=%s state=%s",
             message_id[:12], completed, session.state,
         )
-        if completed:
+        if completed and (is_error or not is_interrupted):
             self._maybe_send_completion_notice(session, is_error=is_error)
-        else:
+        if not completed:
             # 封卡失败（重试 3 次后仍不成）：标记文本回退，撤销 already_sent，
             # 让网关把最终回复按纯文本补发——流式抑制标记可能已把 already_sent
             # 置位（见 mark_stream_delivered），不撤销用户就什么都收不到。
