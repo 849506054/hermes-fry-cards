@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
+import shutil
+import subprocess
 import threading
+from html.parser import HTMLParser
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -15,11 +19,49 @@ import pytest
 import yaml
 
 import hermes_fry_cards.studio.server as srv
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
+
+class TestHeaderThemePreview:
+    def test_each_template_has_visible_css(self) -> None:
+        css = (srv._WEB_ROOT / "css/style.css").read_text(encoding="utf-8")
+        for template in srv.HEADER_TEMPLATES:
+            assert re.search(r"\.card-header\.t-" + template + r"\s*\{[^}]*background:", css)
+        default = re.search(r"\.card-header\.t-default\s*\{([^}]+)\}", css)
+        assert default and "color: inherit" in default.group(1)
+        assert "background: transparent" in default.group(1)
+
+    def test_default_template_in_rendered_dom(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            pytest.skip("node is required for JavaScript preview checks")
+        assert node is not None
+        script = r"""
+const assert = require('node:assert/strict');
+global.window = {};
+global.document = {createElement() { return {
+  children: [], appendChild(child) { this.children.push(child); }
+}; }};
+require(process.argv[1]);
+for (const template of JSON.parse(process.argv[2])) {
+  const header = {title: {content: 'title'}};
+  if (template !== null) header.template = template;
+  const card = window.FryPreview.renderCard({header, body: {elements: []}});
+  assert.equal(card.children[0].className, 'card-header t-' + (template || 'default'));
+  assert.equal(card.children[0].textContent, 'title');
+}
+"""
+        subprocess.run(
+            [node, "-e", script, str(srv._WEB_ROOT / "js/preview.js"),
+             json.dumps([None, *srv.HEADER_TEMPLATES])],
+            check=True, capture_output=True, text=True,
+        )
+
 
 _INITIAL_YAML = (
     "streaming:\n"
     "  enabled: true\n"
-    "  card_ttl_sec: 600\n"  # 用户手写的非受管键 — 保存后必须存活
+    "  card_ttl_sec: 600\n"  # 未包含在保存请求中的受管键保持原值
     "agents:\n"
     "  keep: me\n"
 )
@@ -28,6 +70,7 @@ _INITIAL_YAML = (
 @pytest.fixture()
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(srv, "hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(srv, "_HOST_CONFIG_CACHE", None)
     (tmp_path / "config.yaml").write_text(_INITIAL_YAML, encoding="utf-8")
     return tmp_path
 
@@ -200,7 +243,7 @@ class TestValidation:
         })
         assert any(
             element.get("text_size") == "heading"
-            for element in data["card"]["body"]["elements"]
+            for element in body_content_elements(data["card"])
         )
 
     def test_studio_ui_exposes_notice_and_heading(self) -> None:
@@ -452,7 +495,7 @@ class TestPreviewEndpoint:
         data = _post_ok(server, "/api/preview", {"scenario": "workflow", "state": "completed"})
         card = data["card"]
         assert card["schema"] == "2.0"
-        assert card["header"]["template"] == "green"  # 完成态
+        assert set(card["header"]) == {"title"}
         raw = json.dumps(card, ensure_ascii=False)
         assert "结论" in raw
 
@@ -460,7 +503,7 @@ class TestPreviewEndpoint:
         data = _post_ok(server, "/api/preview", {"scenario": "workflow", "state": "streaming"})
         card = data["card"]
         assert card["config"]["streaming_mode"] is True
-        assert card["header"]["template"] == "blue"
+        assert set(card["header"]) == {"title"}
 
     def test_tables_compaction_visible(self, server: str) -> None:
         data = _post_ok(server, "/api/preview", {"scenario": "tables", "state": "completed"})
@@ -472,9 +515,10 @@ class TestPreviewEndpoint:
         raw = json.dumps(data["card"], ensure_ascii=False)
         assert "省略" in raw or "omitted" in raw
 
-    def test_error_outcome_header_red(self, server: str) -> None:
+    def test_error_outcome_status_title(self, server: str) -> None:
         data = _post_ok(server, "/api/preview", {"scenario": "short", "state": "completed", "outcome": "error"})
-        assert data["card"]["header"]["template"] == "red"
+        assert set(data["card"]["header"]) == {"title"}
+        assert "Error" in data["card"]["header"]["title"]["content"]
 
     def test_overrides_not_persisted(self, server: str) -> None:
         data = _post_ok(
@@ -761,8 +805,289 @@ class TestWildcardBindDefaults:
         assert srv._display_host("192.168.31.5") == "192.168.31.5"
 
 
+class TestStudioHotStyleConfig:
+    def test_style_validation_and_normalization(self) -> None:
+        payload = {"streaming": {
+            "body": {"light_color": "#a1b2c3", "dark_color": "#010203"},
+            "header": {"template": "turquoise"},
+            "process_border": True,
+            "card_ttl_sec": 1200,
+        }}
+        cleaned = srv.validate_payload(payload)["streaming"]
+        assert cleaned["body"] == {"light_color": "#A1B2C3", "dark_color": "#010203"}
+        assert cleaned["header"]["template"] == "turquoise"
+        assert cleaned["process_border"] is True
+        assert cleaned["card_ttl_sec"] == 1200
+
+    @pytest.mark.parametrize("streaming", [
+        {"body": {"light_color": "red"}},
+        {"body": {"dark_color": "#fff"}},
+        {"body": {"light_color": "#12345678"}},
+        {"body": {"dark_color": "#12345G"}},
+        {"body": {"light_color": "#123456\n"}},
+        {"body": {"dark_color": True}},
+        {"header": {"template": "rainbow"}},
+        {"process_border": "false"},
+        {"card_ttl_sec": 0},
+        {"card_ttl_sec": -1},
+        {"card_ttl_sec": 86401},
+        {"card_ttl_sec": True},
+        {"card_ttl_sec": "600"},
+        {"card_ttl_sec": float("nan")},
+        {"card_ttl_sec": float("inf")},
+    ])
+    def test_invalid_style_values_rejected(self, streaming: dict) -> None:
+        with pytest.raises(ValueError):
+            srv.validate_payload({"streaming": streaming})
+
+    def test_state_defaults_preserve_appearance(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(srv, "_collect_status", lambda _home: {})
+        streaming = srv.collect_state(home)["streaming"]
+        assert streaming["body"] == {
+            "text_size": "normal_v2", "light_color": "#F5F6F7", "dark_color": "#222222",
+        }
+        assert streaming["header"]["template"] == "default"
+        assert streaming["process_border"] is False
+        assert streaming["card_ttl_sec"] == 600
+        assert streaming["footer"]["text_size"] == "notation"
+
+    def test_style_save_roundtrip(self, server: str, home: Path) -> None:
+        changes = {"streaming": {
+            "body": {"light_color": "#a1b2c3", "dark_color": "#334455"},
+            "header": {"template": "violet"}, "process_border": True, "card_ttl_sec": 1200,
+        }}
+        result = _post_ok(server, "/api/config", changes)
+        assert set(result["changed"]) == {
+            "streaming.body.light_color", "streaming.body.dark_color", "streaming.header.template",
+            "streaming.process_border", "streaming.card_ttl_sec",
+        }
+        state = _get_json(server, "/api/state")["streaming"]
+        assert state["body"]["light_color"] == "#A1B2C3"
+        assert state["body"]["dark_color"] == "#334455"
+        assert state["header"]["template"] == "violet"
+        assert state["process_border"] is True
+        assert state["card_ttl_sec"] == 1200
+        disk = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+        assert disk["agents"] == {"keep": "me"}
+        assert disk["streaming"]["body"]["light_color"] == "#A1B2C3"
+
+    @pytest.mark.parametrize("state", ["streaming", "completed"])
+    def test_preview_uses_isolated_style_snapshot(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+    ) -> None:
+        monkeypatch.setattr(srv, "_collect_status", lambda _home: {})
+        before = (home / "config.yaml").read_bytes()
+        card = srv.build_preview({"state": state, "overrides": {"streaming": {
+            "body": {"light_color": "#010203", "dark_color": "#aabbcc"},
+            "header": {"template": "purple"}, "process_border": True,
+        }}}, home)["card"]
+        assert card["config"]["style"]["color"]["cus-0"] == {
+            "light_mode": "rgba(1,2,3,1)", "dark_mode": "rgba(170,187,204,1)",
+        }
+        assert card["header"]["template"] == "purple"
+        if state == "streaming":
+            frames = [e for e in body_content_elements(card) if e.get("tag") == "collapsible_panel"]
+            assert frames
+            assert all(e["border"]["color"] == "grey" for e in frames)
+        assert (home / "config.yaml").read_bytes() == before
+        default = srv.build_preview({"state": state}, home)["card"]
+        assert "template" not in default["header"]
+        assert default["config"]["style"]["color"]["cus-0"] == {
+            "light_mode": "rgba(245,246,247,1)", "dark_mode": "rgba(34,34,34,1)",
+        }
+        if state == "streaming":
+            frames = [e for e in body_content_elements(default) if e.get("tag") == "collapsible_panel"]
+            assert all("border" not in e for e in frames)
+
+    @pytest.mark.parametrize("template", srv.HEADER_TEMPLATES)
+    def test_all_official_header_templates(self, template: str) -> None:
+        result = srv.validate_payload({"streaming": {"header": {"template": template}}})
+        assert result["streaming"]["header"]["template"] == template
+
+
+class TestStudioStyleDOM:
+    def test_style_controls_labels_help_and_template_options(self) -> None:
+        class Document(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.elements: dict[str, dict] = {}
+                self.templates: list[str] = []
+                self.i18n_keys: set[str] = set()
+                self.select = ""
+
+            def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                values = dict(attrs)
+                element_id = values.get("id")
+                if element_id:
+                    assert element_id not in self.elements
+                    self.elements[element_id] = values
+                i18n_key = values.get("data-i18n")
+                if i18n_key:
+                    self.i18n_keys.add(i18n_key)
+                if tag == "select":
+                    self.select = element_id or ""
+                if tag == "option" and self.select == "f-header-template":
+                    value = values.get("value")
+                    assert isinstance(value, str)
+                    self.templates.append(value)
+
+            def handle_endtag(self, tag: str) -> None:
+                if tag == "select":
+                    self.select = ""
+
+        document = Document()
+        document.feed((srv._WEB_ROOT / "index.html").read_text(encoding="utf-8"))
+        js = (srv._WEB_ROOT / "js/app.js").read_text(encoding="utf-8")
+        i18n = (srv._WEB_ROOT / "js/i18n.js").read_text(encoding="utf-8")
+        assert set(document.templates) == set(srv.HEADER_TEMPLATES)
+        for element_id in (
+            "f-body-light-color", "f-body-dark-color", "f-header-template", "f-process-border", "f-card-ttl-sec",
+        ):
+            attrs = document.elements[element_id]
+            for described_by in attrs["aria-describedby"].split():
+                assert described_by in document.elements
+            assert f'"{element_id}"' in js  # fillForm
+            assert f'"#{element_id}"' in js  # readForm
+        assert document.elements["f-body-light-color"]["type"] == "color"
+        assert document.elements["f-body-dark-color"]["type"] == "color"
+        assert document.elements["f-process-border"]["type"] == "checkbox"
+        assert document.elements["f-card-ttl-sec"]["max"] == "86400"
+        assert document.elements["error-card-ttl"]["role"] == "alert"
+        assert document.i18n_keys <= set(re.findall(r'"([\w.-]+)"\s*:', i18n)) | {"hint.warn"}
+        assert "已有卡片保留创建时样式" in i18n
+        assert "existing cards keep their initial style" in i18n
+
+    def test_form_mapping_and_ttl_validation_in_node(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            pytest.skip("node is required for JavaScript form checks")
+        assert node is not None
+        script = r'''
+const fs = require("fs"), vm = require("vm"), assert = require("assert/strict");
+const app = fs.readFileSync(process.argv[1], "utf8");
+const i18n = fs.readFileSync(process.argv[2], "utf8");
+const controls = new Map();
+function control(id) {
+  if (!controls.has(id)) controls.set(id, {
+    value: "", checked: false, options: [], hidden: false, textContent: "",
+    attrs: {}, classList: { toggle() {}, contains() { return false; } },
+    querySelectorAll() { return []; }, appendChild(el) { this.options.push(el); },
+    setCustomValidity(value) { this.validity = value; },
+    setAttribute(key, value) { this.attrs[key] = value; },
+  });
+  return controls.get(id);
+}
+const context = {
+  window: {}, localStorage: { getItem() { return null; } }, location: { search: "", hash: "" },
+  document: {
+    getElementById: control, querySelector: sel => control(sel.replace(/^#/, "")),
+    querySelectorAll() { return []; }, createElement() { return {}; },
+    documentElement: { setAttribute() {} },
+  },
+  $: sel => control(sel.replace(/^#/, "")),
+  __origChatTypes: null, __origFields: [], orderRows() {}, syncFoldBadges() {},
+};
+vm.createContext(context);
+vm.runInContext(i18n, context);
+context.I18N = context.window.FryI18n;
+// Run the actual form functions; unrelated navigation and network handlers stay outside this harness.
+for (const name of ["setVal", "setCheck", "fillForm", "num", "int", "readForm", "validateCardTTL"]) {
+  const start = app.indexOf("  function " + name + "(");
+  assert.ok(start >= 0, name);
+  const end = app.indexOf("\n  }", start) + 4;
+  vm.runInContext(app.slice(start, end), context);
+}
+const state = {
+  streaming: {
+    enabled: true, width_mode: "default", chat_types: null,
+    header: { enabled: true, min_duration: 0, template: "violet" },
+    footer: { enabled: false, show_label: false, text_size: "notation", fields: [] },
+    body: { text_size: "normal_v2", light_color: "#a1b2c3", dark_color: "#334455" },
+    process_border: true, card_ttl_sec: 1200, flush_interval_ms: 500,
+  }, display: { panel_fields: [] },
+};
+context.fillForm(state);
+let result = context.readForm().streaming;
+assert.equal(result.body.light_color, "#A1B2C3");
+assert.equal(result.body.dark_color, "#334455");
+assert.equal(result.body.text_size, "normal_v2");
+assert.equal(result.footer.text_size, "notation");
+assert.equal(result.header.template, "violet");
+assert.equal(result.process_border, true);
+assert.equal(result.card_ttl_sec, 1200);
+for (const value of ["", "0", "-1", "86401", "NaN", "Infinity"]) {
+  control("f-card-ttl-sec").value = value;
+  assert.equal(context.validateCardTTL(), false, value);
+  assert.equal(control("f-card-ttl-sec").attrs["aria-invalid"], "true");
+  assert.equal(control("error-card-ttl").hidden, false);
+}
+for (const value of ["1", "600", "86400"]) {
+  control("f-card-ttl-sec").value = value;
+  assert.equal(context.validateCardTTL(), true, value);
+  assert.equal(control("error-card-ttl").hidden, true);
+}
+for (const lang of ["en", "zh"]) {
+  context.I18N.setLang(lang);
+  for (const key of [
+    "hint.body-colors", "hint.header-template", "hint.process-border", "hint.card-ttl", "error.card-ttl",
+  ]) {
+    assert.notEqual(context.I18N.t(key), key);
+  }
+}
+console.log("form mapping, TTL validation, bilingual help passed");
+'''
+        result = subprocess.run(
+            [node, "-e", script, str(srv._WEB_ROOT / "js/app.js"), str(srv._WEB_ROOT / "js/i18n.js")],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize("script", ["app.js", "i18n.js"])
+    def test_javascript_syntax(self, script: str) -> None:
+        node = shutil.which("node")
+        if node is None:
+            pytest.skip("node is required for JavaScript syntax checks")
+        assert node is not None
+        result = subprocess.run([node, "--check", str(srv._WEB_ROOT / "js" / script)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+
+
 class TestAllowedHostsGate:
     """Host 门白名单配置化（studio.allowed_hosts）— 默认仅 loopback，配置后放行网段."""
+
+    @staticmethod
+    def _host_status(server: str, request_host: str) -> int:
+        host, port = server.removeprefix("http://").split(":")
+        conn = http.client.HTTPConnection(host, int(port), timeout=10)
+        try:
+            conn.putrequest("GET", "/", skip_host=True)
+            conn.putheader("Host", request_host)
+            conn.endheaders()
+            resp = conn.getresponse()
+            resp.read()
+            return resp.status
+        finally:
+            conn.close()
+
+    def test_allowlist_refreshes_each_request(self, server: str, home: Path) -> None:
+        assert self._host_status(server, "studio.example") == 403
+        srv.write_atomic(home / "config.yaml", {"studio": {"allowed_hosts": ["studio.example"]}})
+        assert self._host_status(server, "studio.example") == 200
+        srv.write_atomic(home / "config.yaml", {"studio": {"allowed_hosts": ["next.example"]}})
+        assert self._host_status(server, "studio.example") == 403
+        assert self._host_status(server, "next.example") == 200
+        for host in ("127.0.0.1", "localhost:8765", "[::1]:8765"):
+            assert self._host_status(server, host) == 200
+
+    def test_allowlist_follows_active_home(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        srv.write_atomic(home / "config.yaml", {"studio": {"allowed_hosts": ["first.example"]}})
+        assert "first.example" in srv._allowed_hosts()
+        other = home / "other"
+        other.mkdir()
+        srv.write_atomic(other / "config.yaml", {"studio": {"allowed_hosts": ["second.example"]}})
+        monkeypatch.setattr(srv, "hermes_home", lambda: other)
+        assert "second.example" in srv._allowed_hosts()
+        assert "first.example" not in srv._allowed_hosts()
 
     def test_lan_host_blocked_by_default(self, server: str) -> None:
         host, port = server.removeprefix("http://").split(":")
@@ -775,8 +1100,8 @@ class TestAllowedHostsGate:
         resp.read()
         conn.close()
 
-    def test_lan_host_allowed_via_config(self, server: str, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(srv, "_ALLOWED_HOSTS_CACHE", ["127.0.0.1", "localhost", "::1", "192.168.31."])
+    def test_lan_host_allowed_via_config(self, server: str, home: Path) -> None:
+        srv.write_atomic(home / "config.yaml", {"studio": {"allowed_hosts": ["192.168.31."]}})
         host, port = server.removeprefix("http://").split(":")
         conn = http.client.HTTPConnection(host, int(port), timeout=10)
         conn.putrequest("GET", "/api/state", skip_host=True)

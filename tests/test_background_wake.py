@@ -58,11 +58,11 @@ async def test_receipt_success_cannot_ack_failed_parent_admission():
 
 @pytest.mark.asyncio
 async def test_disabled_cards_leave_normal_wake_intact():
-    ctrl = SimpleNamespace(enabled=False, on_background_completion=AsyncMock())
+    ctrl = SimpleNamespace(enabled=False, on_background_completion=AsyncMock(return_value=False))
     result, admit, text, event = await inject(ctrl)
     assert result is True
     admit.assert_awaited_once_with(text, event)
-    ctrl.on_background_completion.assert_not_called()
+    ctrl.on_background_completion.assert_awaited_once()
 
 
 @pytest.mark.asyncio

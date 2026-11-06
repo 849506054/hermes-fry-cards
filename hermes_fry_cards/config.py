@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
+import re
+import time
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import yaml
 
+from .style_options import HEADER_TEMPLATES, validate_style_role
+
 DEFAULT_DOMAIN = "https://open.feishu.cn"  # SDK 根域名，Larksuite 用 https://open.larksuite.com
 LARK_DOMAIN = "https://open.larksuite.com"
+
+_logger = logging.getLogger("hermes_fry_cards")
+_RELOAD_WARNING_INTERVAL_SEC = 60.0
 
 
 def hermes_home() -> Path:
@@ -116,8 +127,42 @@ class Config:
     def __init__(self, home: Path | None = None) -> None:
         self._home = Path(home) if home is not None else None
         self._raw: dict[str, Any] | None = None
+        self._reload_lock = RLock()
         self._reload_key: tuple[int, int] | None = None
         self._reload_raw: dict[str, Any] | None = None
+        self._reload_warn_after = 0.0
+        self._streaming_snapshot: dict[str, Any] | None = None
+        self._panel_text_size_snapshot: str | None = None
+
+    def card_snapshot(self) -> Config:
+        """冻结本卡 streaming 和面板字号；display 开关热读，凭据沿用冷缓存."""
+        with self._reload_lock:
+            streaming = deepcopy(self._streaming_sec())
+            # Copy configuration data only; each snapshot owns its reload lock.
+            snapshot = Config(self._home or hermes_home())
+            snapshot._streaming_snapshot = streaming
+            snapshot._raw = self._raw
+            snapshot._reload_raw = self._reload_raw
+            snapshot._reload_key = self._reload_key
+            snapshot._reload_warn_after = self._reload_warn_after
+            snapshot._panel_text_size_snapshot = (
+                self._panel_text_size_snapshot if self._panel_text_size_snapshot is not None
+                else snapshot._resolve_panel_text_size((self._reload_raw or {}).get("display"))
+            )
+            return snapshot
+
+    def style_options(self, role: str) -> dict[str, Any]:
+        """Return valid explicit presentation overrides from this card's read path.
+
+        Live instances reread streaming metadata; card snapshots keep their frozen
+        section. Renderer defaults remain with the existing builders/properties.
+        """
+        if not isinstance(role, str):
+            return {}
+        streaming = self._streaming_sec()
+        return validate_style_role(
+            role, streaming.get(role, {}), strict=False, text_sizes=streaming.get("text_sizes"),
+        )
 
     @property
     def enabled(self) -> bool:
@@ -131,7 +176,7 @@ class Config:
 
         除内置 loopback（``127.0.0.1`` / ``localhost`` / ``::1``）外额外放行的 Host
         或网段前缀（如 ``"192.168.31."`` 放行整个 C 段）。仅接受非空字符串，去重保序，
-        默认 ``[]``（仅 loopback 可访问）。由 Studio 进程启动时读取（缓存至重启）。
+        默认 ``[]``（仅 loopback 可访问）。Studio 每次请求使用配置元数据重读。
         """
         raw = self._reload().get("studio")
         if not isinstance(raw, dict):
@@ -156,7 +201,7 @@ class Config:
         - 缺省（配置不存在/为空）→ 返回 ``None``，表示所有聊天类型都发卡片（保持向后兼容）；
         - 显式给出列表 → 仅列表内的聊天类型发卡片，其余回落纯文本。
 
-        卡片创建策略开关（与 ``streaming.enabled`` 同级），改动需重启网关生效。
+        卡片创建策略开关（与 ``streaming.enabled`` 同级），改动在下次读取时生效。
         """
         sec = self._streaming_sec()
         value = sec.get("chat_types")
@@ -180,10 +225,14 @@ class Config:
     def process_expanded(self) -> bool:
         """运行中过程框建卡时是否展开.
 
-        走 ``_reload()`` 按文件 mtime 读取，改配置后下一张卡即按新值建，不必重启网关。
+        新卡读取当前值，运行中的卡片沿用建卡快照。
         """
-        sec = self._reload().get("streaming") or {}
-        return bool(sec.get("process_expanded", True)) if isinstance(sec, dict) else True
+        return bool(self._streaming_sec().get("process_expanded", True))
+
+    @property
+    def process_border(self) -> bool:
+        """过程框是否显示边框，默认 False."""
+        return bool(self._streaming_sec().get("process_border", False))
 
     @property
     def content_lang(self) -> str:
@@ -500,8 +549,14 @@ class Config:
         优先级：display.platforms.feishu.panel_text_size → display.panel_text_size，
         默认 ``notation``（小字，与旧版行为一致）。非法值回落默认。
         """
-        valid = ("normal_v2", "normal", "heading", "notation")
-        display = self._reload().get("display")
+        if self._panel_text_size_snapshot is not None:
+            return self._panel_text_size_snapshot
+        return self._resolve_panel_text_size(self._reload().get("display"))
+
+    def _resolve_panel_text_size(self, display: Any) -> str:
+        from .style_options import TEXT_SIZES
+
+        valid = (*TEXT_SIZES, *self.style_options("text_sizes"))
         if not isinstance(display, dict):
             return "notation"
         platforms = display.get("platforms")
@@ -530,8 +585,14 @@ class Config:
 
     @property
     def card_duration_sec(self) -> int:
-        """卡片存活检测超时."""
-        return int(self._streaming_sec().get("card_ttl_sec", 600))
+        """卡片存活检测超时，正整数秒数上限 86400，非法值回落 600."""
+        try:
+            value = float(self._streaming_sec().get("card_ttl_sec", 600))
+            if math.isfinite(value) and 0 < value <= 86400:
+                return max(1, int(value))
+        except (TypeError, ValueError, OverflowError):
+            pass
+        return 600
 
     @property
     def header_enabled(self) -> bool:
@@ -541,6 +602,26 @@ class Config:
         if not isinstance(header, dict):
             return True
         return bool(header.get("enabled", True))
+
+    @property
+    def header_template(self) -> str:
+        """Header 主题；default 由构建器采用飞书默认样式."""
+        header = self._streaming_sec().get("header")
+        value = header.get("template") if isinstance(header, dict) else None
+        return value if isinstance(value, str) and value in HEADER_TEMPLATES else "default"
+
+    @property
+    def header_icons(self) -> dict[str, str]:
+        """每个状态的标题前缀图片；键为状态名，值为上传后的 image key."""
+        values = self.style_options("header")
+        return {
+            status: values[field]
+            for status, field in (
+                ("streaming", "icon_processing"), ("completed", "icon_completed"),
+                ("stopped", "icon_stopped"), ("error", "icon_error"), ("cron", "icon_cron"),
+            )
+            if values.get(field)
+        }
 
     @property
     def header_min_duration(self) -> float:
@@ -569,11 +650,24 @@ class Config:
     @property
     def body_text_size(self) -> str:
         """Body answer markdown 的文字大小."""
-        sec = self._streaming_sec()
-        body = sec.get("body", {})
-        if not isinstance(body, dict):
-            return "normal_v2"
-        return str(body.get("text_size", "normal_v2")) or "normal_v2"
+        return self.style_options("body").get("text_size", "normal_v2")
+
+    def _body_color(self, key: str, default: str) -> str:
+        body = self._streaming_sec().get("body")
+        value = body.get(key) if isinstance(body, dict) else None
+        if isinstance(value, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            return value.upper()
+        return default
+
+    @property
+    def body_light_color(self) -> str:
+        """浅色模式正文底色（六位十六进制）."""
+        return self._body_color("light_color", "#F5F6F7")
+
+    @property
+    def body_dark_color(self) -> str:
+        """深色模式正文底色（六位十六进制）."""
+        return self._body_color("dark_color", "#222222")
 
     @property
     def completion_notice(self) -> bool:
@@ -597,11 +691,7 @@ class Config:
     @property
     def footer_text_size(self) -> str:
         """Footer markdown 的文字大小."""
-        sec = self._streaming_sec()
-        footer = sec.get("footer", {})
-        if not isinstance(footer, dict):
-            return "notation"
-        return str(footer.get("text_size", "notation")) or "notation"
+        return self.style_options("footer").get("text_size", "notation")
 
     @property
     def footer_fields(self) -> list[list[str]]:
@@ -625,7 +715,7 @@ class Config:
         """Footer 是否显示字段标签."""
         sec = self._streaming_sec()
         footer = sec.get("footer", {})
-        return bool(footer.get("show_label", False))
+        return bool(footer.get("show_label", False)) if isinstance(footer, dict) else False
 
     @staticmethod
     def _default_footer_fields() -> list[list[str]]:
@@ -640,7 +730,9 @@ class Config:
         return _get_secret("FEISHU_APP_SECRET") or _get_secret("LARK_APP_SECRET")
 
     def _streaming_sec(self) -> dict[str, Any]:
-        raw = self._load()
+        if self._streaming_snapshot is not None:
+            return self._streaming_snapshot
+        raw = self._reload()
         sec = raw.get("streaming") or {}
         if isinstance(sec, dict):
             return sec
@@ -702,15 +794,45 @@ class Config:
         以 ``(mtime_ns, size)`` 为键缓存解析结果：配置真被改（如 /reasoning
         运行时改写）才重解析，稳态下每个流式 delta 不再重复 ``yaml.safe_load``.
         """
-        path = _config_path(self._home)
-        try:
-            st = path.stat()
-        except OSError:
-            return {}
-        key = (st.st_mtime_ns, st.st_size)
-        if self._reload_key == key and self._reload_raw is not None:
-            return self._reload_raw
-        text = path.read_text(encoding="utf-8")
-        self._reload_raw = yaml.safe_load(text) or {}
-        self._reload_key = key
-        return self._reload_raw
+        with self._reload_lock:
+            # Serialize metadata, I/O, parsing and commit as one cache operation.
+            path = _config_path(self._home)
+            try:
+                st = path.stat()
+            except OSError:
+                self._reload_key = None
+                if self._reload_raw is not None:
+                    self._warn_reload("unavailable")
+                return self._reload_raw if self._reload_raw is not None else {}
+            key = (st.st_mtime_ns, st.st_size)
+            if self._reload_key == key:
+                return self._reload_raw if self._reload_raw is not None else {}
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                self._warn_reload("unreadable")
+                return self._reload_raw if self._reload_raw is not None else {}
+            except UnicodeError:
+                self._reload_key = key
+                self._warn_reload("invalid encoding")
+                return self._reload_raw if self._reload_raw is not None else {}
+            try:
+                raw = yaml.safe_load(text)
+            except Exception:
+                # SafeLoader constructors can also raise ValueError or IndexError.
+                self._warn_reload("invalid YAML")
+            else:
+                if isinstance(raw, dict):
+                    self._reload_raw = raw
+                else:
+                    self._warn_reload("expected mapping")
+            # Cache invalid content too, retaining the last valid parsed mapping.
+            self._reload_key = key
+            return self._reload_raw if self._reload_raw is not None else {}
+
+    def _warn_reload(self, reason: str) -> None:
+        """限频记录固定原因，配置内容与解析器异常留在本地读取路径内."""
+        now = time.monotonic()
+        if now >= self._reload_warn_after:
+            self._reload_warn_after = now + _RELOAD_WARNING_INTERVAL_SEC
+            _logger.warning("fry-cards config reload: %s; keeping last valid configuration", reason)

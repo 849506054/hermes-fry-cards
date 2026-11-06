@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 import pytest
 
 from hermes_fry_cards.cardkit.builder import (
@@ -183,7 +185,7 @@ class TestNativeTableCards:
     def test_complete_card_answer_table_becomes_native(self) -> None:
         seg = _seg("answer", "| A | B |\n|---|---|\n| x**粗** | y |")
         card = build_complete_card(segments=[seg], all_tool_steps=[])
-        tables = [el for el in card["body"]["elements"] if el.get("tag") == "table"]
+        tables = [el for el in body_content_elements(card) if el.get("tag") == "table"]
         assert len(tables) == 1
         table = tables[0]
         assert [col["display_name"] for col in table["columns"]] == ["A", "B"]
@@ -195,7 +197,7 @@ class TestNativeTableCards:
         seg = _seg("answer", "前文\n\n| A |\n|---|\n| 1 |\n\n后文")
         card = build_complete_card(segments=[seg], all_tool_steps=[])
         texts = [
-            el["content"] for el in card["body"]["elements"]
+            el["content"] for el in body_content_elements(card)
             if el.get("tag") == "markdown"
         ]
         assert any("前文" in t for t in texts)
@@ -211,10 +213,10 @@ class TestNativeTableCards:
         table = "| A | B |\n|---|---|\n| 1 | 2 |"
         seg = _seg("answer", "\n\n".join([table] * 6))
         card = build_complete_card(segments=[seg], all_tool_steps=[])
-        tables = [el for el in card["body"]["elements"] if el.get("tag") == "table"]
+        tables = [el for el in body_content_elements(card) if el.get("tag") == "table"]
         assert len(tables) == 5
         texts = [
-            el["content"] for el in card["body"]["elements"]
+            el["content"] for el in body_content_elements(card)
             if el.get("tag") == "markdown"
         ]
         assert any("Table 6 · Row 1" in t for t in texts)
@@ -223,20 +225,23 @@ class TestNativeTableCards:
         from hermes_fry_cards.cardkit.builder import build_background_card
 
         card = build_background_card("p", "| A | B |\n|---|---|\n| 1 | 2 |")
-        tables = [el for el in card["body"]["elements"] if el.get("tag") == "table"]
+        tables = [el for el in body_content_elements(card) if el.get("tag") == "table"]
         assert len(tables) == 1
         assert tables[0]["rows"] == [{"c0": "1", "c1": "2"}]
 
-    def test_background_card_has_no_header(self) -> None:
-        """后台回执卡不带标题：正文第一行就是内容本身（preview 只留给列表摘要）."""
+    def test_background_card_titles_only_standalone_delivery(self) -> None:
+        """独立投递的后台回执带标题；挂在已有消息下（有引用行）时不加."""
         from hermes_fry_cards.cardkit.builder import build_background_card
 
-        card = build_background_card("ls -la", "✅ 后台任务已完成 — `ls -la` (3s)")
+        standalone = build_background_card("ls -la", "✅ 后台任务已完成 — `ls -la` (3s)")
+        referenced = build_background_card(
+            "ls -la", "✅ 后台任务已完成 — `ls -la` (3s)", has_reference=True)
 
-        assert "header" not in card
-        assert card["body"]["elements"][0]["content"] == "✅ 后台任务已完成 — `ls -la` (3s)"
-        assert card["config"]["summary"]["content"] == "✅ 后台任务已完成 — `ls -la` (3s)"
-        assert "Background" not in str(card["config"]["summary"])
+        assert standalone["header"]["title"]["content"] == "Background task"
+        assert "header" not in referenced
+        assert body_content_elements(standalone)[0]["content"] == "✅ 后台任务已完成 — `ls -la` (3s)"
+        assert standalone["config"]["summary"]["content"] == "✅ 后台任务已完成 — `ls -la` (3s)"
+        assert "Background" not in str(standalone["config"]["summary"])
 
 
 # --- 文本拆分 ---
@@ -346,7 +351,7 @@ class TestToolPanelStepCap:
             footer_data={"duration": 10.0}, panel_text_size="heading",
         )
         panel = next(
-            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+            el for el in body_content_elements(card) if el.get("tag") == "collapsible_panel"
         )
         assert panel["header"]["text_size"] == "heading"
 
@@ -356,7 +361,7 @@ class TestToolPanelStepCap:
             segments=[seg], all_tool_steps=[_STEP_SUCCESS], footer_data={"duration": 10.0},
         )
         panel = next(
-            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+            el for el in body_content_elements(card) if el.get("tag") == "collapsible_panel"
         )
         assert panel["header"]["text_size"] == "notation"
 
@@ -417,7 +422,7 @@ class TestCompactToolPanel:
             segments=[seg], all_tool_steps=self._steps(5), footer_data={"duration": 10.0},
         )
         unified = next(
-            el for el in card["body"]["elements"]
+            el for el in body_content_elements(card)
             if el.get("tag") == "collapsible_panel"
         )
         tool_panel = unified["elements"][0]
@@ -429,7 +434,7 @@ class TestCompactToolPanel:
         seg = _seg("reasoning", "thinking text")
         card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
         unified = next(
-            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+            el for el in body_content_elements(card) if el.get("tag") == "collapsible_panel"
         )
         assert unified["element_id"] == "unified_panel"
 
@@ -441,7 +446,7 @@ class TestCompactToolPanel:
         seg = _seg("reasoning", "思" * 20_000)  # ~60KB 全文
         card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
         unified = next(
-            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+            el for el in body_content_elements(card) if el.get("tag") == "collapsible_panel"
         )
         reasoning_panel = unified["elements"][0]
         content = reasoning_panel["elements"][0]["content"]
@@ -451,7 +456,7 @@ class TestCompactToolPanel:
         seg = _seg("reasoning", "短思考")
         card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
         unified = next(
-            el for el in card["body"]["elements"] if el.get("tag") == "collapsible_panel"
+            el for el in body_content_elements(card) if el.get("tag") == "collapsible_panel"
         )
         assert "短思考" in unified["elements"][0]["elements"][0]["content"]
 
@@ -462,17 +467,17 @@ class TestStripUnifiedPanel:
     def test_strips_only_unified_panel(self) -> None:
         seg = _seg("reasoning", "thinking text")
         card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
-        before = len(card["body"]["elements"])
+        before = len(body_content_elements(card))
         removed = strip_unified_panel(card)
         assert removed == 1
-        assert len(card["body"]["elements"]) == before - 1
+        assert len(body_content_elements(card)) == before - 1
         # 正文仍在
-        assert any(el.get("tag") == "markdown" for el in card["body"]["elements"])
+        assert any(el.get("tag") == "markdown" for el in body_content_elements(card))
 
     def test_returns_zero_when_absent(self) -> None:
         card = {"body": {"elements": [{"tag": "markdown", "content": "x"}]}}
         assert strip_unified_panel(card) == 0
-        assert len(card["body"]["elements"]) == 1
+        assert len(body_content_elements(card)) == 1
 
     def test_malformed_body_is_noop(self) -> None:
         assert strip_unified_panel({}) == 0
@@ -685,27 +690,32 @@ class TestLongestBacktickRun:
 
 
 class TestBuildStreamingCardV2:
+    def test_client_default_streaming_cadence(self) -> None:
+        card = build_streaming_card_v2(show_reasoning=True, show_tool_use=False)
+        assert card["config"]["streaming_mode"] is True
+        assert "streaming_config" not in card["config"]
+
     def test_structure(self) -> None:
         card = build_streaming_card_v2()
         assert card["schema"] == "2.0"
         assert card["config"]["streaming_mode"] is True
-        assert card["body"]["elements"]
+        assert body_content_elements(card)
 
     def test_with_tool_steps(self) -> None:
         card = build_streaming_card_v2(tool_steps=[_STEP_RUNNING], elapsed_ms=100)
-        assert any(e.get("element_id") == TOOL_PANEL_ELEMENT_ID for e in card["body"]["elements"])
+        assert any(e.get("element_id") == TOOL_PANEL_ELEMENT_ID for e in body_content_elements(card))
 
     def test_no_tool_use(self) -> None:
         card = build_streaming_card_v2(show_tool_use=False)
-        assert not any(e.get("element_id") == TOOL_PANEL_ELEMENT_ID for e in card["body"]["elements"])
+        assert not any(e.get("element_id") == TOOL_PANEL_ELEMENT_ID for e in body_content_elements(card))
 
     def test_show_reasoning_adds_panel(self) -> None:
         card = build_streaming_card_v2(show_reasoning=True)
-        assert any(e.get("element_id") == PROCESS_PANEL_ELEMENT_ID for e in card["body"]["elements"])
+        assert any(e.get("element_id") == PROCESS_PANEL_ELEMENT_ID for e in body_content_elements(card))
 
     def test_show_reasoning_default_no_panel(self) -> None:
         card = build_streaming_card_v2()
-        assert not any(e.get("element_id") == PROCESS_PANEL_ELEMENT_ID for e in card["body"]["elements"])
+        assert not any(e.get("element_id") == PROCESS_PANEL_ELEMENT_ID for e in body_content_elements(card))
 
     def test_reasoning_before_tool_before_answer(self) -> None:
         card = build_streaming_card_v2(
@@ -714,7 +724,7 @@ class TestBuildStreamingCardV2:
             elapsed_ms=100,
             show_tool_use=True,
         )
-        ids = [e.get("element_id") for e in card["body"]["elements"]]
+        ids = [e.get("element_id") for e in body_content_elements(card)]
         reasoning_idx = ids.index(PROCESS_PANEL_ELEMENT_ID)
         tool_idx = ids.index(TOOL_PANEL_ELEMENT_ID)
         assert reasoning_idx < tool_idx
@@ -749,7 +759,7 @@ def _seg(seg_type: str, text: str = "", **kwargs: int | float) -> Segment:
 def _unified_panel(card: dict) -> dict:
     """取完成态卡片的统一面板（顶层唯一 collapsible_panel，思考/工具面板嵌套其内）."""
     return next(
-        e for e in card["body"]["elements"]
+        e for e in body_content_elements(card)
         if e.get("tag") == "collapsible_panel"
     )
 
@@ -759,17 +769,17 @@ class TestBuildSegmentCompleteCard:
         """空 segments 渲染 Done；空 reasoning 被跳过."""
         card = build_complete_card(segments=[], all_tool_steps=[])
         assert card["schema"] == "2.0"
-        assert any("Done" in str(e) or "完成" in str(e) for e in card["body"]["elements"])
+        assert any("Done" in str(e) or "完成" in str(e) for e in body_content_elements(card))
 
         card2 = build_complete_card(segments=[_seg("reasoning", "")], all_tool_steps=[])
-        assert any("Done" in str(e) or "完成" in str(e) for e in card2["body"]["elements"])
+        assert any("Done" in str(e) or "完成" in str(e) for e in body_content_elements(card2))
 
     def test_answer_only_no_done(self) -> None:
         card = build_complete_card(
             segments=[_seg("answer", "hello world")],
             all_tool_steps=[],
         )
-        elements = card["body"]["elements"]
+        elements = body_content_elements(card)
         assert any("hello world" in str(e) for e in elements)
         assert not any("Done" in str(e) for e in elements)
 
@@ -779,7 +789,7 @@ class TestBuildSegmentCompleteCard:
             all_tool_steps=[],
             footer_data={"duration": 8.0},  # 思考较久（>5s），应展示统一面板
         )
-        contents = [str(e) for e in card["body"]["elements"]]
+        contents = [str(e) for e in body_content_elements(card)]
         r_idx = next(i for i, c in enumerate(contents) if "think" in c)
         a_idx = next(i for i, c in enumerate(contents) if "reply" in c)
         # 答案在上面，推理+工具统一面板在底部（二次开发特性）
@@ -810,7 +820,7 @@ class TestBuildSegmentCompleteCard:
             all_tool_steps=steps,
             show_tool_use=True,
         )
-        elements = card["body"]["elements"]
+        elements = body_content_elements(card)
         # 统一面板是顶层 collapsible_panel（推理+工具合并于其内）
         unified = [_unified_panel(card)]
         # 恰好一个统一面板，且包含推理内容
@@ -835,7 +845,7 @@ class TestBuildSegmentCompleteCard:
             ],
             all_tool_steps=[_STEP_SUCCESS, _STEP_RUNNING],
         )
-        contents = [str(e) for e in card["body"]["elements"]]
+        contents = [str(e) for e in body_content_elements(card)]
         # 答案在上面，推理+工具统一面板在底部
         a1 = next(i for i, c in enumerate(contents) if "a1" in c)
         a2 = next(i for i, c in enumerate(contents) if "a2" in c)
@@ -922,7 +932,7 @@ class TestBuildSegmentCompleteCard:
             segments=[_seg("tool", tool_offset=5, tool_end_offset=5)],
             all_tool_steps=[_STEP_SUCCESS],
         )
-        assert not any(e.get("tag") == "collapsible_panel" for e in card["body"]["elements"])
+        assert not any(e.get("tag") == "collapsible_panel" for e in body_content_elements(card))
 
     def test_show_tool_use_false_hides_tool_panel(self) -> None:
         """show_tool_use=False → TOOL segment rendered as nothing (无工具面板)."""
@@ -932,12 +942,12 @@ class TestBuildSegmentCompleteCard:
             all_tool_steps=steps,
             show_tool_use=False,
         )
-        panel = next(e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel")
+        panel = next(e for e in body_content_elements(card) if e.get("tag") == "collapsible_panel")
         assert [e["element_id"] for e in panel["elements"]] == ["tool_totals"]
         assert "🔧2" in panel["header"]["title"]["content"]
         # 但 answer 依然在
         assert any(e.get("tag") == "markdown" and "hello" in str(e.get("content", ""))
-                   for e in card["body"]["elements"])
+                   for e in body_content_elements(card))
 
     def test_show_tool_use_true_default_shows_panel(self) -> None:
         """show_tool_use 默认 True → 工具面板保留（向后兼容）."""
@@ -946,7 +956,7 @@ class TestBuildSegmentCompleteCard:
             segments=[_seg("tool", tool_offset=0, tool_end_offset=2)],
             all_tool_steps=steps,
         )
-        assert any(e.get("tag") == "collapsible_panel" for e in card["body"]["elements"])
+        assert any(e.get("tag") == "collapsible_panel" for e in body_content_elements(card))
 
     def test_summary_truncated_from_last_answer(self) -> None:
         card = build_complete_card(
@@ -975,7 +985,7 @@ class TestPanelHeaderFields:
     @staticmethod
     def _panel(card: dict) -> dict:
         # 顶层唯一的 collapsible_panel 即统一面板（工具面板是其嵌套子元素）
-        return next(e for e in card["body"]["elements"] if e.get("tag") == "collapsible_panel")
+        return next(e for e in body_content_elements(card) if e.get("tag") == "collapsible_panel")
 
     def test_default_composition(self) -> None:
         panel = self._panel(self._card(footer_data={"duration": 8.0, "model": "deepseek-v4"}))
@@ -1027,13 +1037,33 @@ class TestPanelHeaderFields:
 
 
 class TestBuildCronCard:
+    def test_theme_surface_and_same_process_color_reload(self, tmp_path) -> None:
+        import yaml
+
+        from hermes_fry_cards.cardkit.builder import _body_style, _build_body, build_cron_card
+        from hermes_fry_cards.config import Config
+
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump({"streaming": {"body": {"dark_color": "#222222"}}}))
+        cfg = Config(tmp_path)
+        snapshot = cfg.card_snapshot()
+        first = build_cron_card("Hello", task_name="daily", config=snapshot)
+        assert first["body"] == _build_body(body_content_elements(first))
+        assert first["config"]["style"] == _body_style(snapshot)
+        assert "template" not in first["header"]
+        path.write_text(yaml.safe_dump({"streaming": {"body": {"dark_color": "#303030"}}}))
+        second = build_cron_card("Hello", task_name="daily", config=cfg.card_snapshot())
+        assert second["config"]["style"] != first["config"]["style"]
+        assert body_content_elements(second) == body_content_elements(first)
+        assert build_cron_card("Hello", task_name="daily", config=snapshot) == first
+
     def test_basic_card_structure(self) -> None:
         from hermes_fry_cards.cardkit.builder import build_cron_card
 
         card = build_cron_card("Hello **world**")
         assert card["schema"] == "2.0"
-        assert card["body"]["elements"][0]["tag"] == "markdown"
-        assert "Hello **world**" in card["body"]["elements"][0]["content"]
+        assert body_content_elements(card)[0]["tag"] == "markdown"
+        assert "Hello **world**" in body_content_elements(card)[0]["content"]
 
     def test_summary_from_content(self) -> None:
         from hermes_fry_cards.cardkit.builder import build_cron_card
@@ -1047,14 +1077,14 @@ class TestBuildCronCard:
         from hermes_fry_cards.cardkit.builder import build_cron_card
 
         card = build_cron_card("")
-        assert card["body"]["elements"] == []
+        assert body_content_elements(card) == []
 
     def test_table_content_preserved(self) -> None:
         from hermes_fry_cards.cardkit.builder import build_cron_card
 
         content = "| A | B |\n|---|---|\n| 1 | 2 |"
         card = build_cron_card(content)
-        tables = [el for el in card["body"]["elements"] if el.get("tag") == "table"]
+        tables = [el for el in body_content_elements(card) if el.get("tag") == "table"]
         assert len(tables) == 1
         assert [col["display_name"] for col in tables[0]["columns"]] == ["A", "B"]
         assert tables[0]["rows"] == [{"c0": "1", "c1": "2"}]
@@ -1065,7 +1095,7 @@ class TestBuildCronCard:
         card = build_cron_card("Hello", task_name="daily-digest")
         assert card["header"]["title"]["content"] == ":Alarm: daily-digest"
         assert card["header"]["title"]["tag"] == "lark_md"
-        assert card["header"]["template"] == "blue"
+        assert set(card["header"]) == {"title"}
 
     def test_no_header_without_task_name(self) -> None:
         from hermes_fry_cards.cardkit.builder import build_cron_card
@@ -1107,19 +1137,19 @@ class TestBuildCronCard:
 
 class TestBuildHeader:
     @pytest.mark.parametrize(
-        ("status", "template", "title"),
+        ("status", "title"),
         [
-            ("streaming", "blue", "Processing"),
-            ("completed", "green", "Completed"),
-            ("error", "red", "Error"),
-            ("stopped", "red", "Stopped"),
-            ("unknown", "green", "Completed"),
+            ("streaming", "Processing"),
+            ("completed", "Completed"),
+            ("error", "Error"),
+            ("stopped", "Stopped"),
+            ("unknown", "Completed"),
         ],
     )
-    def test_status_header(self, status: str, template: str, title: str) -> None:
+    def test_status_header(self, status: str, title: str) -> None:
         header = _build_header(status)
-        assert header is not None
-        assert header["template"] == template
+        assert set(header) == {"title"}
+        assert header["title"]["tag"] == "plain_text"
         assert title in header["title"]["content"]
 
     def test_title_has_i18n(self) -> None:
@@ -1136,20 +1166,20 @@ class TestStreamingCardHeader:
     def test_header_present_when_enabled(self) -> None:
         card = build_streaming_card_v2(header_enabled=True)
         assert "header" in card
-        assert card["header"]["template"] == "blue"
+        assert set(card["header"]) == {"title"}
 
 
 class TestCompleteCardHeader:
-    def test_completed_has_green_header(self) -> None:
+    def test_completed_has_status_title(self) -> None:
         card = build_complete_card(
             segments=[_seg("answer", "hi")],
             all_tool_steps=[],
             header_enabled=True,
         )
         assert "header" in card
-        assert card["header"]["template"] == "green"
+        assert set(card["header"]) == {"title"}
 
-    def test_aborted_has_red_header(self) -> None:
+    def test_aborted_has_status_title(self) -> None:
         card = build_complete_card(
             segments=[_seg("answer", "hi")],
             all_tool_steps=[],
@@ -1157,9 +1187,9 @@ class TestCompleteCardHeader:
             header_enabled=True,
         )
         assert "header" in card
-        assert card["header"]["template"] == "red"
+        assert set(card["header"]) == {"title"}
 
-    def test_error_has_red_header(self) -> None:
+    def test_error_has_status_title(self) -> None:
         card = build_complete_card(
             segments=[_seg("answer", "hi")],
             all_tool_steps=[],
@@ -1167,7 +1197,7 @@ class TestCompleteCardHeader:
             header_enabled=True,
         )
         assert "header" in card
-        assert card["header"]["template"] == "red"
+        assert set(card["header"]) == {"title"}
         assert "Error" in card["header"]["title"]["content"]
 
     def test_header_disabled(self) -> None:
@@ -1188,7 +1218,7 @@ class TestCompleteCardFooter:
         )
         # footer 以 markdown 文本元素呈现（含状态字段），非分隔线 hr
         footer_els = [
-            e for e in card["body"]["elements"]
+            e for e in body_content_elements(card)
             if e.get("tag") == "markdown" and "✅" in str(e.get("content", ""))
         ]
         assert footer_els
@@ -1200,7 +1230,7 @@ class TestCompleteCardFooter:
             all_tool_steps=[],
             footer_enabled=False,
         )
-        contents = [str(e.get("content", "")) for e in card["body"]["elements"]]
+        contents = [str(e.get("content", "")) for e in body_content_elements(card)]
         # 仅保留 answer，无任何状态/统计 footer
         assert all("✅" not in c and "💭" not in c and "🔧" not in c for c in contents)
         assert any("hi" in c for c in contents)
@@ -1214,8 +1244,8 @@ class TestOverflowFallbackCard:
 
         card = build_overflow_fallback_card()
         assert card["schema"] == "2.0"
-        assert card["header"]["template"] == "red"
-        elements = card["body"]["elements"]
+        assert set(card["header"]) == {"title"}
+        elements = body_content_elements(card)
         assert len(elements) == 1
         content = elements[0]["content"]
         assert "plain text" in content

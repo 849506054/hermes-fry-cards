@@ -18,6 +18,7 @@ def _make_config(raw: dict[str, Any]) -> Config:
     """Create a Config pre-loaded with given raw dict."""
     cfg = Config()
     cfg._raw = raw
+    cfg._reload = lambda: raw  # type: ignore[assignment]
     return cfg
 
 

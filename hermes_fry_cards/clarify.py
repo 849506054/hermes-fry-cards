@@ -26,6 +26,9 @@ import logging
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from .cardkit.styles import option, styled_builder
+from .config import Config
+
 _logger = logging.getLogger("hermes_fry_cards")
 
 # Global (per-process) clarify card state. clarify_id is a uuid, so a
@@ -70,6 +73,7 @@ def flatten_choice(choice: Any) -> str:
     return str(choice).strip()
 
 
+@styled_builder
 def build_clarify_card(
     *,
     question: str,
@@ -78,6 +82,7 @@ def build_clarify_card(
     multi_select: bool,
     selected: Optional[List[int]] = None,
     show_input: bool = False,
+    config: Config | None = None,
 ) -> Dict[str, Any]:
     """Build the interactive clarify card JSON (blue header, button rows).
 
@@ -85,6 +90,8 @@ def build_clarify_card(
     box + submit button (Feishu form container) replaces the "其他" button.
     """
     selected_set = set(selected or [])
+    hint_color = option("clarify", "hint_color", "grey")
+    active_hint_color = option("clarify", "active_hint_color", "green")
     if multi_select:
         option_lines = "\n".join(
             f"{i + 1}. {'☑' if i in selected_set else '⬜'} {c}"
@@ -97,22 +104,23 @@ def build_clarify_card(
         body += f"\n\n{option_lines}"
     if show_input:
         body += (
-            "\n\n<font color='green'>✏️ **已切换自定义输入**：在下方输入框写下你的回答并点"
+            f"\n\n<font color='{active_hint_color}'>✏️ **已切换自定义输入**：在下方输入框写下你的回答并点"
             "「📤 提交自定义回答」；也可以直接点上面的选项按钮，或在聊天里发消息。</font>"
         )
     elif multi_select:
         hint = "可多选，点选项切换勾选，再点「提交选择」"
         if selected_set:
             hint += f"（已选 {len(selected_set)} 项）"
-        body += f"\n\n<font color='grey'>{hint}</font>"
+        body += f"\n\n<font color='{hint_color}'>{hint}</font>"
     else:
-        body += "\n\n<font color='grey'>点击选项按钮作答，或点「✏️ 其他」后直接回复文字</font>"
+        body += f"\n\n<font color='{hint_color}'>点击选项按钮作答，或点「✏️ 其他」后直接回复文字</font>"
 
     def _btn(label: str, value: Dict[str, Any], btn_type: str = "default") -> dict:
         return {
             "tag": "button",
             "text": {"tag": "plain_text", "content": label},
-            "type": btn_type,
+            "type": option("clarify", "primary_button_type" if btn_type == "primary"
+                           else "secondary_button_type", btn_type),
             "value": value,
         }
 
@@ -172,7 +180,7 @@ def build_clarify_card(
                 {
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "📤 提交自定义回答"},
-                    "type": "primary",
+                    "type": option("clarify", "primary_button_type", "primary"),
                     "action_type": "form_submit",
                     "complex_interaction": True,
                     "name": "hermes_clarify_submit",
@@ -184,20 +192,21 @@ def build_clarify_card(
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"content": "❓ 需要你选择", "tag": "plain_text"},
-            "template": "blue",
+            "template": option("clarify", "pending_template", "blue"),
         },
         "elements": elements,
     }
 
 
+@styled_builder
 def build_resolved_clarify_card(
-    *, question: str, response_text: str, user_name: str
+    *, question: str, response_text: str, user_name: str, config: Config | None = None,
 ) -> Dict[str, Any]:
     return {
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"content": "✅ 已收到你的选择", "tag": "plain_text"},
-            "template": "green",
+            "template": option("clarify", "completed_template", "green"),
         },
         "elements": [
             {
@@ -243,11 +252,12 @@ async def send_clarify(
         _logger.debug("[fry-cards] multi_select lookup failed for %s", clarify_id, exc_info=True)
 
     try:
+        config = Config().card_snapshot()
         card = build_clarify_card(
             question=str(question or ""),
             choices=flat,
             clarify_id=clarify_id,
-            multi_select=is_multi,
+            multi_select=is_multi, config=config,
         )
         response = await self._feishu_send_with_retry(
             chat_id=chat_id,
@@ -269,6 +279,7 @@ async def send_clarify(
                 "question": str(question or ""),
                 "choices": flat,
                 "multi_select": is_multi,
+                "render_config": config,
             }
         return result
     except Exception as exc:
@@ -353,6 +364,7 @@ def handle_clarify_card_action(
     action = str(action_value.get("hermes_clarify_action") or "")
     choices: List[str] = state.get("choices") or []
     question = str(state.get("question") or "")
+    config = state.get("render_config")
 
     if action == "other":
         flipped = False
@@ -370,7 +382,7 @@ def handle_clarify_card_action(
             question=question, choices=choices, clarify_id=clarify_id,
             multi_select=bool(state.get("multi_select")),
             selected=_CLARIFY_SELECTIONS.get(clarify_id),
-            show_input=True,
+            show_input=True, config=config,
         )
         return _callback_card(
             self, card,
@@ -394,7 +406,7 @@ def handle_clarify_card_action(
                     question=question, choices=choices, clarify_id=clarify_id,
                     multi_select=bool(state.get("multi_select")),
                     selected=_CLARIFY_SELECTIONS.get(clarify_id),
-                    show_input=True,
+                    show_input=True, config=config,
                 ),
                 toast_type="warning",
                 toast_content="请先在输入框里写点什么再提交",
@@ -418,7 +430,7 @@ def handle_clarify_card_action(
         )
         return _callback_card(
             self,
-            build_resolved_clarify_card(question=question, response_text=text, user_name=user_name),
+            build_resolved_clarify_card(question=question, response_text=text, user_name=user_name, config=config),
             toast_type="success",
             toast_content="已提交你的自定义回答",
         )
@@ -439,7 +451,7 @@ def handle_clarify_card_action(
                 sel.pop(0)  # choices are capped at 4 by the tool schema
         return _callback_card(self, build_clarify_card(
             question=question, choices=choices, clarify_id=clarify_id,
-            multi_select=True, selected=sel,
+            multi_select=True, selected=sel, config=config,
         ))
 
     # Single-select "choose" or multi-select "submit" → resolve the wait.
@@ -486,7 +498,7 @@ def handle_clarify_card_action(
         clarify_id, resolved_text[:60], user_name,
     )
     return _callback_card(self, build_resolved_clarify_card(
-        question=question, response_text=resolved_text, user_name=user_name,
+        question=question, response_text=resolved_text, user_name=user_name, config=config,
     ))
 
 
@@ -642,6 +654,9 @@ def apply_patch(
     class and its module-level SDK names (resolved at import time, no
     sys.modules assumptions).  Idempotent; returns True when applied.
     """
+    if cls is not None:
+        from .system_messages import apply_patch as apply_system_message_patch
+        apply_system_message_patch(cls, SendResult=SendResult)
     if cls is None or getattr(cls, "_hl_clarify_patched", False):
         return cls is not None and bool(getattr(cls, "_hl_clarify_patched", False))
 

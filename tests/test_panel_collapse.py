@@ -1,4 +1,6 @@
 """The native bottom header controls the reasoning frame."""
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 from hermes_fry_cards.cardkit.builder import (
     PROCESS_ANCHOR_ELEMENT_ID,
     PROCESS_PANEL_ELEMENT_ID,
@@ -9,7 +11,7 @@ from hermes_fry_cards.streaming.segment_helper import build_process_panel_header
 
 def process_panel(card):
     return next(
-        item for item in card["body"]["elements"]
+        item for item in body_content_elements(card)
         if item.get("element_id") == PROCESS_PANEL_ELEMENT_ID
     )
 

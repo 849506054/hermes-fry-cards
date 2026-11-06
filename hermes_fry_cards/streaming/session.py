@@ -17,6 +17,7 @@ from .tooluse import ToolUseTracker
 from .unavailable_guard import UnavailableGuard
 
 if TYPE_CHECKING:
+    from ..config import Config
     from .image import ImageResolver
 
 _logger = logging.getLogger("hermes_fry_cards")
@@ -63,9 +64,14 @@ class CardSession:
         "last_activity",
         "message_id",
         "notice_element_count",
+        "pending_process_panels",
+        "pending_reasoning_structure",
+        "pending_render_config",
         "process_count_base",
         "process_header_counts",
+        "process_panels",
         "reasoning_timeline",
+        "render_config",
         "segment_state",
         "sequence",
         "session_key",
@@ -130,6 +136,11 @@ class CardSession:
         self.clarify_pending_split: bool = False
         self.tool_panel_created: bool = False
         self.reasoning_timeline: bool = False
+        self.render_config: Config | None = None
+        self.pending_render_config: Config | None = None
+        self.pending_reasoning_structure: tuple[bool, int | None] | None = None
+        self.process_panels: set[str] | None = None
+        self.pending_process_panels: set[str] | None = None
         self.process_header_counts: tuple[int, int] = (0, 0)
         self.process_count_base: tuple[int, int] = (0, 0)
         self.tool_elapsed_base_ms: float = 0.0
@@ -142,6 +153,17 @@ class CardSession:
         self.process_header_counts = (0, 0)
         self.card_id = card_id
         self.card_msg_id = card_msg_id
+        if self.pending_render_config is not None:
+            self.render_config = self.pending_render_config
+            self.pending_render_config = None
+        if self.pending_process_panels is not None:
+            self.process_panels = self.pending_process_panels
+            self.pending_process_panels = None
+        if self.pending_reasoning_structure is not None:
+            self.reasoning_timeline, panel_limit = self.pending_reasoning_structure
+            if self.segment_state is not None:
+                self.segment_state.max_reasoning_panels = panel_limit
+            self.pending_reasoning_structure = None
 
     def mark_failed(self, reason: str = "") -> None:
         if self.state == SessionState.FAILED and not reason:

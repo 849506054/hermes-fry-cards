@@ -80,6 +80,6 @@ async def test_stored_interrupt_result_paints_stopped_card(tmp_path, interrupted
     assert (answer or "retained partial answer") in "\n".join(texts)
     header_texts = list(flatten(card["header"]))
     assert any("Stopped" in s or "已停止" in s or "已中断" in s for s in header_texts) is (interrupted and not is_error)
-    assert card["header"]["template"] == ("red" if interrupted or is_error else "green")
+    assert set(card["header"]) == {"title"}
     assert (session.state == SessionState.ABORTED) is (interrupted and not is_error)
     assert completion_notice.call_count == (1 if is_error or not interrupted else 0)

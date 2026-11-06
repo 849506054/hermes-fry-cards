@@ -1,4 +1,6 @@
 """streaming.process_expanded 是热生效开关：改配置后新卡按新值建. """
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 import asyncio
 import json
 from unittest.mock import AsyncMock
@@ -16,7 +18,7 @@ from hermes_fry_cards.streaming.session import CardSession, SessionState
 
 
 def frames(card):
-    return {e.get("element_id"): e for e in card["body"]["elements"] if e["tag"] == "collapsible_panel"}
+    return {e.get("element_id"): e for e in body_content_elements(card) if e["tag"] == "collapsible_panel"}
 
 
 @pytest.mark.parametrize("expanded", [False, True])

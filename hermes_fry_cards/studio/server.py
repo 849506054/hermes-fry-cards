@@ -25,6 +25,7 @@ import subprocess
 import threading
 import time
 import webbrowser
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,7 +33,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from ..config import Config, hermes_home
+from ..config import HEADER_TEMPLATES, Config, hermes_home
+from ..style_options import STYLE_FIELDS, style_schema, validate_style_role
 
 if TYPE_CHECKING:
     from ..streaming.segments import Segment
@@ -45,19 +47,22 @@ _MAX_BODY_BYTES = 1_000_000
 _MAX_DRAIN_BYTES = 4_000_000  # 413 时有界排空上限（防未读数据触发客户端写端 RST）
 _BACKUP_KEEP = 20
 _BASE_HOSTS_OK = ("127.0.0.1", "localhost", "::1")
-_ALLOWED_HOSTS_CACHE: list[str] | None = None  # loopback + studio.allowed_hosts（启动后缓存，重启生效）
+_HOST_CONFIG_CACHE: tuple[Path, Config] | None = None
 
 
 def _allowed_hosts() -> list[str]:
-    """Host 门白名单：内置 loopback + ``studio.allowed_hosts`` 配置附加（网段前缀或完整主机）."""
-    global _ALLOWED_HOSTS_CACHE
-    if _ALLOWED_HOSTS_CACHE is None:
-        try:
-            extra = Config().studio_allowed_hosts
-        except Exception:
-            extra = []
-        _ALLOWED_HOSTS_CACHE = list(_BASE_HOSTS_OK) + [h for h in extra if h not in _BASE_HOSTS_OK]
-    return _ALLOWED_HOSTS_CACHE
+    """Host 门白名单：每次请求热读当前 home 的附加项，保留内置 loopback。"""
+    global _HOST_CONFIG_CACHE
+    try:
+        home = hermes_home().resolve()
+        cached = _HOST_CONFIG_CACHE
+        if cached is None or cached[0] != home:
+            cached = (home, Config(home=home))
+            _HOST_CONFIG_CACHE = cached
+        extra = cached[1].studio_allowed_hosts
+    except Exception:
+        extra = []
+    return list(_BASE_HOSTS_OK) + [h for h in extra if h not in _BASE_HOSTS_OK]
 
 _FOOTER_FIELDS = ("status", "elapsed", "speed", "cache", "model", "tokens", "context")
 _PANEL_FIELDS = ("model", "reasoning", "tools", "context", "elapsed", "speed", "cache", "tokens", "status")
@@ -66,7 +71,7 @@ _CONTEXT_MODES = ("text", "bar", "text_bar", "block", "block_text")
 _LANGS = ("zh", "en")
 _TEXT_SIZES = ("normal_v2", "normal", "heading", "notation")
 
-_SCENARIOS = ("short", "workflow", "tables", "longtext")
+_SCENARIOS = ("short", "workflow", "tables", "longtext", "clarify", "clarify_input")
 _OUTCOMES = ("completed", "error", "aborted")
 _STATES = ("streaming", "completed")
 
@@ -231,17 +236,19 @@ _STREAMING_SCALARS: dict[str, str] = {
     "chat_types": "chat_types",
     "panel_expanded": "bool",
     "process_expanded": "bool",
+    "process_border": "bool",
+    "card_ttl_sec": "ttl",
     "width_mode": "width",
     "flush_interval_ms": "flushms",
 }
-_HEADER_KEYS = {"enabled": "bool", "min_duration": "dur"}
+_HEADER_KEYS = {"enabled": "bool", "min_duration": "dur", "template": "header_template"}
 _FOOTER_KEYS = {
     "enabled": "bool",
     "show_label": "bool",
     "fields": "fields",
     "text_size": "textsize",
 }
-_BODY_KEYS = {"text_size": "textsize"}
+_BODY_KEYS = {"text_size": "textsize", "light_color": "hex_color", "dark_color": "hex_color"}
 _DISPLAY_KEYS: dict[str, str] = {
     "show_reasoning": "bool",
     "show_tool_use": "bool",
@@ -265,6 +272,16 @@ _GATEWAY_KEYS = {
 def _validate_scalar(v: Any, name: str, kind: str) -> Any:
     if kind == "bool":
         return _expect_bool(v, name)
+    if kind == "hex_color":
+        if not isinstance(v, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+            raise ValueError(f"{name} 必须是六位 HEX 色值 (#RRGGBB)")
+        return v.upper()
+    if kind == "header_template":
+        return _expect_choice(v, name, HEADER_TEMPLATES)
+    if kind == "ttl":
+        if not _is_number(v) or not 0 < v <= 86400:
+            raise ValueError(f"{name} 必须是大于 0 且不超过 86400 的数字")
+        return v
     if kind == "notice_text":
         return _expect_notice_text(v, name)
     if kind == "lang":
@@ -298,7 +315,9 @@ def _validate_scalar(v: Any, name: str, kind: str) -> Any:
     raise ValueError(f"未知校验类型: {kind}")
 
 
-def _validate_section(payload: dict, section: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _validate_section(
+    payload: dict, section: str, spec: dict[str, Any], *, text_sizes: Any = None,
+) -> dict[str, Any]:
     raw = payload.get(section)
     if raw is None:
         return {}
@@ -317,12 +336,94 @@ def _validate_section(payload: dict, section: str, spec: dict[str, Any]) -> dict
             if sub_unknown:
                 raise ValueError(f"{section}.{key} 含未知字段: {', '.join(sorted(sub_unknown))}")
             result[key] = {k: _validate_scalar(v, f"{section}.{key}.{k}", kind[k]) for k, v in val.items()}
+        elif kind == "textsize":
+            result[key] = validate_style_role("process_title", {"text_size": val}, text_sizes=text_sizes)["text_size"]
         else:
             result[key] = _validate_scalar(val, f"{section}.{key}", kind)
     return result
 
 
-def validate_payload(payload: Any) -> dict[str, Any]:
+_LEGACY_STYLE_KEYS = {"header": _HEADER_KEYS, "footer": _FOOTER_KEYS, "body": _BODY_KEYS}
+_UNSAFE_KEYS = {"__proto__", "prototype", "constructor"}
+
+
+def _reject_unsafe_keys(value: Any) -> None:
+    """Accept plain JSON keys at every depth, including editable icon maps."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str) or key in _UNSAFE_KEYS:
+                raise ValueError("unsafe object key")
+            _reject_unsafe_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_unsafe_keys(child)
+
+
+def _validate_streaming(raw: Any, base_streaming: dict[str, Any] | None = None) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("streaming 必须是对象")
+    unknown = set(raw) - set(_STREAMING_SCALARS) - set(STYLE_FIELDS) - set(_LEGACY_STYLE_KEYS)
+    if unknown:
+        raise ValueError(f"streaming 含未知字段: {', '.join(sorted(unknown))}")
+    effective = deepcopy(base_streaming or {})
+    for role, values in raw.items():
+        if isinstance(values, dict):
+            previous = effective.get(role)
+            merged = dict(previous) if isinstance(previous, dict) else {}
+            for key, value in values.items():
+                if value is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = value
+            effective[role] = merged
+        else:
+            effective[role] = values
+    text_sizes = validate_style_role("text_sizes", effective.get("text_sizes", {}))
+    result = {}
+    for role, values in raw.items():
+        if role in _STREAMING_SCALARS:
+            result[role] = _validate_scalar(values, f"streaming.{role}", _STREAMING_SCALARS[role])
+            continue
+        if not isinstance(values, dict):
+            raise ValueError(f"streaming.{role} 必须是对象")
+        legacy = _LEGACY_STYLE_KEYS.get(role, {})
+        clean = {}
+        for key, value in values.items():
+            if key not in legacy:
+                continue
+            if key in STYLE_FIELDS.get(role, {}) and legacy[key] != "hex_color":
+                clean.update(validate_style_role(role, {key: value}, strict=True, text_sizes=text_sizes))
+            else:
+                clean[key] = _validate_scalar(value, f"streaming.{role}.{key}", legacy[key])
+        additions = {key: value for key, value in values.items() if key not in legacy}
+        resets = {key: None for key, value in additions.items() if value is None}
+        role_schema = style_schema().get(role, {})
+        for key in resets:
+            known = key in STYLE_FIELDS.get(role, {})
+            if role_schema.get("dynamic"):
+                known = (key not in role_schema.get("reserved_keys", [])
+                         and re.fullmatch(role_schema["key_pattern"], key) is not None)
+            if not known:
+                raise ValueError(f"streaming.{role} 含未知字段: {key}")
+        clean.update(validate_style_role(role, {
+            key: value for key, value in additions.items() if value is not None
+        }, strict=True, text_sizes=text_sizes))
+        clean.update(resets)
+        result[role] = clean
+    # References are checked after merging, so declarations and uses are atomic.
+    for role, fields in STYLE_FIELDS.items():
+        values = effective.get(role)
+        if fields.get("text_size") == "text_size" and isinstance(values, dict) and "text_size" in values:
+            validate_style_role(role, {"text_size": values["text_size"]}, text_sizes=text_sizes)
+    return result
+
+
+def validate_payload(
+    payload: Any, *, base_streaming: dict[str, Any] | None = None,
+    base_display: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """校验 POST /api/config 或预览 overrides — 返回仅含受管键的规范化结构."""
     if not isinstance(payload, dict):
         raise ValueError("payload 必须是对象")
@@ -330,14 +431,18 @@ def validate_payload(payload: Any) -> dict[str, Any]:
     if unknown:
         raise ValueError(f"未知顶层字段: {', '.join(sorted(unknown))}")
 
-    streaming_spec: dict[str, Any] = dict(_STREAMING_SCALARS)
-    streaming_spec.update({"header": _HEADER_KEYS, "footer": _FOOTER_KEYS, "body": _BODY_KEYS})
-
+    _reject_unsafe_keys(payload)
     result: dict[str, Any] = {}
-    streaming = _validate_section(payload, "streaming", streaming_spec)
+    streaming = _validate_streaming(payload.get("streaming"), base_streaming)
     if streaming:
         result["streaming"] = streaming
-    display = _validate_section(payload, "display", _DISPLAY_KEYS)
+    sizes = dict((base_streaming or {}).get("text_sizes", {}))
+    sizes.update(streaming.get("text_sizes", {}))
+    sizes = {key: value for key, value in sizes.items() if value is not None}
+    display = _validate_section(payload, "display", _DISPLAY_KEYS, text_sizes=sizes)
+    panel_size = display.get("panel_text_size", (base_display or {}).get("panel_text_size"))
+    if panel_size is not None:
+        validate_style_role("process_title", {"text_size": panel_size}, text_sizes=sizes)
     if display:
         result["display"] = display
     gateway = _validate_section(payload, "gateway", {"group_security_boundary": _GATEWAY_KEYS})
@@ -396,7 +501,7 @@ def backup_config(conf_path: Path) -> Path | None:
 
 def merge_managed(base: dict[str, Any], validated: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """白名单深合并 — 只写受管键；返回 (新配置, 变更键列表). 结构异常 → ConfigReadError."""
-    out = dict(base)
+    out = deepcopy(base)
     changed: list[str] = []
 
     def _track(path: str, old: Any, has: bool, value: Any) -> bool:
@@ -426,8 +531,12 @@ def merge_managed(base: dict[str, Any], validated: dict[str, Any]) -> tuple[dict
                     raise ConfigReadError(f"streaming.{key} 不是映射，拒绝写入")
                 for k2, v2 in value.items():
                     path = f"streaming.{key}.{k2}"
-                    if _track(path, sub.get(k2, _MISSING), k2 in sub, v2):
-                        sub[k2] = v2
+                    if v2 is None and key in STYLE_FIELDS:
+                        if k2 in sub:
+                            changed.append(path)
+                            del sub[k2]
+                    elif _track(path, sub.get(k2, _MISSING), k2 in sub, v2):
+                        sub[k2] = deepcopy(v2)
             else:
                 path = f"streaming.{key}"
                 if _track(path, sec.get(key, _MISSING), key in sec, value):
@@ -758,19 +867,32 @@ def collect_state(home: Path | None = None) -> dict[str, Any]:
         "chat_types": sorted(chat) if chat is not None else None,
         "panel_expanded": cfg.panel_expanded,
         "process_expanded": cfg.process_expanded,
+        "process_border": cfg.process_border,
+        "card_ttl_sec": cfg.card_duration_sec,
         "completion_notice": cfg.completion_notice,
         "completion_notice_text": cfg.completion_notice_text,
         "width_mode": cfg.width_mode,
         "flush_interval_ms": cfg.flush_interval_ms,
-        "header": {"enabled": cfg.header_enabled, "min_duration": cfg.header_min_duration},
+        "header": {
+            "enabled": cfg.header_enabled,
+            "min_duration": cfg.header_min_duration,
+            "template": cfg.header_template,
+        },
         "footer": {
             "enabled": cfg.footer_enabled,
             "show_label": cfg.footer_show_label,
             "fields": cfg.footer_fields,
             "text_size": cfg.footer_text_size,
         },
-        "body": {"text_size": cfg.body_text_size},
+        "body": {
+            "text_size": cfg.body_text_size,
+            "light_color": cfg.body_light_color,
+            "dark_color": cfg.body_dark_color,
+        },
     }
+    for role in STYLE_FIELDS:
+        for field, value in cfg.style_options(role).items():
+            streaming.setdefault(role, {}).setdefault(field, value)
     display = {
         "show_reasoning": cfg.show_reasoning,
         "show_tool_use": cfg.show_tool_use,
@@ -789,6 +911,7 @@ def collect_state(home: Path | None = None) -> dict[str, Any]:
         "display": display,
         "gateway": gateway,
         "status": _collect_status(home),
+        "style_schema": style_schema(),
     }
 
 
@@ -916,7 +1039,9 @@ def _scenario_data(scenario: str) -> tuple[list[Segment], list[ToolDisplayStep],
 def _apply_overrides(vals: dict[str, Any], overrides_raw: Any) -> dict[str, Any]:
     if overrides_raw is None:
         return vals
-    validated = validate_payload(overrides_raw)
+    validated = validate_payload(
+        overrides_raw, base_streaming=vals.get("streaming"), base_display=vals.get("display"),
+    )
     out = {
         "streaming": dict(vals.get("streaming", {})),
         "display": dict(vals.get("display", {})),
@@ -928,11 +1053,30 @@ def _apply_overrides(vals: dict[str, Any], overrides_raw: Any) -> dict[str, Any]
             if isinstance(value, dict):
                 cur = out[sec].get(key)
                 merged = dict(cur) if isinstance(cur, dict) else {}
-                merged.update(value)
+                for field, setting in value.items():
+                    if setting is None and key in STYLE_FIELDS:
+                        merged.pop(field, None)
+                    else:
+                        merged[field] = deepcopy(setting)
                 out[sec][key] = merged
             else:
                 out[sec][key] = value
     return out
+
+
+class _PreviewConfig(Config):
+    """Request-local configuration for all nested builder reads."""
+
+    def __init__(self, home: Path, streaming: dict[str, Any], display: dict[str, Any]) -> None:
+        super().__init__(home=home)
+        self._preview_raw = {"streaming": deepcopy(streaming), "display": deepcopy(display)}
+        self._streaming_snapshot = self._preview_raw["streaming"]
+
+    def _reload(self) -> dict[str, Any]:
+        return self._preview_raw
+
+    def card_snapshot(self) -> Config:
+        return self
 
 
 def build_preview(payload: Any, home: Path | None = None) -> dict[str, Any]:
@@ -959,6 +1103,7 @@ def build_preview(payload: Any, home: Path | None = None) -> dict[str, Any]:
         payload.get("overrides"),
     )
     sv, dv = vals["streaming"], vals["display"]
+    preview_cfg = _PreviewConfig(home, sv, dv)
     sv_header = sv.get("header") or {}
     sv_footer = sv.get("footer") or {}
     sv_body = sv.get("body") or {}
@@ -973,7 +1118,22 @@ def build_preview(payload: Any, home: Path | None = None) -> dict[str, Any]:
         "body_text_size": sv_body.get("text_size", "normal_v2"),
         "width_mode": sv.get("width_mode", "default"),
     }
-    if state == "streaming":
+    if scenario in {"clarify", "clarify_input"}:
+        from ..clarify import build_clarify_card, build_resolved_clarify_card
+
+        if state == "completed":
+            card = build_resolved_clarify_card(
+                question="选择输出格式 / Choose a format", response_text="Markdown",
+                user_name="Studio", config=preview_cfg,
+            )
+        else:
+            card = build_clarify_card(
+                question="选择输出格式 / Choose a format", choices=["Markdown", "JSON"],
+                clarify_id="studio-preview", multi_select=True, selected=[0],
+                show_input=scenario == "clarify_input",
+                config=preview_cfg,
+            )
+    elif state == "streaming":
         card = build_streaming_card_v2(
             tool_steps=(steps or None) if common["show_tool_use"] else None,
             elapsed_ms=elapsed_ms,
@@ -984,6 +1144,7 @@ def build_preview(payload: Any, home: Path | None = None) -> dict[str, Any]:
             text_size=common["body_text_size"],
             width_mode=common["width_mode"],
             process_expanded=bool(sv.get("process_expanded", True)),
+            config=preview_cfg,
         )
     else:
         card = build_complete_card(
@@ -1003,6 +1164,7 @@ def build_preview(payload: Any, home: Path | None = None) -> dict[str, Any]:
             body_text_size=common["body_text_size"],
             show_tool_use=common["show_tool_use"],
             width_mode=common["width_mode"],
+            config=preview_cfg,
         )
     return {"ok": True, "card": card, "meta": {"scenario": scenario, "state": state, "outcome": outcome}}
 
@@ -1195,10 +1357,13 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._err(500, f"internal error: {e}")
 
     def _handle_config(self, payload: Any) -> None:
-        validated = validate_payload(payload)
         home = hermes_home()
         conf_path = home / "config.yaml"
         base = read_full_config(conf_path)
+        state = collect_state(home)
+        validated = validate_payload(
+            payload, base_streaming=state["streaming"], base_display=state["display"],
+        )
         merged, changed = merge_managed(base, validated)
         backup_config(conf_path)
         write_atomic(conf_path, merged)

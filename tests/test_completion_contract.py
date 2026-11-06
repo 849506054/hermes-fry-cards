@@ -1,6 +1,8 @@
 """Completed cards render the authoritative answer independently of preview chunks."""
 from __future__ import annotations
 
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -106,7 +108,7 @@ def make_session():
 
 
 def body_texts(card):
-    return [e.get("content", "") for e in card["body"]["elements"] if e["tag"] == "markdown"]
+    return [e.get("content", "") for e in body_content_elements(card) if e["tag"] == "markdown"]
 
 
 @pytest.mark.asyncio
@@ -136,7 +138,7 @@ async def test_rollover_card_keeps_process_and_continuation_status():
     card = ctrl._client.cardkit_update.call_args.args[1]
     assert "应当消失的预览" not in str(card)
     assert any("continues" in t for t in body_texts(card))
-    assert any(e["tag"] == "collapsible_panel" for e in card["body"]["elements"])
+    assert any(e["tag"] == "collapsible_panel" for e in body_content_elements(card))
 
 
 @pytest.mark.asyncio

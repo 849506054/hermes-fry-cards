@@ -175,7 +175,7 @@ def _safe_hook(
     default_return: Any = None,
     log_level: str = "warning",
 ) -> Callable:
-    """统一处理 enabled 检查和异常捕获."""
+    """统一处理异常；控制器按准入和已接管归属决定是否处理."""
 
     def decorator(func: Callable) -> Callable:
         if iscoroutinefunction(func):
@@ -184,8 +184,6 @@ def _safe_hook(
             async def async_wrapper(*, message_id: str, **kwargs: Any) -> Any:
                 try:
                     ctrl = get_controller()
-                    if not ctrl.enabled:
-                        return default_return
                     return await func(ctrl=ctrl, message_id=message_id, **kwargs)
                 except Exception as exc:
                     getattr(_logger, log_level)("%s error: %s", func.__name__, exc, exc_info=True)
@@ -197,8 +195,6 @@ def _safe_hook(
         def wrapper(*, message_id: str, **kwargs: Any) -> Any:
             try:
                 ctrl = get_controller()
-                if not ctrl.enabled:
-                    return default_return
                 return func(ctrl=ctrl, message_id=message_id, **kwargs)
             except Exception as exc:
                 getattr(_logger, log_level)("%s error: %s", func.__name__, exc, exc_info=True)
@@ -618,8 +614,6 @@ async def on_session_aborted(*, session_key: str) -> bool:
     """Terminate the active card after Hermes handles a busy-session /stop."""
     try:
         ctrl = get_controller()
-        if not ctrl.enabled:
-            return False
         return bool(await ctrl.on_session_aborted(session_key=session_key))
     except Exception as exc:
         _logger.warning("on_session_aborted error: %s", exc, exc_info=True)
@@ -665,8 +659,6 @@ def on_busy_ack(
     """
     try:
         ctrl = ctrl or get_controller()
-        if not ctrl.enabled:
-            return False
         return bool(ctrl.on_busy_ack(text=text, message_id=message_id, session_key=session_key))
     except Exception as exc:
         _logger.warning("on_busy_ack error: %s", exc, exc_info=True)
@@ -703,8 +695,6 @@ def on_turn_redirected(
     """
     try:
         ctrl = ctrl or get_controller()
-        if not ctrl.enabled:
-            return
         old_session = ctrl._resolve_session(None, session_key) if session_key else None
         old_msg = old_message_id or (old_session.message_id if old_session else message_id) or ""
         new_msg = new_message_id or message_id or (old_session.message_id if old_session else "")
@@ -743,8 +733,6 @@ def on_session_compressed(
     """[注入点 14] 上下文压缩通知，保留本轮活跃卡至正常完成事件."""
     try:
         ctrl = ctrl or get_controller()
-        if not ctrl.enabled:
-            return False
         return bool(ctrl.on_compression(session_key=session_key, message_id=message_id))
     except Exception as exc:
         _logger.warning("on_session_compressed error: %s", exc, exc_info=True)
@@ -786,8 +774,6 @@ async def on_background_deliver(
     """[注入点 11] background 任务完成推送 — 包装为飞书卡片发送."""
     try:
         ctrl = get_controller()
-        if not ctrl.enabled:
-            return False
         return await ctrl.on_background_deliver(
             chat_id=chat_id,
             preview=preview,
@@ -820,8 +806,6 @@ async def on_background_completion(
     """
     try:
         ctrl = ctrl or get_controller()
-        if not ctrl.enabled:
-            return False
         receipt_sent = bool(await ctrl.on_background_completion(
             chat_id=chat_id,
             session_key=session_key,
@@ -856,15 +840,13 @@ def suppress_busy_receipt(
     卡片外多出来的那一条。返回 True 让注入块 ``break`` 掉本次发送。
 
     判据只有「这条回执是否已由卡片接管」：拿不到键（``session_id`` /
-    ``session_key`` / ``started_at`` 全缺）、登记过期或插件禁用，一律 False——
+    ``session_key`` / ``started_at`` 全缺）或登记过期，一律 False——
     网关照常发，功能无损。
     """
     try:
         if str(platform_name or "").lower() not in {"", "feishu", "lark"}:
             return False
-        ctrl = get_controller()
-        if not ctrl.enabled:
-            return False
+        get_controller()  # Keep the profile-scope availability check.
         suppressed = busy_receipt_suppressed(
             session_id=session_id, session_key=session_key, started_at=started_at
         )

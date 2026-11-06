@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from ..config import Config
 from ..streaming.segments import Segment, SegmentType
 from ..streaming.tooluse import ToolDisplayStep
 from .i18n import _LOCALES, _T, _content_t, _i18n, _t
@@ -18,6 +19,16 @@ from .markdown import (
     parse_table_block,
     split_markdown_tables,
 )
+from .styles import (
+    apply_options,
+    current_config,
+    header_element,
+    icon_element,
+    option,
+    panel_element,
+    styled_builder,
+    text_element,
+)
 
 STREAMING_ELEMENT_ID = "streaming_content"
 REASONING_ELEMENT_ID = "reasoning_content"
@@ -27,7 +38,11 @@ UNIFIED_PANEL_ELEMENT_ID = "unified_panel"
 # 流式和完成态共用思考时间线外框。
 PROCESS_PANEL_ELEMENT_ID = UNIFIED_PANEL_ELEMENT_ID
 PROCESS_ANCHOR_ELEMENT_ID = "process_anchor"
+BODY_SURFACE_ELEMENT_ID = "fry_body_surface"
+BODY_SURFACE_ELEMENT_COUNT = 2
+BODY_SURFACE_COLOR = "cus-0"
 LOADING_ELEMENT_ID = "loading_icon"
+LOADING_CURSOR_ELEMENT_ID = "loading_cursor"
 _LOADING_ELEMENT_ID = LOADING_ELEMENT_ID  # 兼容旧私有引用
 _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 
@@ -35,6 +50,87 @@ _LOADING_IMG_KEY = "img_v3_02vb_496bec09-4b43-4773-ad6b-0cdd103cd2bg"
 # （实测 50 步 ≈ 37KB），10 Hz 整卡重绘会卡死飞书客户端。header 保留总步数，
 # 更早的步骤折叠成一行摘要；估算端（segment_helper.estimate_tool_elements）按同一上限取值。
 MAX_TOOL_PANEL_STEPS = 30
+
+
+@styled_builder
+def _build_body(elements: list[dict], *, config: Config | None = None) -> dict:
+    """Place reply content on a theme-aware surface, retaining its element IDs."""
+    if any(element.get("tag") == "table" for element in elements):
+        root: list[dict] = []
+        group: list[dict] = []
+        for element in [*elements, None]:
+            if element is not None and element.get("tag") != "table":
+                group.append(element)
+                continue
+            if group:
+                surface = _build_body(group)["elements"][0]
+                surface["element_id"] = f"{BODY_SURFACE_ELEMENT_ID}_{len(root)}"
+                root.append(surface)
+                group = []
+            if element is not None:
+                root.append(element)
+        return _body_layout({"elements": root})
+    surface = {
+        "tag": "column_set", "element_id": BODY_SURFACE_ELEMENT_ID,
+        "flex_mode": "none", "background_style": BODY_SURFACE_COLOR,
+        "columns": [{
+            "tag": "column", "width": "weighted", "weight": 1,
+            "vertical_align": "top", "elements": elements,
+        }],
+    }
+    surface = apply_options(surface, "body", ("horizontal_spacing", "horizontal_align"))
+    surface = apply_options(surface, "body", ("margin",), prefix="surface_")
+    surface["columns"][0] = apply_options(surface["columns"][0], "body", ("padding",), prefix="surface_")
+    surface["columns"][0] = apply_options(surface["columns"][0], "body", (
+        "vertical_spacing", "horizontal_align", "vertical_align",
+    ))
+    return _body_layout({"elements": [surface]})
+
+
+def _body_layout(body: dict) -> dict:
+    return apply_options(body, "body", ("padding",), prefix="body_")
+
+
+@styled_builder
+def _body_style(config: Config | None = None) -> dict:
+    """Resolve the same body surface independently for light and dark clients."""
+    cfg = config or current_config()
+    def rgba(value: str) -> str:
+        channels = (int(value[i:i + 2], 16) for i in (1, 3, 5))
+        return "rgba(" + ",".join(map(str, channels)) + ",1)"
+    style = {"color": {BODY_SURFACE_COLOR: {
+        "light_mode": rgba(cfg.body_light_color),
+        "dark_mode": rgba(cfg.body_dark_color),
+    }}}
+    text_sizes = cfg.style_options("text_sizes")
+    if isinstance(text_sizes, dict) and text_sizes:
+        style["text_size"] = text_sizes
+    return style
+
+
+def body_content_elements(card: dict[str, Any]) -> list[dict]:
+    """Read content in display order; a single surface retains its mutable list."""
+    body = card.get("body")
+    elements = body.get("elements") if isinstance(body, dict) else None
+    if not isinstance(elements, list):
+        return []
+    if len(elements) == 1 and elements[0].get("element_id") == BODY_SURFACE_ELEMENT_ID:
+        return elements[0]["columns"][0]["elements"]
+    if elements and elements[0].get("element_id") == BODY_SURFACE_ELEMENT_ID and not any(
+        str(element.get("element_id", "")).startswith(BODY_SURFACE_ELEMENT_ID + "_")
+        for element in elements[1:]
+    ):
+        return [*elements[0]["columns"][0]["elements"], *elements[1:]]
+    if any(str(element.get("element_id", "")).startswith(BODY_SURFACE_ELEMENT_ID + "_")
+           for element in elements):
+        flat = []
+        for element in elements:
+            if str(element.get("element_id", "")).startswith(BODY_SURFACE_ELEMENT_ID + "_"):
+                flat.extend(element["columns"][0]["elements"])
+            else:
+                flat.append(element)
+        return flat
+    return elements
 
 
 def _truncate_model(name: str) -> str:
@@ -50,7 +146,8 @@ def _truncate_model(name: str) -> str:
     return name
 
 
-def _display_model(name: str) -> str:
+@styled_builder
+def _display_model(name: str, *, config: Config | None = None) -> str:
     """模型显示名：别名优先（~/.hermes/model_aliases.json 子串匹配，支持时段人设），未命中回落截断.
 
     别名文件由 Config().model_aliases() 每次重读（热更新）；对象条目读取时按北京时间
@@ -58,9 +155,8 @@ def _display_model(name: str) -> str:
     """
     if not name:
         return name
-    from ..config import Config
 
-    cfg = Config()
+    cfg = current_config()
     if cfg.model_aliases_enabled:
         aliases = cfg.model_aliases()
         lowered = name.lower()
@@ -72,31 +168,45 @@ def _display_model(name: str) -> str:
     return name
 
 
-def _panel_header(title_el: dict, *, icon_position: str = "right", position: str = "bottom") -> dict:
-    """折叠面板 header 的完整结构。
+@styled_builder
+def _panel_header(
+    title_el: dict, *, icon_position: str = "right", position: str = "bottom",
+    arrow: bool | None = None, config: Config | None = None,
+) -> dict:
+    """构造完整原生标题栏，按运行中或封卡的配置选择展开图标。
 
-    ``partial_update_element`` 传 header 时飞书按整块替换：只给 title 会把右侧的
-    展开箭头一并抹掉（卡片上标题还在、箭头没了）。所以每次更新标题都带上 icon 五件套。
+    ``partial_update_element`` 按整块覆盖 header；位置、文字与当前态图标共用本构造器。
     """
-    icon_el = {
-        "tag": "standard_icon",
-        "token": "down-small-ccm_outlined",
-        "size": "16px 16px",
-    }
-    if icon_position == "right":
-        icon_el["color"] = "grey"
-    return {
+    header = {
         "title": title_el,
         "vertical_align": "center",
         "position": position,
-        "icon": icon_el,
-        "icon_position": icon_position,
-        "icon_expanded_angle": -180,
     }
+    if arrow is False:
+        show_arrow = option("process", "completed_arrow", False)
+    elif arrow is True:
+        show_arrow = True
+    else:
+        show_arrow = option("process", "arrow", True)
+    if show_arrow:
+        icon_el = {
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined",
+            "size": "16px 16px",
+        }
+        if icon_position == "right":
+            icon_el["color"] = "grey"
+        header["icon"] = icon_element(icon_el, "process")
+        header["icon_position"] = option("process", "icon_position", icon_position)
+        header["icon_expanded_angle"] = option("process", "icon_expanded_angle", -180)
+    return apply_options(header, "process", ("padding", "background_color", "vertical_align", "width"),
+                         prefix="header_")
 
 
+@styled_builder
 def _process_title(
     reasoning_count: int = 0, tool_count: int = 0, *, element_id: str | None = None,
+    config: Config | None = None,
 ) -> dict:
     en, zh = (
         _T["reasoning_count_streaming"][locale].format(reasoning_count)
@@ -106,12 +216,13 @@ def _process_title(
     if element_id:
         content = (_content_t("reasoning_count_streaming").format(reasoning_count)
                    + " · " + _content_t("tool_count_streaming").format(tool_count))
-        return {"tag": "plain_text", "element_id": element_id, "content": content,
-                "text_color": "grey", "text_size": "notation"}
-    return {"tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh),
-            "text_color": "grey", "text_size": "notation"}
+        return text_element({"tag": "plain_text", "element_id": element_id, "content": content,
+                "text_color": "grey", "text_size": "notation"}, "process_title")
+    return text_element({"tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh),
+            "text_color": "grey", "text_size": "notation"}, "process_title")
 
 
+@styled_builder
 def _collapsible_panel(
     *,
     expanded: bool,
@@ -119,8 +230,9 @@ def _collapsible_panel(
     elements: list[dict],
     vertical_spacing: str = "4px",
     icon_position: str = "right",
+    config: Config | None = None,
 ) -> dict:
-    return {
+    return panel_element({
         "tag": "collapsible_panel",
         "expanded": expanded,
         "header": _panel_header(title_el, icon_position=icon_position),
@@ -128,45 +240,67 @@ def _collapsible_panel(
         "vertical_spacing": vertical_spacing,
         "padding": "8px 8px 8px 8px",
         "elements": elements,
-    }
+    })
 
 
+@styled_builder
 def _streaming_element(
     content: str = "",
     *,
     element_id: str = STREAMING_ELEMENT_ID,
     text_size: str = "normal_v2",
+    config: Config | None = None,
 ) -> dict:
-    return {
+    return text_element({
         "tag": "markdown",
         "content": content,
         "text_align": "left",
         "text_size": text_size,
         "margin": "0px 0px 0px 0px",
         "element_id": element_id,
-    }
+    }, "body")
 
 
 _HEADER_STATES: dict[str, dict[str, str]] = {
-    "streaming": {"template": "blue", "i18n_key": "processing_prefix"},
-    "completed": {"template": "green", "i18n_key": "status_completed"},
-    "error": {"template": "red", "i18n_key": "status_error"},
-    "stopped": {"template": "red", "i18n_key": "status_stopped"},
+    "streaming": {"i18n_key": "processing_prefix"},
+    "completed": {"i18n_key": "status_completed"},
+    "error": {"i18n_key": "status_error"},
+    "stopped": {"i18n_key": "status_stopped"},
 }
 
 
-def _build_header(status: str) -> dict[str, Any]:
-    """构建卡片级 header — 流式蓝 / 完成绿 / 停止红."""
+@styled_builder
+def _build_header(status: str, *, config: Config | None = None) -> dict[str, Any]:
+    """构建默认主题的状态标题，保留文案与多语言信息."""
     cfg = _HEADER_STATES.get(status, _HEADER_STATES["completed"])
-    en_text, zh_text = _T[cfg["i18n_key"]]
-    return {
+    resolved = config or current_config()
+    image_key = resolved.header_icons.get(status)
+    text_key = cfg["i18n_key"] + "_plain" if image_key else cfg["i18n_key"]
+    en_text, zh_text = _T[text_key]
+    header = {
         "title": {
             "tag": "plain_text",
             "content": en_text,
             "i18n_content": _i18n(en_text, zh_text),
         },
-        "template": cfg["template"],
     }
+    if image_key:
+        header["icon"] = {"tag": "custom_icon", "img_key": image_key}
+    template = resolved.header_template
+    if template != "default":
+        header["template"] = template
+    return header_element(header)
+
+
+@styled_builder
+def build_notice_header(*, config: Config | None = None, title_key: str = "notice") -> dict[str, Any]:
+    """The shared text title for standalone system notices."""
+    cfg = config or current_config()
+    en, zh = _T[title_key]
+    header: dict[str, Any] = {"title": {"tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh)}}
+    if cfg.header_template != "default":
+        header["template"] = cfg.header_template
+    return header_element(header)
 
 
 _NOTICE_ELEMENT_ID = "fry_notice"
@@ -183,7 +317,8 @@ def notice_element_id(index: int) -> str:
     return _NOTICE_ELEMENT_ID if index == 0 else f"{_NOTICE_ELEMENT_ID}_{index}"
 
 
-def build_notice_elements(texts: list[str] | None, *, offset: int = 0) -> list[dict]:
+@styled_builder
+def build_notice_elements(texts: list[str] | None, *, offset: int = 0, config: Config | None = None) -> list[dict]:
     """通知区元素列表：每条提示一个元素，id 按序号派生，保证卡内唯一.
 
     ``offset``：顶部区与底部区共存时，底部元素 id 接在顶部序号之后派生，
@@ -195,22 +330,24 @@ def build_notice_elements(texts: list[str] | None, *, offset: int = 0) -> list[d
     ]
 
 
-def build_notice_element(text: str, *, element_id: str = _NOTICE_ELEMENT_ID) -> dict:
+@styled_builder
+def build_notice_element(text: str, *, element_id: str = _NOTICE_ELEMENT_ID, config: Config | None = None) -> dict:
     """通知区的单条提示（Hermes 原文，原样渲染）.
 
     文案不新增也不包装（#43 反馈）：忙碌回执 / 重定向文案本身已是完整一句话，
     再套「💡 提示」标签反而像一段新内容。原样写入；视觉区分由位置（底部通知位）
     承担，不写进 content。
     """
-    return {
+    return text_element({
         "tag": "markdown",
         "element_id": element_id,
         "content": text,
-    }
+    }, "body")
 
 
+@styled_builder
 def build_streaming_notice_element(
-    text: str, *, element_id: str, text_size: str = "normal_v2"
+    text: str, *, element_id: str, text_size: str = "normal_v2", config: Config | None = None,
 ) -> dict:
     """流式态通知槽元素（与建卡时写入的提示元素同构）.
 
@@ -220,16 +357,32 @@ def build_streaming_notice_element(
     return _streaming_element(content=text, element_id=element_id, text_size=text_size)
 
 
-def _loading_element() -> dict:
+@styled_builder
+def _loading_element(*, config: Config | None = None) -> dict:
+    """插入锚点：留在正文底色块内，供新增段落与通知按顺序插到它之前。
+
+    视觉上一片空白、不占行高；用户看到的转圈光标由 ``_loading_cursor_element``
+    画在底色块外面。
+    """
+    return {
+        "tag": "markdown",
+        "content": "",
+        "element_id": _LOADING_ELEMENT_ID,
+    }
+
+
+@styled_builder
+def _loading_cursor_element(*, config: Config | None = None) -> dict:
+    """流式光标：落在正文底色块下方、卡片底色的区域里。"""
     return {
         "tag": "markdown",
         "content": " ",
         "icon": {
             "tag": "custom_icon",
-            "img_key": _LOADING_IMG_KEY,
-            "size": "16px 16px",
+            "img_key": option("loading", "img_key", _LOADING_IMG_KEY),
+            "size": option("loading", "size", "16px 16px"),
         },
-        "element_id": _LOADING_ELEMENT_ID,
+        "element_id": LOADING_CURSOR_ELEMENT_ID,
     }
 
 
@@ -237,8 +390,9 @@ _TABLE_PAGE_SIZE = 10
 _TABLE_ROW_MAX_HEIGHT = "999px"
 
 
+@styled_builder
 def _append_content_elements(
-    elements: list[dict], content: str, *, text_size: str | None = None
+    elements: list[dict], content: str, *, text_size: str | None = None, config: Config | None = None,
 ) -> None:
     """正文 → 元素列表：文本片段出 markdown 元素，表格片段出原生 table 元素.
 
@@ -259,10 +413,11 @@ def _append_content_elements(
             element: dict[str, Any] = {"tag": "markdown", "content": chunk}
             if text_size:
                 element["text_size"] = text_size
-            elements.append(element)
+            elements.append(text_element(element, "body"))
 
 
-def _build_table_element(header: list[str], rows: list[list[str]]) -> dict[str, Any]:
+@styled_builder
+def _build_table_element(header: list[str], rows: list[list[str]], *, config: Config | None = None) -> dict[str, Any]:
     """飞书原生 table 元素 — 列宽 auto + 行高 auto.
 
     markdown 表格不支持设置列宽/行高：长单元格折行后被固定行高裁掉。
@@ -274,10 +429,11 @@ def _build_table_element(header: list[str], rows: list[list[str]]) -> dict[str, 
             "name": f"c{index}",
             "display_name": name,
             "data_type": "lark_md",
-            "width": "auto",
+            "width": option("table", "column_width", "auto"),
         }
         for index, name in enumerate(header)
     ]
+    columns = [apply_options(col, "table", ("horizontal_align", "vertical_align")) for col in columns]
     table_rows = [
         {
             f"c{index}": row[index] if index < len(row) else ""
@@ -285,7 +441,7 @@ def _build_table_element(header: list[str], rows: list[list[str]]) -> dict[str, 
         }
         for row in rows
     ]
-    return {
+    table = {
         "tag": "table",
         "page_size": _TABLE_PAGE_SIZE,
         "row_height": "auto",
@@ -301,8 +457,14 @@ def _build_table_element(header: list[str], rows: list[list[str]]) -> dict[str, 
         "columns": columns,
         "rows": table_rows,
     }
+    table["header_style"] = apply_options(table["header_style"], "table", (
+        "text_align", "text_size", "background_style", "text_color", "bold", "lines",
+    ), prefix="header_")
+    return apply_options(table, "table", ("page_size", "row_height", "row_max_height",
+                                          "freeze_first_column", "margin"))
 
 
+@styled_builder
 def _build_tool_panel(
     steps: list[ToolDisplayStep],
     elapsed_ms: float = 0,
@@ -311,6 +473,7 @@ def _build_tool_panel(
     element_id: str | None = TOOL_PANEL_ELEMENT_ID,
     running: bool = False,
     compact: bool = False,
+    config: Config | None = None,
 ) -> dict:
     en_t, zh_t = _T["tool_running"] if running else _T["tool_use"]
     en_parts, zh_parts = [en_t], [zh_t]
@@ -333,12 +496,12 @@ def _build_tool_panel(
         tpl_en, tpl_zh = _T["tool_omitted"]
         summary_en = tpl_en.format(omitted)
         summary_zh = tpl_zh.format(omitted)
-        children.append({
+        children.append(text_element({
             "tag": "markdown",
             "content": summary_en,
             "i18n_content": _i18n(summary_en, summary_zh),
             "text_size": "notation",
-        })
+        }, "summary"))
     for s in shown:
         # 紧凑模式（#53）：每步只渲染标题行（工具名 · 状态），不渲染入参与输出。
         # 完成态整卡重建会把面板子元素连同流式期已提交的一并累计，CardKit 按
@@ -350,21 +513,24 @@ def _build_tool_panel(
 
     panel = _collapsible_panel(
         expanded=expanded,
-        title_el={
+        title_el=text_element({
             "tag": "plain_text",
             "content": f"🔧 {' · '.join(en_parts)}",
             "i18n_content": _i18n(f"🔧 {' · '.join(en_parts)}", f"🔧 {' · '.join(zh_parts)}"),
             "text_color": "grey",
             "text_size": "notation",
-        },
+        }, "process_title"),
         elements=children,
     )
     if element_id:
         panel["element_id"] = element_id
+    if running and not (config or current_config()).process_border:
+        panel.pop("border")
     return panel
 
 
-def _build_tool_step_elements(step: ToolDisplayStep) -> list[dict]:
+@styled_builder
+def _build_tool_step_elements(step: ToolDisplayStep, *, config: Config | None = None) -> list[dict]:
     elements: list[dict] = [_build_tool_step_title(step)]
     detail = _build_tool_step_detail(step)
     if detail:
@@ -375,31 +541,36 @@ def _build_tool_step_elements(step: ToolDisplayStep) -> list[dict]:
     return elements
 
 
-def _build_tool_step_title(step: ToolDisplayStep) -> dict:
+@styled_builder
+def _build_tool_step_title(step: ToolDisplayStep, *, config: Config | None = None) -> dict:
     status = step.get("status", "running")
     status_info = _tool_status_info(status)
     title = step.get("title", step.get("name", "tool"))
-    content = f"**{_escape_md(title)}** · <font color='{status_info['color']}'>{status_info['label']}</font>"
-    return {
+    title_text = _escape_md(title)
+    if option("tool_title", "bold", True):
+        title_text = f"**{title_text}**"
+    content = f"{title_text} · <font color='{status_info['color']}'>{status_info['label']}</font>"
+    return text_element({
         "tag": "div",
         "icon": {
             "tag": "standard_icon",
-            "token": step.get("icon", "tool_02"),
-            "color": "grey",
+            "token": option("tool_icons", step.get("name", ""), step.get("icon", "tool_02")),
+            "color": option("tool_title", "icon_color", "grey"),
         },
         "text": {
             "tag": "lark_md",
             "content": content,
             "text_size": "notation",
         },
-    }
+    }, "tool_title")
 
 
-def _build_tool_step_detail(step: ToolDisplayStep) -> dict | None:
+@styled_builder
+def _build_tool_step_detail(step: ToolDisplayStep, *, config: Config | None = None) -> dict | None:
     detail = step.get("detail", "").strip()
     if not detail:
         return None
-    return {
+    return text_element({
         "tag": "div",
         "margin": "0px 0px 0px 22px",
         "text": {
@@ -408,10 +579,11 @@ def _build_tool_step_detail(step: ToolDisplayStep) -> dict | None:
             "text_color": "grey",
             "text_size": "notation",
         },
-    }
+    }, "tool_detail")
 
 
-def _build_tool_step_output(step: ToolDisplayStep) -> dict | None:
+@styled_builder
+def _build_tool_step_output(step: ToolDisplayStep, *, config: Config | None = None) -> dict | None:
     error_block = step.get("error_block")
     result_block = step.get("result_block")
 
@@ -432,7 +604,7 @@ def _build_tool_step_output(step: ToolDisplayStep) -> dict | None:
     if not lines:
         return None
 
-    return {
+    return text_element({
         "tag": "div",
         "margin": "0px 0px 0px 22px",
         "text": {
@@ -440,15 +612,19 @@ def _build_tool_step_output(step: ToolDisplayStep) -> dict | None:
             "content": "\n".join(lines),
             "text_size": "notation",
         },
-    }
+    }, "tool_output")
 
 
-def _tool_status_info(status: str) -> dict[str, str]:
-    return {
+@styled_builder
+def _tool_status_info(status: str, *, config: Config | None = None) -> dict[str, str]:
+    info = {
         "running": {"label": "Running", "color": "turquoise"},
         "success": {"label": "Succeeded", "color": "green"},
         "error": {"label": "Failed", "color": "red"},
     }.get(status, {"label": status.capitalize(), "color": "grey"})
+    field = status if status in {"running", "success", "error"} else "unknown"
+    info["color"] = option("tool_title", field + "_color", info["color"])
+    return info
 
 
 def _format_code_block(content: str, language: str) -> str:
@@ -466,16 +642,18 @@ def _escape_md(value: str) -> str:
     return re.sub(r"([`*_{}\[\]<>])", r"\\\1", value.replace("\\", "\\\\"))
 
 
+@styled_builder
 def _build_reasoning_stage(
     text: str, elapsed_ms: float = 0, *, element_id: str | None = None,
     text_element_id: str | None = None,
+    config: Config | None = None,
 ) -> list[dict[str, Any]]:
     """时间线阶段：耗时标题和正文直接作为外框的相邻子元素。"""
     label = (
         _content_t("thought_for").format(_format_elapsed(elapsed_ms))
         if elapsed_ms > 0 else _content_t("thinking_panel")
     )
-    return [
+    return [text_element(element, role) for element, role in zip([
         {
             "tag": "markdown", "content": f"<font color='grey'>💭 {label}</font>",
             "text_size": "notation",
@@ -485,11 +663,13 @@ def _build_reasoning_stage(
             "tag": "markdown", "content": text or " ", "text_size": "notation",
             **({"element_id": text_element_id} if text_element_id else {}),
         },
-    ]
+    ], ("reasoning_title", "reasoning"), strict=True)]
 
 
+@styled_builder
 def _build_process_summary(
     text: str, *, zh_text: str | None = None, element_id: str | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """Shared typography for completed reasoning and tool summaries."""
     content = f"<font color='grey'>{text}</font>"
@@ -498,10 +678,11 @@ def _build_process_summary(
         element["i18n_content"] = _i18n(content, f"<font color='grey'>{zh_text}</font>")
     if element_id:
         element["element_id"] = element_id
-    return element
+    return text_element(element, "summary")
 
 
-def _build_reasoning_summary(rounds: list[dict]) -> list[dict[str, Any]]:
+@styled_builder
+def _build_reasoning_summary(rounds: list[dict], *, config: Config | None = None) -> list[dict[str, Any]]:
     """封卡后的思考摘要：只报轮数，逐步耗时与正文都不进卡。"""
     if not rounds:
         return []
@@ -512,9 +693,11 @@ def _build_reasoning_summary(rounds: list[dict]) -> list[dict[str, Any]]:
     return [_build_process_summary(f"💭 {label}")]
 
 
+@styled_builder
 def _build_reasoning_panel(
     text: str, elapsed_ms: float = 0, *, expanded: bool = False, element_id: str | None = None,
     text_element_id: str | None = REASONING_TEXT_ELEMENT_ID,
+    config: Config | None = None,
 ) -> dict:
     if elapsed_ms > 0:
         d = _format_elapsed(elapsed_ms)
@@ -525,19 +708,19 @@ def _build_reasoning_panel(
         en_label, zh_label = _T["thought"]
     panel = _collapsible_panel(
         expanded=expanded,
-        title_el={
+        title_el=text_element({
             "tag": "plain_text",
             "content": f"💭 {en_label}",
             "i18n_content": _i18n(f"💭 {en_label}", f"💭 {zh_label}"),
             "text_color": "grey",
             "text_size": "notation",
-        },
-        elements=[{
+        }, "reasoning_title"),
+        elements=[text_element({
             "tag": "markdown",
             "content": text,
             "text_size": "notation",
             **({"element_id": text_element_id} if text_element_id else {}),
-        }],
+        }, "reasoning")],
         vertical_spacing="8px",
     )
     if element_id:
@@ -636,6 +819,7 @@ def _build_panel_header(
     return " · ".join(en_parts) or "🍟", " · ".join(zh_parts) or "🍟"
 
 
+@styled_builder
 def _build_footer_elements(
     footer_data: dict | None,
     is_error: bool = False,
@@ -643,6 +827,7 @@ def _build_footer_elements(
     fields: list[list[str]] | None = None,
     show_label: bool = False,
     text_size: str = "notation",
+    *, config: Config | None = None,
 ) -> list[dict]:
     if fields is None:
         fields = [["status", "elapsed", "speed", "cache", "context", "model"]]
@@ -660,26 +845,39 @@ def _build_footer_elements(
                 if zh:
                     zh_parts.append(zh)
         if en_parts:
-            en_lines.append(" · ".join(en_parts))
-            zh_lines.append(" · ".join(zh_parts))
+            en_lines.append(option("footer", "separator", " · ").join(en_parts))
+            zh_lines.append(option("footer", "separator", " · ").join(zh_parts))
 
     if not en_lines:
         return []
 
     en_content = "\n".join(en_lines)
     zh_content = "\n".join(zh_lines)
-    if is_error:
-        en_content = f"<font color='red'>{en_content}</font>"
-        zh_content = f"<font color='red'>{zh_content}</font>"
 
-    return [
-        {
+    element = text_element({
             "tag": "markdown",
             "content": en_content,
             "i18n_content": _i18n(en_content, zh_content),
             "text_size": text_size,
-        },
-    ]
+        }, "footer")
+    if is_error:
+        color = option("footer", "error_color", "red")
+        for key in ("content", "i18n_content"):
+            if key == "content":
+                element[key] = _error_footer_content(element[key], color)
+            else:
+                element[key] = {lang: _error_footer_content(text, color)
+                                for lang, text in element[key].items()}
+    return [element]
+
+
+def _error_footer_content(text: str, color: str) -> str:
+    lines = []
+    for line in text.split("\n"):
+        outer = re.fullmatch(r"<font color=['\"][^'\"]+['\"]>(.*)</font>", line)
+        lines.append(outer[1] if outer else line)
+    content = "\n".join(lines)
+    return f"<font color='{color}'>{content}</font>"
 
 
 def _render_footer_field(
@@ -847,16 +1045,20 @@ def _context_progress_with_text(used: int, total: int, width: int = 8) -> str:
     return f"{used}/{total} [{bar}] {pct:.0f}%"
 
 
-def build_streaming_tool_use_pending_panel(*, expanded: bool = True) -> dict[str, Any]:
+@styled_builder
+def build_streaming_tool_use_pending_panel(*, expanded: bool = True, config: Config | None = None) -> dict[str, Any]:
     panel = _collapsible_panel(
         expanded=expanded, title_el=_process_title(element_id=f"{TOOL_PANEL_ELEMENT_ID}_count"),
         elements=[],
     )
     panel["element_id"] = TOOL_PANEL_ELEMENT_ID
+    if not (config or current_config()).process_border:
+        panel.pop("border")
     return panel
 
 
-def build_streaming_process_pending_panel(*, expanded: bool = True) -> dict[str, Any]:
+@styled_builder
+def build_streaming_process_pending_panel(*, expanded: bool = True, config: Config | None = None) -> dict[str, Any]:
     """Native bottom header controls the complete reasoning timeline."""
     panel = _collapsible_panel(
         expanded=expanded,
@@ -865,9 +1067,12 @@ def build_streaming_process_pending_panel(*, expanded: bool = True) -> dict[str,
                    "text_size": "notation"}],
     )
     panel["element_id"] = PROCESS_PANEL_ELEMENT_ID
+    if not (config or current_config()).process_border:
+        panel.pop("border")
     return panel
 
 
+@styled_builder
 def build_streaming_card_v2(
     *,
     tool_steps: list[ToolDisplayStep] | None = None,
@@ -880,29 +1085,31 @@ def build_streaming_card_v2(
     width_mode: str = "default",
     notice: str | None = None,
     process_expanded: bool = True,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """CardKit 2.0 流式占位卡片 — 工具面板合并到底部.
 
     ``process_expanded`` 决定过程框建卡时是否展开，取自配置 ``streaming.process_expanded``。
     """
+    config = config or current_config()
     elements: list[dict] = []
 
     if show_streaming_element:
         elements.append(_streaming_element(text_size=text_size))
 
     if show_reasoning:
-        elements.append(build_streaming_process_pending_panel(expanded=process_expanded))
+        elements.append(build_streaming_process_pending_panel(expanded=process_expanded, config=config))
 
     # 工具面板放在底部（answer之后，loading之前）
     if show_tool_use:
         if tool_steps:
-            panel = _build_tool_panel(tool_steps, elapsed_ms, running=True, expanded=False)
+            panel = _build_tool_panel(tool_steps, elapsed_ms, running=True, expanded=False, config=config)
             panel["header"] = _panel_header(_process_title(
                 0, len(tool_steps), element_id=f"{TOOL_PANEL_ELEMENT_ID}_count",
             ))
             elements.append(panel)
         else:
-            elements.append(build_streaming_tool_use_pending_panel(expanded=process_expanded))
+            elements.append(build_streaming_tool_use_pending_panel(expanded=process_expanded, config=config))
 
     if notice:
         # 通知区：流式态只显示最新一条（Hermes 原文），落卡片底部（loading 之前），
@@ -917,29 +1124,29 @@ def build_streaming_card_v2(
 
     elements.append(_loading_element())
 
+    body = _build_body(elements)
+    body["elements"].append(_loading_cursor_element())
+
     card = {
         "schema": "2.0",
         "config": {
             "width_mode": width_mode,
             "streaming_mode": True,
-            "streaming_config": {
-                "print_frequency_ms": {"default": 15},
-                "print_step": {"default": 1},
-                "print_strategy": "fast",
-            },
+            "style": _body_style(config),
             "locales": _LOCALES,
             "summary": {
                 "content": _T["processing"][0],
                 "i18n_content": _t("processing"),
             },
         },
-        "body": {"elements": elements},
+        "body": body,
     }
     if header_enabled:
-        card["header"] = _build_header("streaming")
+        card["header"] = _build_header("streaming", config=config)
     return card
 
 
+@styled_builder
 def build_complete_card(
     *,
     segments: list[Segment],
@@ -965,6 +1172,7 @@ def build_complete_card(
     width_mode: str = "default",
     notices: list[str] | None = None,
     progress_notices: list[str] | None = None,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """完成态流式卡片 — 推理+工具合并成底部统一面板，答案在上面.
 
@@ -975,6 +1183,7 @@ def build_complete_card(
     顶部；``progress_notices``（忙碌回执 / 重定向等本轮进行中的提示）在卡片
     底部（footer 之前），不与工具输出混排。元素 id 跨区连续派生，保证唯一。
     """
+    config = config or current_config()
     elements: list[dict] = []
     has_answer = False
     # 收集所有 reasoning rounds + tool steps，合并成一个底部统一面板
@@ -1036,8 +1245,7 @@ def build_complete_card(
             _panel_duration_ms = _d * 1000
     _min_duration_ms = 0
     try:
-        from ..config import Config
-        _min_duration_ms = float(Config().unified_panel_min_duration) * 1000
+        _min_duration_ms = float(config.unified_panel_min_duration) * 1000
     except Exception:
         _min_duration_ms = 5000
     _show_unified_panel = (show_reasoning or show_tool_use) and (
@@ -1098,8 +1306,7 @@ def build_complete_card(
         ))
         # header: 字段化组合（默认 🍟 model · 💭n · 🔧n · context · ⏱️ elapsed），
         # 与 footer 共用字段池，可经 display.platforms.feishu.panel_fields 自由组合
-        from ..config import Config
-        _panel_cfg = Config()
+        _panel_cfg = config
         # 优先用 tool_elapsed_ms，否则用 footer_data 的 duration，否则用 session 总耗时
         panel_elapsed_ms = tool_elapsed_ms
         if not panel_elapsed_ms and footer_data:
@@ -1124,12 +1331,16 @@ def build_complete_card(
                 **_panel_header({
                     "tag": "plain_text", "content": header_en,
                     "i18n_content": _i18n(header_en, header_zh),
-                }, position="top"),
-                "text_color": "grey", "text_size": panel_text_size,
+                }, position="top", arrow=False),
+                "text_color": option("process_title", "text_color", "grey"),
+                "text_size": panel_text_size,
             },
             "border": {"color": border_color, "corner_radius": "5px"},
             "elements": unified_children,
         }
+        unified_panel = panel_element(
+            unified_panel, completed=True, status="error" if is_error else "stopped" if is_aborted else "completed",
+        )
         elements.append(unified_panel)
 
     if not has_answer:
@@ -1138,10 +1349,10 @@ def build_complete_card(
         cut_off = bool(reasoning_rounds) or bool(tool_steps_total)
         key = "continued" if is_continuation else ("interrupted_no_answer" if cut_off else "done")
         en, zh = _T[key]
-        elements.append({
+        elements.append(text_element({
             "tag": "markdown", "content": en, "i18n_content": _i18n(en, zh),
             "text_size": body_text_size,
-        })
+        }, "body"))
 
     # 进行中的提示（忙碌回执 / 重定向）落底部：正文之后、footer 之前（#43 反馈）。
     # 元素 id 接在顶部提示序号之后派生，两个区不撞 id。
@@ -1172,6 +1383,7 @@ def build_complete_card(
             "width_mode": width_mode,
             "wide_screen_mode": True,
             "update_multi": True,
+            "style": _body_style(config),
             "locales": _LOCALES,
         },
     }
@@ -1179,10 +1391,10 @@ def build_complete_card(
         card["config"]["summary"] = {"content": summary}
     # 通知区放在正文顶部：Hermes 原文（忙碌回执 / 重定向 / 后台回执）不另发纯文本（#43）。
     # 每条提示占一个元素（id 按序号派生），元素数计入 session.element_count。
-    card["body"] = {"elements": build_notice_elements(notices) + elements}
+    card["body"] = _build_body(build_notice_elements(notices) + elements)
     if header_enabled:
         header_status = "error" if is_error else "stopped" if is_aborted else "completed"
-        card["header"] = _build_header(header_status)
+        card["header"] = _build_header(header_status, config=config)
     return card
 
 
@@ -1197,47 +1409,61 @@ def _format_run_time(run_time: str) -> str:
         return run_time
 
 
+@styled_builder
 def build_cron_card(
-    content: str, *, task_name: str = "", run_time: str = ""
+    content: str, *, task_name: str = "", run_time: str = "", config: Config | None = None
 ) -> dict[str, Any]:
-    """Cron 推送用的极简静态卡片 — schema 2.0，可选 header + markdown 内容."""
+    """Cron 推送卡片复用正文主题，可选 header 与原生表格."""
+    cfg = config or current_config()
+    elements: list[dict] = []
     card: dict[str, Any] = {
         "schema": "2.0",
-        "config": {"wide_screen_mode": True, "locales": _LOCALES},
-        "body": {"elements": []},
+        "config": {"wide_screen_mode": True, "locales": _LOCALES, "style": _body_style(cfg),
+                   "width_mode": cfg.width_mode},
+        "body": _build_body(elements),
     }
     header_parts = [p for p in (task_name, _format_run_time(run_time)) if p]
-    if header_parts:
-        card["header"] = {
-            "title": {"tag": "lark_md", "content": ":Alarm: " + " · ".join(header_parts)},
-            "template": "blue",
+    if header_parts and cfg.header_enabled:
+        image_key = cfg.header_icons.get("cron")
+        header = {
+            "title": {"tag": "lark_md", "content": ("" if image_key else ":Alarm: ") + " · ".join(header_parts)},
         }
+        if image_key:
+            header["icon"] = {"tag": "custom_icon", "img_key": image_key}
+        card["header"] = header_element(header)
+    template = cfg.header_template
+    if "header" in card and template != "default":
+        card["header"]["template"] = template
     if not content.strip():
         return card
     summary = content[:120].replace("\n", " ").replace("```", "").strip()
     if summary:
         card["config"]["summary"] = {"content": summary}
-    _append_content_elements(card["body"]["elements"], content)
+    _append_content_elements(elements, content, text_size=cfg.body_text_size)
+    card["body"] = _build_body(elements)
     return card
 
 
-def build_background_card(preview: str, content: str) -> dict[str, Any]:
-    """Background 任务完成推送卡片 — schema 2.0，纯正文（无 header）.
-
-    ``preview`` 仅保留参数兼容：卡片不再有标题，「后台任务」这四个字由正文自己带，
-    卡片第一行就是内容本身。``config.summary`` 仍按正文首段生成，供飞书会话列表
-    的摘要行显示。
-    """
+@styled_builder
+def build_background_card(
+    preview: str, content: str, *, config: Config | None = None, has_reference: bool = False,
+) -> dict[str, Any]:
+    """Background notices use a title for standalone delivery and the original body theme."""
+    cfg = config or current_config()
     card: dict[str, Any] = {
         "schema": "2.0",
-        "config": {"wide_screen_mode": True, "locales": _LOCALES},
+        "config": {"wide_screen_mode": True, "locales": _LOCALES,
+                   "width_mode": cfg.width_mode, "style": _body_style(cfg)},
         "body": {"elements": []},
     }
     body = content if content.strip() else "(No response generated)"
     summary = body[:120].replace("\n", " ").replace("```", "").strip()
     if summary:
         card["config"]["summary"] = {"content": summary}
-    _append_content_elements(card["body"]["elements"], body)
+    _append_content_elements(card["body"]["elements"], body, text_size=cfg.body_text_size)
+    card["body"] = _build_body(card["body"]["elements"])
+    if not has_reference and cfg.header_enabled:
+        card["header"] = build_notice_header(config=cfg, title_key="notice_background")
     return card
 
 
@@ -1267,41 +1493,37 @@ def strip_unified_panel(card: dict[str, Any]) -> int:
     卡上没有统一面板。
     """
     body = card.get("body")
-    if not isinstance(body, dict):
+    root = body.get("elements") if isinstance(body, dict) else None
+    if not isinstance(root, list):
         return 0
-    elements = body.get("elements")
-    if not isinstance(elements, list):
-        return 0
-    kept = [
-        el for el in elements
-        if not (isinstance(el, dict) and el.get("element_id") == UNIFIED_PANEL_ELEMENT_ID)
-    ]
-    removed = len(elements) - len(kept)
-    if removed:
-        body["elements"] = kept
+    groups = [root]
+    for element in root:
+        if isinstance(element, dict) and str(element.get("element_id", "")).startswith(BODY_SURFACE_ELEMENT_ID):
+            groups.append(element["columns"][0]["elements"])
+    removed = 0
+    for elements in groups:
+        kept = [el for el in elements
+                if not (isinstance(el, dict) and el.get("element_id") == UNIFIED_PANEL_ELEMENT_ID)]
+        removed += len(elements) - len(kept)
+        elements[:] = kept
     return removed
 
 
-def build_overflow_fallback_card() -> dict[str, Any]:
+@styled_builder
+def build_overflow_fallback_card(*, config: Config | None = None) -> dict[str, Any]:
     """封卡失败（300305 元素超限）的降级卡片：一句提示，正文由纯文本兜底投递（#22）."""
+    cfg = config or current_config()
     return {
         "schema": "2.0",
-        "config": {"wide_screen_mode": True, "locales": _LOCALES},
-        "header": {
-            "title": {
-                "tag": "plain_text",
-                "content": _T["status_error"][0],
-                "i18n_content": _t("status_error"),
-            },
-            "template": "red",
-        },
-        "body": {
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": _T["card_overflow_fallback"][0],
-                    "i18n_content": _t("card_overflow_fallback"),
-                }
-            ]
-        },
+        "config": {"wide_screen_mode": True, "locales": _LOCALES, "style": _body_style(cfg),
+                   "width_mode": cfg.width_mode},
+        "header": _build_header("error", config=config),
+        "body": _build_body([
+            text_element({
+                "tag": "markdown",
+                "content": _T["card_overflow_fallback"][0],
+                "i18n_content": _t("card_overflow_fallback"),
+                "text_size": cfg.body_text_size,
+            }, "body")
+        ]),
     }

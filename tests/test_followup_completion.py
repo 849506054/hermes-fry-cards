@@ -115,10 +115,10 @@ def test_precreate_creates_card_when_none_exists() -> None:
 
 
 def test_precreate_disabled_controller_returns_none() -> None:
-    """插件禁用时 _safe_hook 吞掉调用，返回 None → 调用方回落原路径。"""
-    ctrl = MagicMock()
+    """禁用后无归属的续轮由控制器拒绝准入，返回 None。"""
+    ctrl = _precreate_ctrl(existing=None, created=None)
     ctrl.enabled = False
     with patch.object(patch_module, "get_controller", return_value=ctrl):
         assert on_queued_followup_card_ready(message_id=None, chat_id="oc_1") is None
-    ctrl.on_message_started.assert_not_called()
-    ctrl.resolve_session_id.assert_not_called()
+    ctrl.resolve_session_id.assert_called_once_with(None, None)
+    ctrl.on_message_started.assert_called_once()

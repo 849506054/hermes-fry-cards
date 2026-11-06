@@ -197,6 +197,23 @@ legend { font-weight: 700; padding: 0 0 6px; font-size: 14px; color: var(--text)
 .btn.danger:hover { filter: brightness(.95); }
 .btn.ghost { background: transparent; }
 
+.style-options { margin-top: 16px; }
+.style-role { border-top: 1px solid var(--border); padding: 8px 0; }
+.style-role > summary { cursor: pointer; padding: 10px 0; font-weight: 600; min-height: 44px; }
+.style-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; padding: 8px 0 16px; }
+.style-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.style-field label { font-size: 13px; font-weight: 600; }
+.style-field input, .style-field select, .style-field textarea {
+  width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px; font: inherit; color: var(--text); background: var(--card);
+}
+.style-field textarea { resize: vertical; font-family: monospace; }
+.style-field :focus-visible, .style-role > summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.style-field-hint { color: var(--text-2); overflow-wrap: anywhere; }
+.style-field-error { color: var(--red); }
+.style-field [aria-invalid="true"] { border-color: var(--red); }
+@media (max-width: 420px) { .style-grid { grid-template-columns: 1fr; } }
+
 /* ---------- 字段 chips（点按显隐 + 拖动排序 — CreditDaddy 组件设置同款） ---------- */
 .field-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .field-tip { color: var(--text-2); font-size: 12px; }
@@ -236,13 +253,39 @@ legend { font-weight: 700; padding: 0 0 6px; font-size: 14px; color: var(--text)
 .feishu-card.width-compact { max-width: 460px; }
 .feishu-card.width-fill { max-width: 100%; }
 .card-header { padding: 12px 16px; color: #fff; font-weight: 600; font-size: 15px; }
+.card-header.t-default { background: transparent; color: inherit; }
+.card-header.t-wathet { background: #076a94; }
+.card-header.t-turquoise { background: #067062; }
+.card-header.t-yellow { background: #865b03; }
+.card-header.t-carmine { background: #b82879; }
+.card-header.t-violet { background: #a630a6; }
+.card-header.t-indigo { background: #4752e6; }
 .card-header.t-blue { background: #3370ff; }
 .card-header.t-green { background: var(--green); }
 .card-header.t-red { background: var(--red); }
 .card-header.t-orange { background: var(--yellow); }
 .card-header.t-purple { background: var(--purple); }
 .card-header.t-grey { background: #8f959e; }
-.card-body { padding: 14px 16px; }
+.card-body { padding: 14px 16px; display: flex; flex-direction: column; }
+.card-surface, .cp-children { display: flex; flex-direction: column; min-width: 0; }
+.card-body > *, .card-surface > * { max-width: 100%; }
+.feishu-card .icon-chip {
+  display: inline-block; border: 1px dashed currentColor; border-radius: 4px;
+  font-size: 10px; padding: 0 4px; overflow: hidden; vertical-align: middle;
+  max-width: 130px; text-overflow: ellipsis; white-space: nowrap;
+}
+.card-header .icon-chip { margin-left: 8px; }
+.native-table-wrap { max-width: 100%; overflow-x: auto; }
+.native-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.native-table th, .native-table td { border: 1px solid var(--border); padding: 6px 10px; }
+.native-table p { margin: 0; }
+.native-table.freeze-first th:first-child, .native-table.freeze-first td:first-child {
+  position: sticky; left: 0; background: var(--card);
+}
+.preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+[data-theme="dark"] .feishu-card, [data-theme="dark"] details.cp { background: #212224; color: #e8e9ea; }
+[data-theme="dark"] .md pre, [data-theme="dark"] .md code { background: #2a2b2e; }
+@media (prefers-reduced-motion: reduce) { .loading-dots::after { animation: none; } }
 
 /* markdown 渲染 */
 .md { font-size: 14px; word-break: break-word; }
@@ -281,6 +324,9 @@ details.cp summary::-webkit-details-marker { display: none; }
 details.cp summary::after { content: "▸"; margin-left: auto; transition: transform .15s; }
 details.cp[open] summary::after { transform: rotate(90deg); }
 details.cp .cp-children { margin-top: 8px; }
+details.cp-bottom[open] { display: flex; flex-direction: column; }
+details.cp-bottom[open] > summary { order: 2; }
+details.cp-bottom[open] > .cp-children { order: 1; margin-top: 0; margin-bottom: 8px; }
 
 /* 工具步骤行 */
 .tool-row { display: flex; gap: 8px; align-items: baseline; font-size: 12px; margin: 4px 0; }

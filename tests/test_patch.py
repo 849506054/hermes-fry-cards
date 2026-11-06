@@ -90,7 +90,7 @@ class TestSuppressBusyReceipt:
                 session_id="proc_tg", platform_name="telegram", chat_id="1"
             ) is False
 
-    def test_disabled_plugin_returns_false(self) -> None:
+    def test_delivered_receipt_remains_suppressed_after_disable(self) -> None:
         from hermes_fry_cards.controller import remember_merged_busy_receipt
         from hermes_fry_cards.patch import suppress_busy_receipt
 
@@ -98,7 +98,7 @@ class TestSuppressBusyReceipt:
         with patch.object(patch_module, "get_controller", return_value=self._ctrl(enabled=False)):
             assert suppress_busy_receipt(
                 session_id="proc_off", platform_name="feishu", chat_id="oc_x"
-            ) is False
+            ) is True
 
     def test_controller_error_is_swallowed(self) -> None:
         """插件侧异常不能影响网关主流程."""

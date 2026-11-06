@@ -6,6 +6,8 @@ Hermes 网关重启/崩溃时，正在流式的卡片不会被收尾，用户会
 """
 from __future__ import annotations
 
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -83,7 +85,7 @@ async def test_sweep_closes_leftover_cards(tmp_path: Path, ctrl: StreamCardContr
     ctrl._client.cardkit_update.assert_awaited_once()
     card_id, card = ctrl._client.cardkit_update.await_args.args[0], ctrl._client.cardkit_update.await_args.args[1]
     assert card_id == "card_1"
-    assert "重启" in card["body"]["elements"][0]["i18n_content"]["zh_cn"]
+    assert "重启" in body_content_elements(card)[0]["i18n_content"]["zh_cn"]
     assert ctrl._read_live_cards() == {}
 
 

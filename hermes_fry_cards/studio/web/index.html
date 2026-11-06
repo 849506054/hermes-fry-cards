@@ -40,7 +40,9 @@ try {
     <div class="hint warn" data-i18n-html data-i18n="hint.warn">
       ⚠️ 保存会<strong>重写整个 config.yaml（YAML 注释会丢失）</strong>；写前自动备份到
       <code>~/.hermes/backups/fry_studio/</code>（保留 20 份）。
-      只写白名单键，你手写的其他配置原样保留。保存后需 <code>hermes gateway restart</code> 生效。
+      只写白名单键，你手写的其他配置原样保留。样式和初始布局从下一张新卡生效，已有卡片保留创建时样式；display 显示项继续热读。
+      完成通知从下一次完成事件生效，空闲超时从下次清理生效，刷新节流从下次调度生效；启用与聊天类型控制新轮次。
+      凭据和连接设置仍需 <code>hermes gateway restart</code> 生效。
     </div>
     <form id="config-form">
       <div class="grid">
@@ -63,6 +65,18 @@ try {
           <label class="row"><span class="lbl" data-i18n="lbl.body-size">正文文字大小</span>
             <select id="f-body-text-size"><option value="normal_v2">normal_v2</option><option value="normal">normal</option><option value="heading" data-i18n="opt.heading">heading（大）</option><option value="notation" data-i18n="opt.notation">notation（小）</option></select>
           </label>
+          <label class="row"><span class="lbl" data-i18n="lbl.body-light-color">正文浅色底色</span>
+            <input type="color" id="f-body-light-color" aria-describedby="hint-body-colors">
+          </label>
+          <label class="row"><span class="lbl" data-i18n="lbl.body-dark-color">正文深色底色</span>
+            <input type="color" id="f-body-dark-color" aria-describedby="hint-body-colors">
+          </label>
+          <div class="hint" id="hint-body-colors" data-i18n="hint.body-colors">按客户端亮 / 暗主题使用对应的六位 HEX 色值，保存后从下一张新卡生效。</div>
+          <label class="row"><span class="lbl" data-i18n="lbl.card-ttl">卡片空闲超时（秒）</span>
+            <input type="number" id="f-card-ttl-sec" min="0" max="86400" step="any" required aria-describedby="hint-card-ttl error-card-ttl">
+          </label>
+          <div class="hint" id="error-card-ttl" role="alert" hidden></div>
+          <div class="hint" id="hint-card-ttl" data-i18n="hint.card-ttl">大于 0、最多 86400 秒；按空闲时长回收会话，保存后下次清理即采用新值。</div>
           <label class="row"><span class="lbl" data-i18n="lbl.flush-interval">流式刷新节流（毫秒）</span>
             <input type="number" id="f-flush-interval-ms" min="50" max="2000" step="50">
           </label>
@@ -102,6 +116,18 @@ try {
           <div class="sub-group">
             <div class="sub-title" data-i18n="sub.header">Header 顶部状态栏</div>
             <label class="row"><span class="lbl" data-i18n="lbl.header-enabled">显示 header</span><input type="checkbox" id="f-header-enabled"></label>
+            <label class="row"><span class="lbl" data-i18n="lbl.header-template">标题配色</span>
+              <select id="f-header-template" aria-describedby="hint-header-template">
+                <option value="default" data-i18n="opt.template-default">默认</option>
+                <option value="blue">blue</option><option value="wathet">wathet</option>
+                <option value="turquoise">turquoise</option><option value="green">green</option>
+                <option value="yellow">yellow</option><option value="orange">orange</option>
+                <option value="red">red</option><option value="carmine">carmine</option>
+                <option value="violet">violet</option><option value="purple">purple</option>
+                <option value="indigo">indigo</option><option value="grey">grey</option>
+              </select>
+            </label>
+            <div class="hint" id="hint-header-template" data-i18n="hint.header-template">默认沿用客户端标题样式；选定配色用于新回复卡和定时通知卡。</div>
             <label class="row"><span class="lbl" data-i18n="lbl.header-min">快捷回复去标题阈值（秒，0=始终显示）</span>
               <input type="number" id="f-header-min-duration" min="0" max="86400" step="0.5">
             </label>
@@ -148,6 +174,8 @@ try {
           <legend data-i18n="legend.panel">统一面板（header 字段自由组合）</legend>
           <label class="row"><span class="lbl" data-i18n="lbl.panel-expanded">完成态面板保持展开</span><input type="checkbox" id="f-panel-expanded"></label>
           <label class="row"><span class="lbl" data-i18n="lbl.process-expanded">运行中过程框保持展开</span><input type="checkbox" id="f-process-expanded"></label>
+          <label class="row"><span class="lbl" data-i18n="lbl.process-border">显示运行中过程框边框</span><input type="checkbox" id="f-process-border" aria-describedby="hint-process-border"></label>
+          <div class="hint" id="hint-process-border" data-i18n="hint.process-border">用于下一张新卡的运行中过程框；完成态面板仍使用状态色边框。</div>
           <label class="row"><span class="lbl" data-i18n="lbl.panel-text-size">面板 header 字体</span>
             <select id="f-panel-text-size"><option value="notation" data-i18n="opt.notation">notation（小）</option><option value="normal">normal</option><option value="normal_v2">normal_v2</option><option value="heading" data-i18n="opt.heading">heading（大）</option></select>
           </label>
@@ -175,6 +203,14 @@ try {
           </div>
         </fieldset>
       </div>
+      <details class="fold-card style-options" id="style-options">
+        <summary data-i18n="style.title">高级样式 · 按内容区域</summary>
+        <div class="fold-body">
+          <p class="hint" id="style-help" data-i18n="style.help">留空沿用既有样式；清空已配置项可恢复默认。保存后下一张新卡采用，已有卡片保留创建时样式。</p>
+          <p class="hint" data-i18n="style.native-title">原生标题字体、字号、字重、颜色和对齐由飞书客户端控制；可配置标题配色、内边距与图标。</p>
+          <div id="style-fields"></div>
+        </div>
+      </details>
       <div class="actions">        <button type="button" class="btn ghost" id="btn-reload" data-i18n="btn.reload">放弃修改，重新读取</button>
         <button type="button" class="btn primary" id="btn-save-preview" data-i18n="btn.save-preview">保存并预览</button>
         <button type="submit" class="btn" id="btn-save" data-i18n="btn.save">仅保存</button>
@@ -185,13 +221,16 @@ try {
   <!-- ================= 预览 ================= -->
   <section class="panel" data-panel="preview">
     <div class="hint" data-i18n-html data-i18n="hint.preview">
-      服务端用<strong>真实 builder</strong> 渲染（与线上卡片同一代码路径），非前端模拟。
-      未保存的表单改动不会参与渲染；统一面板阈值等深层项以<strong>已保存配置</strong>为准。
+      服务端使用<strong>真实 builder</strong> 和当前表单生成卡片 JSON，预览不会保存配置。
+      浏览器近似展示布局、字体、颜色、图标与表格；最终效果以飞书客户端为准。
     </div>
+    <p class="hint" data-i18n="style.preview-icons">预览以名称或占位符表示飞书图标与图片；将鼠标停在占位符上可查看 token 或图片 Key。</p>
     <div class="preview-controls">
       <label><span data-i18n="lbl.scenario">场景</span>
         <select id="p-scenario">
           <option value="workflow" data-i18n="opt.sc-workflow">工作流交错（思考+工具+答案）</option>
+          <option value="clarify" data-i18n="opt.sc-clarify">交互选择（流式中=待选，完成态=已选）</option>
+          <option value="clarify_input" data-i18n="opt.sc-clarify-input">交互选择 · 自定义输入</option>
           <option value="short" data-i18n="opt.sc-short">快捷回复（短耗时）</option>
           <option value="tables" data-i18n="opt.sc-tables">多表格压力（第6张起压缩）</option>
           <option value="longtext" data-i18n="opt.sc-longtext">超长文本（18KB 截断）</option>

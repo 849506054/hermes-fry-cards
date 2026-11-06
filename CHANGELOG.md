@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.14] - 2026-11-07
+
+### Changed
+
+- Card styles use a configuration snapshot throughout creation, updates, completion and Studio previews.
+- Reply text uses a theme-aware background with one color declaration. The loading cursor sits below that background.
+- Completed process counters are centered, with the expand arrow hidden.
+- Standalone system notices have a title when they have no reply reference.
+
+### Fixed
+
+- Preserve changed reasoning text, cumulative process counts and interrupted completion states.
+- Send deployment receipts through the system-card builder.
+
 ## [0.6.2.13] - 2026-11-03
 
 ### 修复 / Fixed

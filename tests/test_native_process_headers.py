@@ -7,6 +7,7 @@ import pytest
 
 from hermes_fry_cards.cardkit.builder import (
     PROCESS_PANEL_ELEMENT_ID,
+    body_content_elements,
     TOOL_PANEL_ELEMENT_ID,
     build_complete_card,
     build_streaming_card_v2,
@@ -18,14 +19,19 @@ from hermes_fry_cards.streaming.session import CardSession, SessionState
 
 
 def panels(card):
-    return [e for e in card['body']['elements'] if e['tag'] == 'collapsible_panel']
+    return [e for e in body_content_elements(card) if e['tag'] == 'collapsible_panel']
 
 
 def assert_header(header, reasoning, tools, *, streaming=True):
     assert header['position'] == ('bottom' if streaming else 'top')
-    assert header['icon_position'] == 'right'
-    assert header['icon']['token'] == 'down-small-ccm_outlined'
-    assert header['icon_expanded_angle'] == -180
+    if streaming:
+        assert header['icon_position'] == 'right'
+        assert header['icon']['token'] == 'down-small-ccm_outlined'
+        assert header['icon_expanded_angle'] == -180
+    else:
+        # 封卡统计框不再提供展开箭头。
+        assert 'icon' not in header and 'icon_position' not in header
+        assert 'icon_expanded_angle' not in header
     zh = header['title'].get('i18n_content', {}).get('zh_cn', header['title']['content'])
     if streaming:
         assert zh == f'💭 已思考 {reasoning} 段 · 🔧 工具执行中 {tools} 步'

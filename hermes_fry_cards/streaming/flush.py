@@ -40,6 +40,7 @@ class FlushController:
     def __init__(self, throttle_ms: float = CARDKIT_MS, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._throttle_ms = throttle_ms
         self._base_throttle_ms = throttle_ms
+        self._adaptive_floor_ms = 0.0
         self._flush_in_progress = False
         self._needs_reflush = False
         self._pending_timer: asyncio.TimerHandle | None = None
@@ -114,8 +115,14 @@ class FlushController:
         self._flush_resolvers.clear()
 
     def set_throttle(self, ms: float) -> None:
-        self._throttle_ms = ms
-        self._base_throttle_ms = ms
+        """Refresh the base while preserving the last payload's adaptive floor.
+
+        An already scheduled timer may complete once at its previous deadline.
+        The next schedule uses this value, with the existing single-timer logic.
+        """
+        if ms != self._base_throttle_ms:
+            self._base_throttle_ms = ms
+            self._throttle_ms = max(ms, self._adaptive_floor_ms)
 
     def adapt_payload_size(self, size_bytes: int, *, max_element_bytes: int = 0) -> None:
         """按最近一次 flush 载荷调整节流窗口（#46/#52）.
@@ -128,15 +135,16 @@ class FlushController:
         无需手工干预。
         """
         if max_element_bytes > ELEMENT_HUGE_BYTES:
-            self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_ELEMENT_HUGE_MS)
+            self._adaptive_floor_ms = ADAPTIVE_ELEMENT_HUGE_MS
         elif max_element_bytes > ELEMENT_LARGE_BYTES:
-            self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_ELEMENT_LARGE_MS)
+            self._adaptive_floor_ms = ADAPTIVE_ELEMENT_LARGE_MS
         elif size_bytes > PAYLOAD_HUGE_BYTES:
-            self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_HUGE_MS)
+            self._adaptive_floor_ms = ADAPTIVE_HUGE_MS
         elif size_bytes > PAYLOAD_LARGE_BYTES:
-            self._throttle_ms = max(self._base_throttle_ms, ADAPTIVE_LARGE_MS)
+            self._adaptive_floor_ms = ADAPTIVE_LARGE_MS
         else:
-            self._throttle_ms = self._base_throttle_ms
+            self._adaptive_floor_ms = 0.0
+        self._throttle_ms = max(self._base_throttle_ms, self._adaptive_floor_ms)
 
     def set_card_message_ready(self, ready: bool) -> None:
         """设置卡片消息已就绪，初始化时间戳."""

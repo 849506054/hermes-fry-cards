@@ -30,6 +30,7 @@
     I18N.setLang(I18N.getLang() === "en" ? "zh" : "en");
     refreshFieldChipLabels();
     renderAliasRows();
+    validateCardTTL();
     syncFoldBadges();
     if (document.querySelector('.panel[data-panel="status"]').classList.contains("active")) loadStatus();
   });
@@ -233,6 +234,7 @@
     setVal("f-width", s.width_mode);
     setCheck("f-panel-expanded", s.panel_expanded);
     setCheck("f-process-expanded", s.process_expanded);
+    setCheck("f-process-border", s.process_border);
     setVal("f-panel-text-size", d.panel_text_size);
     setCheck("f-completion-notice", s.completion_notice);
     setVal("f-completion-notice-text", s.completion_notice_text);
@@ -247,6 +249,7 @@
 
     setCheck("f-header-enabled", s.header.enabled);
     setVal("f-header-min-duration", s.header.min_duration);
+    setVal("f-header-template", s.header.template);
     setCheck("f-footer-enabled", s.footer.enabled);
     setCheck("f-footer-show-label", s.footer.show_label);
     setVal("f-footer-text-size", s.footer.text_size);
@@ -267,6 +270,10 @@
     if (note) note.hidden = !multi;
 
     setVal("f-body-text-size", s.body.text_size);
+    setVal("f-body-light-color", s.body.light_color);
+    setVal("f-body-dark-color", s.body.dark_color);
+    setVal("f-card-ttl-sec", s.card_ttl_sec);
+    validateCardTTL();
     setVal("f-flush-interval-ms", s.flush_interval_ms);
     setCheck("f-show-reasoning", d.show_reasoning);
     setCheck("f-show-tool-use", d.show_tool_use);
@@ -328,13 +335,15 @@
     });
     var panelFields = pickedPanel;
 
-    return {
+    var payload = {
       streaming: {
         enabled: $("#f-enabled").checked,
         content_lang: $("#f-content-lang").value,
         chat_types: chatTypes,
         panel_expanded: $("#f-panel-expanded").checked,
         process_expanded: $("#f-process-expanded").checked,
+        process_border: $("#f-process-border").checked,
+        card_ttl_sec: num("#f-card-ttl-sec"),
         completion_notice: $("#f-completion-notice").checked,
         completion_notice_text: $("#f-completion-notice-text").value,
         width_mode: $("#f-width").value,
@@ -342,6 +351,7 @@
         header: {
           enabled: $("#f-header-enabled").checked,
           min_duration: num("#f-header-min-duration"),
+          template: $("#f-header-template").value,
         },
         footer: {
           enabled: $("#f-footer-enabled").checked,
@@ -349,7 +359,11 @@
           fields: fields,
           text_size: $("#f-footer-text-size").value,
         },
-        body: { text_size: $("#f-body-text-size").value },
+        body: {
+          text_size: $("#f-body-text-size").value,
+          light_color: $("#f-body-light-color").value.toUpperCase(),
+          dark_color: $("#f-body-dark-color").value.toUpperCase(),
+        },
       },
       display: {
         show_reasoning: $("#f-show-reasoning").checked,
@@ -370,11 +384,264 @@
         },
       },
     };
+    if (typeof styleSchema !== "undefined" && styleSchema) readStyleFields(payload.streaming);
+    return payload;
+  }
+
+  /* ---------- Registry-driven optional styles ---------- */
+  var styleSchema = null;
+  var styleControls = [];
+  var legacyStyleFields = {
+    header: ["enabled", "min_duration", "template"],
+    body: ["text_size", "light_color", "dark_color"],
+    footer: ["enabled", "show_label", "fields", "text_size"],
+  };
+
+  function safeStyleKey(key) {
+    return key !== "__proto__" && key !== "prototype" && key !== "constructor";
+  }
+
+  function styleText(node, key) {
+    node.setAttribute("data-i18n", key);
+    node.textContent = I18N.t(key);
+  }
+
+  function refreshTextSizeChoices(streaming, display) {
+    var mapItem = styleControls.find(function (item) { return item.role === "text_sizes"; });
+    var names = Object.keys((streaming || {}).text_sizes || {});
+    if (mapItem) {
+      try { names = Object.keys(parseStyleControl(mapItem) || {}); } catch (_) { return; }
+    }
+    [["body", "f-body-text-size"], ["footer", "f-footer-text-size"], ["process_title", "f-panel-text-size"]].forEach(function (entry) {
+      var group = styleSchema[entry[0]], spec = group && group.fields.text_size;
+      var control = document.getElementById(entry[1]);
+      if (!spec || !control) return;
+      var selected = entry[0] === "process_title" ? (display || {}).panel_text_size : ((streaming || {})[entry[0]] || {}).text_size;
+      selected = selected || control.value;
+      var choices = spec.choices.concat(names);
+      if (selected && choices.indexOf(selected) < 0) choices.push(selected);
+      control.innerHTML = "";
+      choices.forEach(function (value) {
+        var option = document.createElement("option");
+        option.value = option.textContent = value; control.appendChild(option);
+      });
+      control.value = selected;
+    });
+    styleControls.forEach(function (item) {
+      if (item.spec.references !== "text_sizes") return;
+      var list = document.getElementById(item.input.id + "-choices");
+      if (!list) return;
+      list.innerHTML = "";
+      item.spec.choices.concat(names).forEach(function (value) {
+        var option = document.createElement("option"); option.value = value; list.appendChild(option);
+      });
+    });
+  }
+
+  function renderStyleFields(state) {
+    styleSchema = state.style_schema || {};
+    [["body", "text_size", "f-body-text-size"], ["footer", "text_size", "f-footer-text-size"]].forEach(function (entry) {
+      var group = styleSchema[entry[0]];
+      var spec = group && (group.fields || group)[entry[1]];
+      if (!spec || !spec.choices) return;
+      var control = document.getElementById(entry[2]);
+      var selected = (state.streaming[entry[0]] || {})[entry[1]] || control.value;
+      spec.choices.forEach(function (value) {
+        if (!Array.prototype.some.call(control.options, function (option) { return option.value === String(value); })) {
+          var option = document.createElement("option");
+          option.value = String(value); option.textContent = String(value); control.appendChild(option);
+        }
+      });
+      control.value = selected;
+    });
+    styleControls = [];
+    var host = $("#style-fields");
+    host.innerHTML = "";
+    Object.keys(styleSchema).forEach(function (role) {
+      if (!safeStyleKey(role)) return;
+      var fields = styleSchema[role].fields || styleSchema[role];
+      var section = document.createElement("details");
+      section.className = "style-role";
+      var title = document.createElement("summary");
+      styleText(title, "style.role." + role);
+      section.appendChild(title);
+      var grid = document.createElement("div");
+      grid.className = "style-grid";
+      Object.keys(fields).forEach(function (field) {
+        if (!safeStyleKey(field) || (legacyStyleFields[role] || []).indexOf(field) >= 0) return;
+        var spec = fields[field];
+        if (!spec || typeof spec !== "object" || !spec.kind) return;
+        var row = document.createElement("div");
+        row.className = "style-field";
+        var id = "style-" + role + "-" + field;
+        var label = document.createElement("label");
+        label.htmlFor = id;
+        styleText(label, "style.field." + (field === "*" ? "mapping" : field));
+        var choices = spec.allow_custom ? null : spec.choices || (spec.type === "boolean" ? [true, false] : null);
+        var isMap = !!styleSchema[role].dynamic || /map|json|object/.test(spec.kind);
+        var input = document.createElement(choices ? "select" : isMap ? "textarea" : "input");
+        input.id = id;
+        input.dataset.styleRole = role;
+        input.dataset.styleField = field;
+        input.setAttribute("aria-describedby", "style-help " + id + "-hint " + id + "-error");
+        if (choices) {
+          var blank = document.createElement("option");
+          blank.value = "";
+          styleText(blank, "style.inherit");
+          input.appendChild(blank);
+          choices.forEach(function (choice) {
+            var option = document.createElement("option");
+            option.value = String(choice);
+            option.textContent = String(choice);
+            if (typeof choice === "boolean") styleText(option, choice ? "st.on" : "st.off");
+            input.appendChild(option);
+          });
+        } else {
+          input.type = spec.type === "integer" || spec.type === "number" ? "number" : "text";
+          if (input.type === "number") {
+            input.step = spec.type === "integer" ? "1" : "any";
+            if (spec.min !== undefined) input.min = spec.min;
+            if (spec.max !== undefined) input.max = spec.max;
+          }
+          if (spec.max_length && !isMap) input.maxLength = spec.max_length;
+          if (spec.allow_custom && spec.choices) {
+            var suggestions = document.createElement("datalist");
+            suggestions.id = id + "-choices";
+            spec.choices.forEach(function (value) {
+              var suggestion = document.createElement("option");
+              suggestion.value = String(value);
+              suggestions.appendChild(suggestion);
+            });
+            input.setAttribute("list", suggestions.id);
+            row.appendChild(suggestions);
+          }
+          input.setAttribute("data-i18n-ph", "style.inherit");
+          input.placeholder = I18N.t("style.inherit");
+          if (isMap) input.rows = 4;
+        }
+        var original = isMap ? ((state.streaming || {})[role] || {}) : ((state.streaming || {})[role] || {})[field];
+        input.value = original === undefined ? "" : isMap ? JSON.stringify(original, null, 2) : String(original);
+        if (spec.kind === "separator" && original === "") input.value = '""';
+        var hint = document.createElement("small");
+        hint.id = id + "-hint";
+        hint.className = "style-field-hint";
+        hint.textContent = "streaming." + role + "." + field + " · " + spec.kind;
+        if (spec.kind === "separator") hint.textContent += " · " + I18N.t("style.empty-separator");
+        if (role === "text_sizes") hint.textContent += " · " + I18N.t("style.platform-sizes");
+        if (spec.references === "text_sizes") hint.textContent += " · " + I18N.t("style.size-reference");
+        if (spec.min !== undefined) hint.textContent += " ≥ " + spec.min;
+        if (spec.max !== undefined) hint.textContent += " ≤ " + spec.max;
+        if (spec.pattern && !isMap) input.pattern = spec.pattern;
+        var error = document.createElement("small");
+        error.id = id + "-error";
+        error.className = "style-field-error";
+        error.setAttribute("role", "alert");
+        error.hidden = true;
+        var item = {role: role, field: field, spec: spec, input: input, error: error, original: original, isMap: isMap};
+        styleControls.push(item);
+        input.addEventListener("blur", function () { validateStyleControl(item); });
+        input.addEventListener("input", function () {
+          validateStyleControl(item);
+          if (role === "text_sizes") refreshTextSizeChoices();
+        });
+        input.addEventListener("invalid", function () {
+          section.open = true;
+          $("#style-options").open = true;
+        });
+        row.appendChild(label);
+        row.appendChild(input);
+        row.appendChild(hint);
+        row.appendChild(error);
+        grid.appendChild(row);
+      });
+      section.appendChild(grid);
+      host.appendChild(section);
+    });
+    refreshTextSizeChoices(state.streaming, state.display);
+  }
+
+  function parseStyleControl(item) {
+    var raw = item.input.value;
+    if (raw === "" || (item.spec.kind !== "separator" && !raw.trim())) return null;
+    if (item.spec.kind !== "separator") raw = raw.trim();
+    var spec = item.spec;
+    if (spec.kind === "separator" && raw === '""') return "";
+    if (item.isMap) {
+      var value = JSON.parse(raw);
+      if (!value || Array.isArray(value) || typeof value !== "object") throw new Error(I18N.t("style.error-map"));
+      var group = styleSchema[item.role] || {};
+      var message = I18N.t(item.role === "text_sizes" ? "style.error-platform-sizes" : "style.error-map");
+      Object.keys(value).forEach(function (key) {
+        if (!safeStyleKey(key) || (group.reserved_keys || []).indexOf(key) >= 0 ||
+            (group.key_pattern && !(new RegExp("^(?:" + group.key_pattern + ")$")).test(key))) throw new Error(message);
+        if (spec.type === "object") {
+          var entry = value[key], properties = spec.properties || {};
+          if (!entry || Array.isArray(entry) || typeof entry !== "object" || !Object.keys(entry).length) throw new Error(message);
+          Object.keys(entry).forEach(function (platform) {
+            if (!safeStyleKey(platform) || !Object.prototype.hasOwnProperty.call(properties, platform) ||
+                properties[platform].choices.indexOf(entry[platform]) < 0) throw new Error(message);
+          });
+        } else if (typeof value[key] !== "string") throw new Error(message);
+      });
+      return value;
+    }
+    if (spec.kind === "bool" || spec.kind === "boolean") return raw === "true";
+    if (spec.type === "integer" || spec.type === "number") {
+      var number = Number(raw);
+      if (!Number.isFinite(number) || (spec.min !== undefined && number < spec.min) ||
+          (spec.max !== undefined && number > spec.max) || (spec.type === "integer" && !Number.isInteger(number))) {
+        throw new Error(I18N.t("style.error-range"));
+      }
+      return number;
+    }
+    return raw;
+  }
+
+  function validateStyleControl(item) {
+    var message = "";
+    item.input.setCustomValidity("");
+    try {
+      parseStyleControl(item);
+      if (!item.input.checkValidity()) message = item.input.validationMessage;
+    } catch (error) { message = error.message; }
+    item.input.setCustomValidity(message);
+    item.input.setAttribute("aria-invalid", message ? "true" : "false");
+    item.error.textContent = message;
+    item.error.hidden = !message;
+    return !message;
+  }
+
+  function validateStyleFields() {
+    var valid = true;
+    styleControls.forEach(function (item) {
+      if (!validateStyleControl(item)) {
+        valid = false;
+        item.input.closest("details").open = true;
+        $("#style-options").open = true;
+      }
+    });
+    if (!valid) toast(I18N.t("style.error-fields"), "err");
+    return valid;
+  }
+
+  function readStyleFields(streaming) {
+    styleControls.forEach(function (item) {
+      var value = parseStyleControl(item);
+      if (value === null && item.original === undefined) return;
+      if (!Object.prototype.hasOwnProperty.call(streaming, item.role)) streaming[item.role] = Object.create(null);
+      if (item.isMap) {
+        Object.keys(item.original || {}).forEach(function (key) {
+          if (safeStyleKey(key) && !Object.prototype.hasOwnProperty.call(value || {}, key)) streaming[item.role][key] = null;
+        });
+        Object.keys(value || {}).forEach(function (key) { streaming[item.role][key] = value[key]; });
+      } else streaming[item.role][item.field] = value;
+    });
   }
 
   async function loadState() {
     var data = await api("/api/state");
     fillForm(data);
+    renderStyleFields(data);
     var ver = data.status && data.status.fry_version;
     var el = document.getElementById("brand-version");
     if (el && ver) el.textContent = "v" + ver;
@@ -386,7 +653,23 @@
       .catch(function (e) { toast(I18N.t("toast.readfail") + e.message, "err"); });
   });
 
+  function validateCardTTL() {
+    var el = $("#f-card-ttl-sec");
+    var value = Number(el.value);
+    var valid = el.value.trim() !== "" && Number.isFinite(value) && value > 0 && value <= 86400;
+    var message = valid ? "" : I18N.t("error.card-ttl");
+    el.setCustomValidity(message);
+    el.setAttribute("aria-invalid", valid ? "false" : "true");
+    var error = $("#error-card-ttl");
+    error.textContent = message;
+    error.hidden = valid;
+    return valid;
+  }
+  $("#f-card-ttl-sec").addEventListener("input", validateCardTTL);
+
   async function saveConfig() {
+    validateCardTTL();
+    if (!validateStyleFields() || !$("#config-form").reportValidity()) return false;
     var btn = $("#btn-save");
     btn.disabled = true;
     try {
@@ -442,7 +725,9 @@
     var btn = $("#btn-render");
     btn.disabled = true;
     try {
+      if (!validateStyleFields()) return;
       var payload = {
+        overrides: readForm(),
         scenario: $("#p-scenario").value,
         state: $("#p-state").value,
         outcome: $("#p-outcome").value,

@@ -7,7 +7,9 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 
-from .i18n import _content_t
+from ..config import Config
+from .i18n import _content_lang, _content_t
+from .styles import option, styled_builder
 
 _logger = logging.getLogger("hermes_fry_cards")
 
@@ -283,7 +285,7 @@ def _compact_table(table_text: str, table_number: int) -> str:
     return "\n".join(compact_lines) + "\n"
 
 
-def _transform_table_overflow(text: str, max_tables: int) -> str:
+def _transform_table_overflow(text: str, max_tables: int, *, lang: str | None = None) -> str:
     """超过 max_tables 的表格压缩为字段列表，前面的表格原样保留."""
     blocks = _scan_markdown_blocks(text)
     table_seen = 0
@@ -294,7 +296,7 @@ def _transform_table_overflow(text: str, max_tables: int) -> str:
             table_seen += 1
             if table_seen > max_tables:
                 if not notice_added:
-                    parts.append(f"\n> {_content_t('table_overflow_notice')}\n\n")
+                    parts.append(f"\n> {_content_t('table_overflow_notice', lang=lang)}\n\n")
                     notice_added = True
                 parts.append(_compact_table(block.text, table_seen))
                 continue
@@ -302,12 +304,12 @@ def _transform_table_overflow(text: str, max_tables: int) -> str:
     return "".join(parts)
 
 
-def _downgrade_tables(text: str, limit: int = _MAX_CARD_TABLES) -> str:
+def _downgrade_tables(text: str, limit: int = _MAX_CARD_TABLES, *, lang: str | None = None) -> str:
     """超限表格无损压缩为字段列表（取代旧代码块包装 — 内容保留且可读性更好）."""
     if "|" not in text:
         return text
     try:
-        return _transform_table_overflow(text, limit)
+        return _transform_table_overflow(text, limit, lang=lang)
     except Exception:
         _logger.debug("table compaction failed, fallback to code-block wrap", exc_info=True)
     # 回退：包装为代码块（内容可见但飞书不渲染为表格元素）
@@ -388,45 +390,29 @@ def _strip_invalid_image_keys(text: str) -> str:
     return re.sub(r"!\[([^\]]*)\]\(([^)\s]+)\)", _replace, text)
 
 
-def optimize_markdown_style(text: str) -> str:
-    """优化流式 Markdown 以适配飞书 CardKit 渲染.
+@styled_builder
+def optimize_markdown_style(text: str, *, config: Config | None = None) -> str:
+    """Apply card-local heading/spacing choices and retain image-key sanitation."""
+    return _optimize_markdown_style(text, option("markdown", "heading_mode", "compact"),
+                                    option("markdown", "max_blank_lines", 1))
 
-    1. 提取代码块用占位符保护
-    2. 标题降级: H1 -> H4, H2-H6 -> H5
-    3. 还原代码块
-    4. 压缩多余空行
-    5. 剥离无效图片 key（非 img_xxx 格式）
-    """
+
+def _optimize_markdown_style(text: str, heading_mode: str, max_blank_lines: int) -> str:
     try:
-        # 1. 提取代码块
-        mark = "___CB_"
-        code_blocks: list[str] = []
-
-        def _extract(m: re.Match) -> str:
-            prefix = m.group(1) or ""
-            block = m.group(0)[len(prefix) :]
-            idx = len(code_blocks)
-            code_blocks.append(block)
-            return f"{prefix}{mark}{idx}___"
-
-        r = re.sub(r"(^|\n)(`{3,})([^\n]*)\n[\s\S]*?\n\2(?=\n|$)", _extract, text)
-
-        # 2. 标题降级（仅当存在 H1-H3 时）
-        if re.search(r"^#{1,3} ", text, re.MULTILINE):
-            r = re.sub(r"^#{2,6} (.+)$", r"##### \1", r, flags=re.MULTILINE)
-            r = re.sub(r"^# (.+)$", r"#### \1", r, flags=re.MULTILINE)
-
-        # 3. 还原代码块
-        for i, block in enumerate(code_blocks):
-            r = r.replace(f"{mark}{i}___", block)
-
-        # 4. 压缩多余空行
-        r = re.sub(r"\n{3,}", "\n\n", r)
-
-        # 5. 剥离无效图片 key
-        r = _strip_invalid_image_keys(r)
-
-        return r
+        blocks = _scan_markdown_blocks(text)
+        compact = heading_mode == "compact" and any(
+            re.search(r"^#{1,3} ", block.text, re.MULTILINE) for block in blocks if block.kind != "fence"
+        )
+        parts = []
+        for block in blocks:
+            part = block.text
+            if block.kind != "fence":
+                if compact:
+                    part = re.sub(r"^#{2,6} (.+)$", r"##### \1", part, flags=re.MULTILINE)
+                    part = re.sub(r"^# (.+)$", r"#### \1", part, flags=re.MULTILINE)
+                part = re.sub(r"\n{" + str(max_blank_lines + 2) + r",}", "\n" * (max_blank_lines + 1), part)
+            parts.append(part)
+        return _strip_invalid_image_keys("".join(parts))
     except Exception:
         _logger.debug("optimize_markdown_style failed", exc_info=True)
         return text
@@ -489,15 +475,30 @@ def truncate_unclosed_markdown(text: str) -> str:
     return result if result else text
 
 
-@lru_cache(maxsize=128)
-def prepare_streaming_markdown(text: str) -> str:
+@styled_builder
+def prepare_streaming_markdown(text: str, *, config: Config | None = None) -> str:
     """流式 Answer 的 Markdown 优化管道（带 LRU 缓存）:
 
     1. optimize_markdown_style 标题降级与代码块保护
     2. _downgrade_tables 表格无损压缩
     3. truncate_unclosed_markdown 截断未闭合标记防碎字
     """
-    opt = optimize_markdown_style(text)
-    dt = _downgrade_tables(opt)
+    return _prepare_streaming_markdown(
+        text, _content_lang(), option("markdown", "heading_mode", "compact"),
+        option("markdown", "max_blank_lines", 1),
+    )
+
+
+@lru_cache(maxsize=128)
+def _prepare_streaming_markdown(
+    text: str, lang: str, heading_mode: str = "compact", max_blank_lines: int = 1,
+) -> str:
+    opt = _optimize_markdown_style(text, heading_mode, max_blank_lines)
+    dt = _downgrade_tables(opt, lang=lang)
     return truncate_unclosed_markdown(dt)
+
+
+prepare_streaming_markdown.cache_clear = _prepare_streaming_markdown.cache_clear
+prepare_streaming_markdown.cache_info = _prepare_streaming_markdown.cache_info
+prepare_streaming_markdown.cache_parameters = _prepare_streaming_markdown.cache_parameters
 

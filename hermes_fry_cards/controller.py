@@ -190,21 +190,20 @@ def clear_merged_busy_receipts() -> None:
         _merged_busy_receipts.clear()
 
 
-def _interrupted_card() -> dict[str, Any]:
+def _interrupted_card(*, config: Config | None = None) -> dict[str, Any]:
     """网关重启后给遗留卡用的静态「已中断」卡片（文案由插件提供，中英双语）."""
-    return {
-        "schema": "2.0",
-        "config": {"update_multi": True, "locales": ["zh_cn", "en_us"]},
-        "body": {
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": _NOTICE_RESTART_EN,
-                    "i18n_content": {"zh_cn": _NOTICE_RESTART_ZH, "en_us": _NOTICE_RESTART_EN},
-                }
-            ]
-        },
-    }
+    from .cardkit.builder import body_content_elements, build_background_card
+    from .cardkit.styles import style_scope, text_content
+
+    cfg = config or Config().card_snapshot()
+    card = build_background_card("", _NOTICE_RESTART_EN, config=cfg, has_reference=True)
+    card["config"].update({"update_multi": True, "locales": ["zh_cn", "en_us"]})
+    with style_scope(cfg):
+        body_content_elements(card)[0]["i18n_content"] = {
+            "zh_cn": text_content(_NOTICE_RESTART_ZH, "body"),
+            "en_us": text_content(_NOTICE_RESTART_EN, "body"),
+        }
+    return card
 
 
 _NOTICE_RESTART_EN = "⚠️ The gateway restarted during this turn; this card stopped updating."
@@ -258,6 +257,8 @@ class StreamCardController(StreamingController):
 
     @property
     def enabled(self) -> bool:
+        if not self._cfg.enabled:
+            return False
         unscoped = self._needs_fallback_scope()
         if unscoped and self._unscoped_enabled is not None:
             return self._unscoped_enabled
@@ -423,7 +424,9 @@ class StreamCardController(StreamingController):
                 continue
             try:
                 assert self._client is not None
-                await self._client.cardkit_update(card_id, _interrupted_card(), sequence=1)
+                await self._client.cardkit_update(
+                    card_id, _interrupted_card(config=self._snapshot_config()), sequence=1,
+                )
             except Exception:
                 attempts = int(record.get("attempts", 0)) + 1 if isinstance(record, dict) else 1
                 _logger.warning(
@@ -492,6 +495,7 @@ class StreamCardController(StreamingController):
             if session is not None and not session.state.is_terminal:
                 session.touch()
                 return session
+            return None
         if session_key:
             session = self._session_keys.get(session_key)
             if session is not None and not session.state.is_terminal:
@@ -526,6 +530,9 @@ class StreamCardController(StreamingController):
         多张活跃卡且无标识时返回 None（宁可走 Hermes 原发送，也不误写别人的卡）。
         """
         session = self._resolve_session(message_id, session_key)
+        # Status receipts belong to the running card, including queued inputs.
+        if session is None and session_key:
+            session = self._resolve_session(None, session_key)
         if session is not None:
             return session
         if message_id or session_key:
@@ -547,7 +554,7 @@ class StreamCardController(StreamingController):
         返回 True 表示提示已合并进卡片，Hermes 不应再发纯文本。
         文案就是 Hermes 传进来的原文，插件不另写。
         """
-        if not self.enabled or not text.strip():
+        if not text.strip():
             return False
         session = self._notice_session(message_id, session_key)
         if session is None or session.segment_state is None:
@@ -575,11 +582,11 @@ class StreamCardController(StreamingController):
         这里只负责把 Hermes 的重定向原文落到新卡通知槽，旧卡已收尾。
         新卡尚未登记时按 ``session_key`` 暂存，由 ``_register_session`` 补写。
         """
-        if not self.enabled or not text.strip():
+        if not text.strip():
             return False
         session = self._notice_session(message_id, session_key)
         if session is None or session.segment_state is None:
-            if session_key:
+            if self.enabled and session_key:
                 self._pending_notices.setdefault(session_key, []).append(text.strip())
                 _logger.info("redirect_notice_pending: key=%s", session_key)
                 return True
@@ -615,8 +622,6 @@ class StreamCardController(StreamingController):
         message still owns the same card, including any queued streaming writes.
         Return whether that turn has an active card; this is an observation only.
         """
-        if not self.enabled:
-            return False
         session = (
             self._sessions.get(message_id) if message_id
             else self._session_keys.get(session_key) if session_key else None
@@ -695,9 +700,11 @@ class StreamCardController(StreamingController):
             allowed = self._cfg.chat_types
         except Exception:
             return True
-        if allowed is None or not chat_type:
+        if allowed is None:
             return True
-        return chat_type.strip().lower() in allowed
+        if not allowed:
+            return False
+        return not chat_type or chat_type.strip().lower() in allowed
 
     def on_message_started(
         self,
@@ -718,6 +725,11 @@ class StreamCardController(StreamingController):
         返回实际创建的 message_id（无 id 的合成轮次为 ``syn-*``），失败返回 None。
         排队续轮的收尾钩子需要它把卡片归属传给完成钩子（#35）。
         """
+        if isinstance(message_id, str):
+            owned = self._sessions.get(message_id)
+            if owned is not None and not owned.state.is_terminal:
+                owned.touch()
+                return message_id
         if not self.enabled:
             return None
         synthetic = False
@@ -819,7 +831,7 @@ class StreamCardController(StreamingController):
         ``session_key``（#48）：合成轮次没有 event_message_id，按 session_key
         兜底解析活跃卡（syn-* 会话注册时已同步进 ``_session_keys``）。
         """
-        if not self.enabled or (not message_id and not session_key):
+        if not message_id and not session_key:
             return False
         session = self._resolve_session(message_id, session_key)
         if session is None or session.state.is_terminal:
@@ -828,8 +840,6 @@ class StreamCardController(StreamingController):
 
     def on_thinking(self, *, message_id: str, text: str, session_key: str | None = None) -> bool:
         """思考内容增量."""
-        if not self.enabled:
-            return False
         session = self._resolve_session(message_id, session_key)
         if session is None or session.guard.should_skip("on_thinking"):
             return False
@@ -840,8 +850,6 @@ class StreamCardController(StreamingController):
 
     def on_reasoning(self, *, message_id: str, text: str, session_key: str | None = None) -> bool:
         """Native model reasoning delta (incremental append)."""
-        if not self.enabled:
-            return False
         session = self._resolve_session(message_id, session_key)
         if session is None or session.guard.should_skip("on_reasoning"):
             return False
@@ -862,8 +870,6 @@ class StreamCardController(StreamingController):
         session_key: str | None = None,
     ) -> bool:
         """工具调用事件."""
-        if not self.enabled:
-            return False
         session = self._resolve_session(message_id, session_key)
         if session is None or session.guard.should_skip("on_tool_update"):
             return False
@@ -921,8 +927,6 @@ class StreamCardController(StreamingController):
 
     def on_answer(self, *, message_id: str, text: str, session_key: str | None = None) -> bool:
         """答案文本增量（流式）."""
-        if not self.enabled:
-            return False
         session = self._resolve_session(message_id, session_key)
         if session is None or session.guard.should_skip("on_answer"):
             return False
@@ -939,8 +943,6 @@ class StreamCardController(StreamingController):
 
     def on_aborted(self, *, message_id: str) -> None:
         """用户 /stop 导致消息被中断."""
-        if not self.enabled:
-            return
         session = self._get_active_session(message_id)
         if session is None:
             return
@@ -960,7 +962,7 @@ class StreamCardController(StreamingController):
 
     async def on_session_aborted(self, *, session_key: str) -> bool:
         """Terminate the active card bound to a Hermes session key."""
-        if not self.enabled or not session_key:
+        if not session_key:
             return False
         session = self._session_keys.pop(session_key, None)
         if session is None or session.state.is_terminal:
@@ -997,9 +999,6 @@ class StreamCardController(StreamingController):
         普通打断（run_turn 的 ``was_interrupted``）下新消息会自己另起一轮，旧轮的残段
         由 ``_consume_interrupted_tail`` 吞掉，不能落到新卡上。
         """
-        if not self.enabled:
-            return
-
         # ── 去重：同一次打断的两个注入点在毫秒级内先后到达 ──
         _now = time.monotonic()
         # 去重键只用 new_message_id：第二个注入点的 old_message_id 可能已经被换成
@@ -1070,7 +1069,7 @@ class StreamCardController(StreamingController):
         else:
             # 若该聊天类型被过滤（如群聊不发卡片），新消息 B 不创建卡片会话，
             # 但中断映射仍记录，保证旧会话完成/回落逻辑一致。
-            new_card_allowed = self._chat_type_allowed(chat_type)
+            new_card_allowed = self.enabled and self._chat_type_allowed(chat_type)
             loop = self._get_loop()
             if loop is not None and new_card_allowed:
                 reply_anchor_id = anchor_id if anchor_id and anchor_id != new_message_id else None
@@ -1133,8 +1132,6 @@ class StreamCardController(StreamingController):
         session_key: str | None = None,
     ) -> None:
         """clarify 进入：仅暂停 flush，等 tool.completed 再封卡（避免工具状态卡在 running）。"""
-        if not self.enabled:
-            return
         session = self._get_active_session(message_id)
         if session is None or session.state != SessionState.STREAMING:
             return
@@ -1148,8 +1145,6 @@ class StreamCardController(StreamingController):
         session_key: str | None = None,
     ) -> None:
         """clarify 退出：标记待封卡，恢复 STREAMING，等 tool.completed 触发切卡。"""
-        if not self.enabled:
-            return
         session = self._sessions.get(message_id)
         if session is None or session.state != SessionState.CLARIFY_PAUSED:
             return  # 已被 interrupt 接管 / enter 未生效
@@ -1184,8 +1179,6 @@ class StreamCardController(StreamingController):
         is_interrupted: bool = False,
     ) -> bool:
         """消息处理完成，并等待卡片真正收尾后返回是否已发送."""
-        if not self.enabled:
-            return False
         requested_id = message_id
         # 打断回合的尾巴先于任何归属解析吞掉：session_key 兜底此时已指向新消息的会话，
         # 先解析就会把旧轮的空/半截定稿写进新卡。
@@ -1275,11 +1268,15 @@ class StreamCardController(StreamingController):
 
     async def _send_completion_notice(self, session: CardSession, text: str) -> None:
         try:
-            await self._client.send_text_to_chat(
+            from .system_messages import build_system_card
+
+            config = self._card_config(session)
+            await self._client.send_card_to_chat(
                 session.chat_id,
-                text,
+                build_system_card(text, config, has_reference=bool(session.card_msg_id)),
                 reply_to_message_id=session.card_msg_id,
             )
+            _logger.info("completion_notice_card_sent: chars=%d", len(text))
         except Exception:
             _logger.debug("completion notice send failed", exc_info=True)
 
@@ -1293,7 +1290,7 @@ class StreamCardController(StreamingController):
         run_time: str = "",
     ) -> bool:
         """Cron 推送 — 包装为静态卡片发送，成功返回 True."""
-        if not self.enabled or not content or not chat_id:
+        if not self.enabled or not self._chat_type_allowed("") or not content or not chat_id:
             return False
         coroutine = self._do_cron_deliver(
             chat_id, content, task_name=task_name, run_time=run_time
@@ -1333,7 +1330,7 @@ class StreamCardController(StreamingController):
         ``reply_to_message_id`` 解析），不再另发一张静态卡，改为把回执写进
         当前卡的通知槽，随完成态卡片一起呈现；否则保持原有静态卡投递。
         """
-        if not self.enabled or not content or not chat_id:
+        if not content or not chat_id:
             return False
         session = self._notice_session(reply_to_message_id)
         if session is not None and session.chat_id == chat_id and session.segment_state is not None:
@@ -1341,6 +1338,8 @@ class StreamCardController(StreamingController):
             self._schedule_flush(session)
             _logger.info("background_receipt_merged: id=%s chat=%s", session.message_id, chat_id[:12])
             return True
+        if not self.enabled or not self._chat_type_allowed(""):
+            return False
         return await self._deliver_background_static(chat_id, content, reply_to_message_id)
 
     async def on_background_completion(
@@ -1371,7 +1370,7 @@ class StreamCardController(StreamingController):
         ``session_id`` 是网关的进程会话 id，只用于登记「回执已由卡片投递」，让
         turn_busy 分支不再补发一条纯文本（见 ``remember_merged_busy_receipt``）。
         """
-        if not self.enabled or not text.strip() or not chat_id:
+        if not text.strip() or not chat_id:
             return False
         display_text = background_completion_text(
             text, command=command, started_at=started_at, exit_code=exit_code
@@ -1389,6 +1388,8 @@ class StreamCardController(StreamingController):
                 chat_id[:12],
             )
             return True
+        if not self.enabled or not self._chat_type_allowed(""):
+            return False
         delivered = await self._deliver_background_static(chat_id, display_text)
         if delivered:
             # 独立静态卡本身就是回执：网关再补一条纯文本同样重复。
@@ -1435,7 +1436,7 @@ class StreamCardController(StreamingController):
         sender: Callable[[str], Any],
     ) -> bool:
         """暂存 Hermes background review 通知，等卡片收尾后再发送."""
-        if not self.enabled or not text or not callable(sender):
+        if not text or not callable(sender):
             return False
         session = self._get_active_session(message_id)
         if session is None:
@@ -1538,7 +1539,7 @@ class StreamCardController(StreamingController):
             redirected = self._sessions.get(redirected_id)
             if redirected is not None and not redirected.state.is_terminal:
                 return redirected
-        if session_key:
+        if not message_id and session_key:
             fallback = self._session_keys.get(session_key)
             if fallback is not None and fallback.state not in (
                 SessionState.COMPLETED, SessionState.ABORTED
@@ -1647,6 +1648,7 @@ class StreamCardController(StreamingController):
         return await self._do_complete_card(session)
 
     def _prune_stale_sessions(self) -> None:
+        self._session_ttl = self._cfg.card_duration_sec
         now = time.time()
         stale = [
             mid for mid, s in self._sessions.items()

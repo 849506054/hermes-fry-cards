@@ -7,6 +7,8 @@ Hermes 在回合进行中会自己合成状态提示（"⏳ Queued for the next 
 """
 from __future__ import annotations
 
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 from unittest.mock import AsyncMock
 
 import pytest
@@ -49,7 +51,7 @@ def test_add_notice_dedupes_and_ignores_blank() -> None:
 
 def test_complete_card_renders_notices_above_body() -> None:
     card = build_complete_card(segments=[], all_tool_steps=[], notices=[BUSY_TEXT, REDIRECT_TEXT])
-    elements = card["body"]["elements"]
+    elements = body_content_elements(card)
     assert elements[0]["element_id"] == "fry_notice"
     assert elements[0]["content"] == BUSY_TEXT
     assert elements[1]["content"] == REDIRECT_TEXT
@@ -57,7 +59,7 @@ def test_complete_card_renders_notices_above_body() -> None:
 
 def test_complete_card_without_notices_has_no_notice_elements() -> None:
     card = build_complete_card(segments=[], all_tool_steps=[])
-    assert not [el for el in card["body"]["elements"] if el.get("element_id") == "fry_notice"]
+    assert not [el for el in body_content_elements(card) if el.get("element_id") == "fry_notice"]
 
 
 def test_notice_element_renders_raw_text_without_label() -> None:
@@ -233,7 +235,7 @@ async def test_completed_card_includes_notice_slot() -> None:
     ok = await ctrl._do_complete_card(session)
     assert ok is True
     card = ctrl._client.cardkit_update.call_args.args[1]
-    bodies = card["body"]["elements"]
+    bodies = body_content_elements(card)
     notices = [el for el in bodies if str(el.get("element_id", "")).startswith("fry_notice")]
     assert len(notices) == 1, "通知槽单槽位: 卡上最多一个提示元素"
     assert notices[0]["content"] == BUSY_TEXT
@@ -249,10 +251,11 @@ def test_streaming_card_carries_latest_notice_after_redirect() -> None:
     assert _latest_notice(session) == REDIRECT_TEXT
 
     card = build_streaming_card_v2(notice=_latest_notice(session))
-    elements = card["body"]["elements"]
-    assert elements[-1]["element_id"] == "loading_icon"
-    assert elements[-2]["element_id"] == "fry_notice"
-    assert elements[-2]["content"] == REDIRECT_TEXT
+    elements = body_content_elements(card)
+    assert elements[-1]["element_id"] == "loading_cursor"
+    assert elements[-2]["element_id"] == "loading_icon"
+    assert elements[-3]["element_id"] == "fry_notice"
+    assert elements[-3]["content"] == REDIRECT_TEXT
     # 不在卡片顶部（工具输出之上）
     assert elements[0]["element_id"] != "fry_notice"
 
@@ -263,7 +266,7 @@ def test_streaming_card_carries_latest_notice_after_redirect() -> None:
 def test_complete_card_notice_ids_are_unique() -> None:
     """一张卡命中多条提示时，元素 id 必须唯一（固定 fry_notice 会撞 id）."""
     card = build_complete_card(segments=[], all_tool_steps=[], notices=[BUSY_TEXT, REDIRECT_TEXT])
-    ids = [el["element_id"] for el in card["body"]["elements"] if el.get("element_id", "").startswith("fry_notice")]
+    ids = [el["element_id"] for el in body_content_elements(card) if el.get("element_id", "").startswith("fry_notice")]
     assert ids == ["fry_notice", "fry_notice_1"]
     assert len(ids) == len(set(ids))
 
@@ -326,12 +329,12 @@ async def test_completed_card_element_count_matches_rendered_elements() -> None:
     assert await ctrl._do_complete_card(session) is True
     card = ctrl._client.cardkit_update.call_args.args[1]
     rendered = [
-        el for el in card["body"]["elements"] if str(el.get("element_id", "")).startswith("fry_notice")
+        el for el in body_content_elements(card) if str(el.get("element_id", "")).startswith("fry_notice")
     ]
     assert len(rendered) == 1
     assert rendered[0]["content"] == REDIRECT_TEXT
     assert session.notice_element_count == 1
-    assert session.element_count >= len(card["body"]["elements"])
+    assert session.element_count >= len(body_content_elements(card))
 
 
 # ── 压缩封卡与别名兼容（#43 增强） ──────────────────────────────────────
@@ -447,7 +450,7 @@ def test_later_background_receipt_replaces_redirect_notice() -> None:
     )
     rendered = [
         el["content"]
-        for el in card["body"]["elements"]
+        for el in body_content_elements(card)
         if str(el.get("element_id", "")).startswith("fry_notice")
     ]
     assert rendered == ["后台任务完成"]
@@ -460,7 +463,7 @@ def test_complete_card_renders_progress_notices_at_bottom() -> None:
         notices=["后台任务完成"],
         progress_notices=[BUSY_TEXT, REDIRECT_TEXT],
     )
-    elements = card["body"]["elements"]
+    elements = body_content_elements(card)
     ids = [el.get("element_id") for el in elements]
     assert ids.index("fry_notice") < ids.index("fry_notice_1") < ids.index("fry_notice_2")
     assert elements[ids.index("fry_notice")]["content"] == "后台任务完成"
@@ -490,7 +493,7 @@ async def test_busy_receipt_lands_at_bottom_of_completed_card() -> None:
 
     assert await ctrl._do_complete_card(session) is True
     card = ctrl._client.cardkit_update.call_args.args[1]
-    bodies = card["body"]["elements"]
+    bodies = body_content_elements(card)
     notice = next(el for el in bodies if el.get("element_id") == "fry_notice")
     assert notice["content"] == BUSY_TEXT
     # 不在卡顶（工具面板在前），底部通知位在工具输出之后
@@ -510,7 +513,7 @@ async def test_background_receipt_stays_at_top_of_completed_card() -> None:
 
     assert await ctrl._do_complete_card(session) is True
     card = ctrl._client.cardkit_update.call_args.args[1]
-    assert card["body"]["elements"][0]["content"] == "后台任务完成"
+    assert body_content_elements(card)[0]["content"] == "后台任务完成"
 
 
 # ── 重定向封卡清提示（#43 反馈：同一句话不在旧卡正文复述） ──────────────────
@@ -805,7 +808,7 @@ async def test_do_create_card_binds_notice_element_for_adoption() -> None:
     assert session.notice_element_count == 1
     # 卡片骨架上确实画着这条提示
     built = ctrl._client.cardkit_create.call_args.args[0]
-    assert [el.get("element_id") for el in built["body"]["elements"]][-2] == "fry_notice"
+    assert [el.get("element_id") for el in body_content_elements(built)][-3] == "fry_notice"
 
     session.segment_state.on_answer_delta("Hello")
     await ctrl._do_flush(session)
@@ -853,7 +856,7 @@ async def test_completed_card_drops_adopted_notice_from_body() -> None:
 
     assert await ctrl._do_complete_card(session) is True
     card = ctrl._client.cardkit_update.call_args.args[1]
-    contents = [el.get("content", "") for el in card["body"]["elements"]]
+    contents = [el.get("content", "") for el in body_content_elements(card)]
     assert REDIRECT_TEXT not in contents
     assert any("answer text" in text for text in contents)
 
@@ -872,7 +875,7 @@ async def test_completed_card_keeps_painted_notice_when_no_answer_came() -> None
 
     assert await ctrl._do_complete_card(session) is True
     card = ctrl._client.cardkit_update.call_args.args[1]
-    contents = [el.get("content", "") for el in card["body"]["elements"]]
+    contents = [el.get("content", "") for el in body_content_elements(card)]
     assert BUSY_TEXT in contents
 
 
@@ -970,7 +973,7 @@ def test_streaming_notice_element_matches_card_skeleton_shape() -> None:
 
     card = build_streaming_card_v2(notice=BUSY_TEXT)
     painted = build_streaming_notice_element(BUSY_TEXT, element_id="fry_notice")
-    skeleton = card["body"]["elements"][-2]
+    skeleton = body_content_elements(card)[-3]
     assert skeleton["element_id"] == "fry_notice"
     assert skeleton["tag"] == painted["tag"]
     assert skeleton["content"] == painted["content"]
@@ -1080,7 +1083,7 @@ async def test_completed_card_drops_painted_background_receipt() -> None:
 
     assert ok is True
     card = ctrl._client.cardkit_update.call_args.args[1]
-    contents = [el.get("content") for el in card["body"]["elements"] if el.get("content")]
+    contents = [el.get("content") for el in body_content_elements(card) if el.get("content")]
     assert "后台任务完成" not in contents
     assert any("answer text" in (c or "") for c in contents)
 
@@ -1100,7 +1103,7 @@ async def test_completed_card_keeps_background_receipt_never_painted() -> None:
 
     assert ok is True
     card = ctrl._client.cardkit_update.call_args.args[1]
-    contents = [el.get("content") for el in card["body"]["elements"] if el.get("content")]
+    contents = [el.get("content") for el in body_content_elements(card) if el.get("content")]
     assert "后台任务完成" in contents
     assert session.notice_element_count == 1
 
@@ -1122,7 +1125,7 @@ async def test_completed_card_with_body_renders_no_notice() -> None:
 
     assert ok is True
     card = ctrl._client.cardkit_update.call_args.args[1]
-    elements = card["body"]["elements"]
+    elements = body_content_elements(card)
     notice_ids = [
         el.get("element_id") for el in elements if str(el.get("element_id", "")).startswith("fry_notice")
     ]

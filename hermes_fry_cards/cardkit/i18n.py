@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+
+from ..config import Config, hermes_home
+
 __all__ = [
     "_LOCALES",
     "_T",
+    "_content_lang",
     "_content_t",
     "_i18n",
     "_t",
@@ -21,6 +27,10 @@ _T: dict[str, tuple[str, str]] = {
     "cache_hit": ("Cache hit {}%", "缓存命中 {}%"),
     "processing": ("Processing...", "处理中..."),
     "processing_prefix": ("💭 Processing...", "💭 处理中..."),
+    "processing_prefix_plain": ("Processing...", "处理中..."),
+    "status_completed_plain": ("Completed", "已完成"),
+    "status_error_plain": ("Error", "出错"),
+    "status_stopped_plain": ("Stopped", "已停止"),
     "tool_use": ("Tool use", "工具执行"),
     "tool_running": ("Tool running", "工具执行中"),
     "tool_omitted": ("… and {} earlier tool steps", "…另有 {} 步工具调用"),
@@ -83,20 +93,29 @@ def _t(key: str) -> dict[str, str]:
     return _i18n(*_T[key])
 
 
+# 显式覆盖入口供现有测试使用；运行时语言每次经 Config 热读。
 _CONTENT_LANG_CACHE: str | None = None
 
 
-def _content_t(key: str) -> str:
-    """内容层单语词条：按 ``streaming.content_lang`` 选取，模块级缓存（重启生效）."""
+@lru_cache(maxsize=16)
+def _content_config(home: Path) -> Config:
+    """按 profile 复用配置实例及其元数据缓存."""
+    return Config(home)
+
+
+def _content_lang() -> str:
+    """读取当前 profile 的内容语言，复用 Config 的安全重读路径."""
+    if _CONTENT_LANG_CACHE is not None:
+        return _CONTENT_LANG_CACHE
+    from .styles import _style_config
+
+    config = _style_config.get()
+    return config.content_lang if config is not None else _content_config(hermes_home()).content_lang
+
+
+def _content_t(key: str, *, lang: str | None = None) -> str:
+    """内容层单语词条；可传入本次渲染已解析的语言以保持缓存一致."""
     if key not in _T:
         return key  # 非词条（如 Hermes 原文）原样返回，由调用方负责语言选取
-    global _CONTENT_LANG_CACHE
-    if _CONTENT_LANG_CACHE is None:
-        try:
-            from ..config import Config
-
-            _CONTENT_LANG_CACHE = Config().content_lang
-        except Exception:
-            _CONTENT_LANG_CACHE = "zh"
     en, zh = _T[key]
-    return en if _CONTENT_LANG_CACHE == "en" else zh
+    return en if (lang if lang is not None else _content_lang()) == "en" else zh

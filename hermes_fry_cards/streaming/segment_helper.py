@@ -14,11 +14,11 @@ from ..cardkit.builder import (
     _build_reasoning_panel,
     _build_reasoning_stage,
     _build_tool_panel,
-    _format_elapsed,
     _streaming_element,
 )
-from ..cardkit.i18n import _T, _i18n
 from ..cardkit.markdown import clamp_utf8
+from ..cardkit.styles import option, styled_builder
+from ..config import Config
 from .segments import Segment, SegmentType
 from .tooluse import ToolDisplayStep
 
@@ -170,9 +170,12 @@ def _reasoning_initial_body(text: str) -> str:
     return clamp_utf8(text, max_bytes=_REASONING_INITIAL_BYTES, preserve_tail=False) or " "
 
 
+@styled_builder
 def build_add_segment_action(
     seg: Segment, all_steps: list[ToolDisplayStep], *, text_size: str = "normal_v2",
     reasoning_timeline: bool = False,
+    process_border: bool = False,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """构造新增 segment 元素的 batch action.
 
@@ -195,12 +198,19 @@ def build_add_segment_action(
             _reasoning_initial_body(seg.text), seg.elapsed_ms, expanded=True,
             element_id=seg.el_id, text_element_id=seg.text_el_id,
         )
+        if not process_border:
+            element.pop("border")
     elif seg.type == SegmentType.ANSWER:
         element = _streaming_element(element_id=seg.el_id, text_size=text_size)
     elif seg.type == SegmentType.TOOL:
         start = seg.tool_offset
         end = seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
         element = _build_tool_panel(all_steps[start:end], element_id=seg.el_id, running=True)
+        if process_border:
+            element["border"] = {"color": option("process", "border_color", "grey"),
+                                 "corner_radius": option("process", "border_radius", "5px")}
+        else:
+            element.pop("border", None)
     else:
         raise ValueError(f"unsupported segment type: {seg.type}")
 
@@ -214,8 +224,10 @@ def build_add_segment_action(
     }
 
 
+@styled_builder
 def build_process_panel_header_action(
     rounds: int, tools: int = 0, *, element_id: str = PROCESS_PANEL_ELEMENT_ID,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """Refresh both counts while retaining the native bottom-fold control."""
     return {
@@ -225,7 +237,10 @@ def build_process_panel_header_action(
     }
 
 
-def build_reasoning_finalized_action(seg: Segment, *, reasoning_timeline: bool = False) -> dict[str, Any]:
+@styled_builder
+def build_reasoning_finalized_action(
+    seg: Segment, *, reasoning_timeline: bool = False, config: Config | None = None,
+) -> dict[str, Any]:
     """更新当前阶段的耗时标题，外框展开状态由用户控制。"""
     if reasoning_timeline:
         title = _build_reasoning_stage(" ", seg.elapsed_ms)[0]
@@ -236,32 +251,26 @@ def build_reasoning_finalized_action(seg: Segment, *, reasoning_timeline: bool =
                 "partial_element": {"content": title["content"]},
             },
         }
-    elapsed = _format_elapsed(seg.elapsed_ms)
-    en_label = _T["thought_for"][0].format(elapsed)
-    zh_label = _T["thought_for"][1].format(elapsed)
+    panel = _build_reasoning_panel(" ", seg.elapsed_ms)
     return {
         "action": "partial_update_element",
         "params": {
             "element_id": seg.el_id,
             "partial_element": {
                 # 整块替换，必须带全 header，否则收尾后展开箭头消失
-                "header": _panel_header({
-                    "tag": "plain_text",
-                    "content": f"💭 {en_label}",
-                    "i18n_content": _i18n(f"💭 {en_label}", f"💭 {zh_label}"),
-                    "text_color": "grey",
-                    "text_size": "notation",
-                }),
+                "header": panel["header"],
             },
         },
     }
 
 
+@styled_builder
 def build_tool_update_action(
     *,
     element_id: str,
     steps: list[ToolDisplayStep],
     running: bool = True,
+    config: Config | None = None,
 ) -> dict[str, Any]:
     """构造 tool panel 局部更新 action."""
     panel = _build_tool_panel(steps, running=running)

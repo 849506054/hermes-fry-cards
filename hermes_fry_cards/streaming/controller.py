@@ -9,11 +9,16 @@ from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from ..cardkit.builder import (
+    LOADING_CURSOR_ELEMENT_ID,
     LOADING_ELEMENT_ID,
     NOTICE_ELEMENT_ID,
     PROCESS_PANEL_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
+    BODY_SURFACE_ELEMENT_COUNT,
     _process_title,
+    body_content_elements,
+    build_streaming_process_pending_panel,
+    build_streaming_tool_use_pending_panel,
     build_background_card,
     build_complete_card,
     build_cron_card,
@@ -29,6 +34,8 @@ from ..cardkit.markdown import (
     optimize_markdown_style,
     prepare_streaming_markdown,
 )
+from ..cardkit.styles import style_scope, text_content, text_element
+from ..config import Config
 from ..feishu import (
     CARDKIT_CONTENT_FAILED,
     CARDKIT_ELEMENT_LIMIT,
@@ -65,7 +72,6 @@ from .tooluse import ToolUseTracker
 from .unavailable_guard import is_terminal_api_code
 
 if TYPE_CHECKING:
-    from ..config import Config
     from ..feishu import FeishuClient
     from .session import CardSession
     from .tooluse import ToolDisplayStep
@@ -142,6 +148,12 @@ class StreamingController:
     _flush_deferred_background_reviews: Callable[[CardSession], None]
     _wait_for_card_creation: Callable[[CardSession], Coroutine[Any, Any, bool]]
 
+    def _card_config(self, session: CardSession) -> Config:
+        return session.render_config if session.render_config is not None else self._cfg
+
+    def _snapshot_config(self) -> Config:
+        return self._cfg.card_snapshot() if isinstance(self._cfg, Config) else self._cfg
+
     def _schedule_flush(self, session: CardSession) -> None:
         if session.state == SessionState.IDLE or session.state.is_terminal:
             return
@@ -149,6 +161,7 @@ class StreamingController:
             return
         if session.guard.should_skip("_schedule_flush"):
             return
+        session.flush.set_throttle(self._cfg.flush_interval_ms / 1000.0)
         session.flush.schedule_update(lambda: self._do_flush(session))
 
     def _on_thinking_segment(self, session: CardSession, text: str) -> bool:
@@ -169,10 +182,9 @@ class StreamingController:
         return True
 
     def _skeleton_element_count(self, session: CardSession) -> int:
-        """Budget for the native timeline frame and insertion anchor."""
-        if session.reasoning_timeline:
-            return 5
-        return 1
+        """Budget for the theme surface, timeline frame, insertion anchor and cursor."""
+        base = 5 if session.reasoning_timeline else 1
+        return base + BODY_SURFACE_ELEMENT_COUNT + 1  # +1 = 底色块外的流式光标
 
     def _timeline_byte_estimate(self, segments: list[Segment]) -> int:
         """为完成卡预留 JSON 开销，按各段实际 UTF-8 窗口估算。"""
@@ -206,16 +218,22 @@ class StreamingController:
 
             reply_to_message_id = session.anchor_id or session.message_id
             notice_text = _latest_notice(session)
-            self._configure_reasoning_timeline(session)
+            config = self._snapshot_config()
+            show_reasoning = self._cfg.show_reasoning
+            show_tool_use = self._cfg.show_tool_use
+            panel_limit = (
+                None if show_reasoning and not show_tool_use else self._cfg.max_reasoning_panels
+            )
             card = build_streaming_card_v2(
-                show_tool_use=self._cfg.show_tool_use,
-                show_reasoning=session.reasoning_timeline,
+                config=config,
+                show_tool_use=show_tool_use,
+                show_reasoning=show_reasoning,
                 show_streaming_element=False,
-                header_enabled=self._cfg.header_enabled,
-                text_size=self._cfg.body_text_size,
-                width_mode=self._cfg.width_mode,
+                header_enabled=config.header_enabled,
+                text_size=config.body_text_size,
+                width_mode=config.width_mode,
                 notice=notice_text,
-                process_expanded=self._cfg.process_expanded,
+                process_expanded=config.process_expanded,
             )
             card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -244,11 +262,19 @@ class StreamingController:
                             chat_id=session.chat_id,
                             card={"type": "card", "data": {"card_id": card_id}},
                         )
+            session.pending_render_config = config
+            session.pending_reasoning_structure = (show_reasoning, panel_limit)
+            session.pending_process_panels = {
+                el["element_id"] for el in body_content_elements(card)
+                if el.get("tag") == "collapsible_panel"
+            }
             session.set_card(card_id=card_id, card_msg_id=card_msg_id)
             self._track_live_card(session)  # #43：卡片建好后登记，网关重启时据此封卡
             _logger.info(
-                "CardKit display: msg=%s reasoning_timeline=%s show_tool_use=%s",
-                session.message_id[:12], session.reasoning_timeline, self._cfg.show_tool_use,
+                "CardKit display: msg=%s reasoning_timeline=%s show_tool_use=%s "
+                "light=%s dark=%s process_border=%s header=%s",
+                session.message_id[:12], session.reasoning_timeline, show_tool_use,
+                config.body_light_color, config.body_dark_color, config.process_border, config.header_template,
             )
             session.element_count = self._skeleton_element_count(session)  # loading(+过程外框)
             # 流式建卡时已带上最新一条提示（_latest_notice），记账同步这一格
@@ -308,6 +334,41 @@ class StreamingController:
             )
             session.mark_failed(reason="card_create_unexpected_error")
 
+    async def _ensure_visible_panels(
+        self, session: CardSession, *, show_reasoning: bool, show_tool_use: bool,
+    ) -> bool:
+        """Create absent count/panel anchors before a live display switch writes them."""
+        if session.process_panels is None:
+            return True  # A caller-provided card tree owns its own anchors.
+        assert self._client is not None and session.card_id is not None
+        cfg = self._card_config(session)
+        frames = [
+            (PROCESS_PANEL_ELEMENT_ID, show_reasoning, build_streaming_process_pending_panel),
+            (TOOL_PANEL_ELEMENT_ID, show_tool_use, build_streaming_tool_use_pending_panel),
+        ]
+        for element_id, visible, build in frames:
+            if not visible or element_id in session.process_panels:
+                continue
+            panel = build(expanded=cfg.process_expanded, config=cfg)
+            session.sequence += 1
+            try:
+                await self._client.cardkit_batch_update(session.card_id, [{
+                    "action": "add_elements", "params": {
+                        "type": "insert_before", "target_element_id": LOADING_ELEMENT_ID,
+                        "elements": [panel],
+                    },
+                }], sequence=session.sequence)
+            except Exception:
+                _logger.warning("CardKit display panel create failed: msg=%s element=%s",
+                                session.message_id[:12], element_id, exc_info=True)
+                return False
+            session.process_panels.add(element_id)
+            session.element_count += count_elements_recursive(panel)
+            session.process_header_counts = (-1, -1)
+            _logger.info("CardKit display panel created: msg=%s element=%s",
+                         session.message_id[:12], element_id)
+        return True
+
     async def _do_flush(self, session: CardSession) -> None:
         """幂等 flush：按 segment 顺序处理结构性变更，超阈值时拆卡."""
         if session.state.is_terminal or not session.card_id:
@@ -317,6 +378,14 @@ class StreamingController:
             return
 
         assert self._client is not None
+        # Sample event options once; every await in this flush shares these gates.
+        show_reasoning = self._cfg.show_reasoning
+        show_tool_use = self._cfg.show_tool_use
+        display_options = (show_reasoning, show_tool_use)
+        if not await self._ensure_visible_panels(
+            session, show_reasoning=show_reasoning, show_tool_use=show_tool_use,
+        ):
+            return
         segments = segment_state.segments
         all_steps = session.tool_use.build_display_steps()
         # 本次 flush 的近似载荷（字节）：batch actions + 流式文本，供自适应降频分档（#46）
@@ -351,15 +420,15 @@ class StreamingController:
             # show_tool_use=False: 流式态跳过所有 TOOL segment 处理
             # （新建与 dirty 更新两条路径），只保留 reasoning/answer
             if (
-                (seg.type == SegmentType.TOOL and not self._cfg.show_tool_use)
-                or (seg.type == SegmentType.REASONING and not self._cfg.show_reasoning)
+                (seg.type == SegmentType.TOOL and not show_tool_use)
+                or (seg.type == SegmentType.REASONING and not show_reasoning)
             ):
                 # created records an acknowledged API write, including across display toggles.
                 seg.dirty = False
                 continue
 
             if (
-                session.reasoning_timeline and not self._cfg.show_tool_use
+                session.reasoning_timeline and not show_tool_use
                 and i > session.split_index and not session.split_disabled
                 and self._timeline_byte_estimate(segments[session.split_index:i + 1]) > 160_000
             ):
@@ -370,6 +439,7 @@ class StreamingController:
                 )
                 if not await self._do_split_card(
                     session, i, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+                    display_options=display_options,
                 ):
                     return
                 actions, new_el_ids, new_el_estimates, updated_tool_segs = [], set(), {}, []
@@ -426,6 +496,7 @@ class StreamingController:
                 ):
                     split_ok = await self._do_split_card(
                         session, i, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+                        display_options=display_options,
                     )
                     if not split_ok:
                         return
@@ -447,7 +518,7 @@ class StreamingController:
                         panel_end = seg.tool_end_offset if seg.tool_end_offset else len(all_steps)
                         actions.append(build_tool_update_action(
                             element_id=TOOL_PANEL_ELEMENT_ID,
-                            steps=all_steps[panel_start:panel_end],
+                            steps=all_steps[panel_start:panel_end], config=self._card_config(session),
                         ))
                         updated_tool_segs.append(seg)
                         # 面板子元素计入卡片元素总数。这里只登记「新面板估算」，
@@ -465,8 +536,10 @@ class StreamingController:
                     new_el_estimates[seg.el_id] = estimated
                     new_el_total += estimated
                     actions.append(build_add_segment_action(
-                        seg, all_steps, text_size=self._cfg.body_text_size,
+                        seg, all_steps, text_size=self._card_config(session).body_text_size,
                         reasoning_timeline=session.reasoning_timeline,
+                        process_border=self._card_config(session).process_border,
+                        config=self._card_config(session),
                     ))
                 if (
                     seg.type == SegmentType.TOOL
@@ -477,6 +550,7 @@ class StreamingController:
                 ):
                     split_ok = await self._do_split_card(
                         session, i + 1, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+                        display_options=display_options,
                     )
                     if not split_ok:
                         return
@@ -494,7 +568,7 @@ class StreamingController:
                     session.sequence + 1,
                 )
                 actions.append(build_reasoning_finalized_action(
-                    seg, reasoning_timeline=session.reasoning_timeline,
+                    seg, reasoning_timeline=session.reasoning_timeline, config=self._card_config(session),
                 ))
             elif seg.type == SegmentType.TOOL and seg.dirty:
                 # 合并面板：本卡所有工具段共用一个面板，渲染区间从本卡首个工具段起，
@@ -512,6 +586,7 @@ class StreamingController:
                     new_el_estimates=new_el_estimates,
                     updated_tool_segs=updated_tool_segs,
                     pending_delta=new_el_total,
+                    display_options=display_options,
                 )
                 if rollover == "failed":
                     return
@@ -532,7 +607,8 @@ class StreamingController:
                 # 回滚重建 → 下一轮再回落，形成反复失败/恢复的抖动。
                 shared_el_id = tool_panel_element_id or TOOL_PANEL_ELEMENT_ID
                 actions.append(
-                    build_tool_update_action(element_id=shared_el_id, steps=all_steps[start:end])
+                    build_tool_update_action(element_id=shared_el_id, steps=all_steps[start:end],
+                                             config=self._card_config(session))
                 )
                 updated_tool_segs.append(seg)
                 # 工具面板元素增量 = 当前总估算 - 上次记录的总估算（非当前段差值）。
@@ -552,7 +628,7 @@ class StreamingController:
             _logger.info(
                 "process counters: msg=%s reasoning=%s tools=%s show_reasoning=%s show_tools=%s",
                 session.message_id[:12], *counts,
-                self._cfg.show_reasoning, self._cfg.show_tool_use,
+                show_reasoning, show_tool_use,
             )
             payload_bytes += len(json.dumps(actions, ensure_ascii=False, default=str))
             if not await self._do_batch_update(
@@ -570,19 +646,21 @@ class StreamingController:
         for seg in segments[session.split_index:]:
             if not seg.created or not seg.dirty:
                 continue
-            if seg.type == SegmentType.REASONING and not self._cfg.show_reasoning:
+            if seg.type == SegmentType.REASONING and not show_reasoning:
                 continue
             snapshot = seg.text
             content = snapshot
             try:
                 if seg.type == SegmentType.REASONING:
-                    content = optimize_markdown_style(snapshot) or " "
+                    with style_scope(self._card_config(session)):
+                        content = optimize_markdown_style(snapshot) or " "
                     # 尾部窗口钳制（#52）：stream_element 是覆盖语义全文重发，
                     # reasoning 无上限时每秒重写 20–28KB、单轮累计 1.3MB，
                     # 会把飞书客户端渲染打满。保留头部摘要 + 尾部最新结论。
-                    content = clamp_utf8(
-                        content, max_bytes=_REASONING_MAX_BYTES, preserve_tail=True,
-                    )
+                    with style_scope(self._card_config(session)):
+                        content = clamp_utf8(
+                            content, max_bytes=_REASONING_MAX_BYTES, preserve_tail=True,
+                        )
                     content_bytes = len(content.encode("utf-8"))
                     payload_bytes += content_bytes
                     max_element_bytes = max(max_element_bytes, content_bytes)
@@ -601,8 +679,10 @@ class StreamingController:
                     content = snapshot
                     if session.image_resolver:
                         content = session.image_resolver.resolve_images(content)
-                    content = prepare_streaming_markdown(content) or " "
-                    content = clamp_utf8(content, preserve_tail=False)
+                    with style_scope(self._card_config(session)):
+                        content = prepare_streaming_markdown(content) or " "
+                    with style_scope(self._card_config(session)):
+                        content = clamp_utf8(content, preserve_tail=False)
                     content_bytes = len(content.encode("utf-8"))
                     payload_bytes += content_bytes
                     max_element_bytes = max(max_element_bytes, content_bytes)
@@ -643,12 +723,12 @@ class StreamingController:
         if counts != session.process_header_counts:
             counts_written = True
             for panel_id, visible in (
-                (PROCESS_PANEL_ELEMENT_ID, self._cfg.show_reasoning),
-                (TOOL_PANEL_ELEMENT_ID, self._cfg.show_tool_use),
+                (PROCESS_PANEL_ELEMENT_ID, show_reasoning),
+                (TOOL_PANEL_ELEMENT_ID, show_tool_use),
             ):
                 if not visible:
                     continue
-                title = _process_title(*counts, element_id=f"{panel_id}_count")
+                title = _process_title(*counts, element_id=f"{panel_id}_count", config=self._card_config(session))
                 session.sequence += 1
                 try:
                     await self._stream_or_update(
@@ -679,8 +759,9 @@ class StreamingController:
         """Restore the accumulated reasoning under its acknowledged stage title."""
         assert self._client is not None
         assert session.card_id is not None
-        body = {"tag": "markdown", "element_id": seg.text_el_id,
-                "content": content, "text_size": "notation"}
+        with style_scope(self._card_config(session)):
+            body = text_element({"tag": "markdown", "element_id": seg.text_el_id,
+                                 "content": content, "text_size": "notation"}, "reasoning")
         if session.reasoning_timeline:
             action = {"action": "add_elements", "params": {
                 "type": "insert_after", "target_element_id": seg.el_id, "elements": [body],
@@ -715,6 +796,9 @@ class StreamingController:
         半截。首次命中就把这张卡切成元素更新，后续增量照旧上屏。
         """
         assert self._client is not None
+        if kind in {"answer", "reasoning"}:
+            with style_scope(self._card_config(session)):
+                content = text_content(content, "body" if kind == "answer" else "reasoning")
         if not session.stream_closed:
             try:
                 await self._client.cardkit_stream_element(
@@ -777,17 +861,20 @@ class StreamingController:
                             build_streaming_notice_element(
                                 target,
                                 element_id=element_id,
-                                text_size=self._cfg.body_text_size,
+                                text_size=self._card_config(session).body_text_size,
+                                config=self._card_config(session),
                             )
                         ],
                     },
                 }
             else:
+                with style_scope(self._card_config(session)):
+                    styled_target = text_content(target, "body")
                 action = {
                     "action": "partial_update_element",
                     "params": {
                         "element_id": element_id,
-                        "partial_element": {"content": target},
+                        "partial_element": {"content": styled_target},
                     },
                 }
             session.sequence += 1
@@ -1062,6 +1149,7 @@ class StreamingController:
         new_el_estimates: dict[str, int],
         updated_tool_segs: list[Segment],
         pending_delta: int = 0,
+        display_options: tuple[bool, bool] | None = None,
     ) -> str | None:
         """按 tool step 边界拆分过大的 dirty tool segment."""
         start = seg.tool_offset
@@ -1098,7 +1186,7 @@ class StreamingController:
         actions.append(
             build_tool_update_action(
                 element_id=seg.el_id,
-                steps=all_steps[panel_start:split_offset],
+                steps=all_steps[panel_start:split_offset], config=self._card_config(session),
             )
         )
         updated_tool_segs.append(seg)
@@ -1106,6 +1194,7 @@ class StreamingController:
         segment_state.split_tool_segment(index, split_offset)
         split_ok = await self._do_split_card(
             session, index + 1, actions, new_el_ids, new_el_estimates, updated_tool_segs,
+            display_options=display_options,
         )
         if not split_ok:
             return "failed"
@@ -1118,6 +1207,8 @@ class StreamingController:
         *,
         card_id: str | None = None,
         sequence: int | None = None,
+        config: Config | None = None,
+        display_options: tuple[bool, bool] | None = None,
     ) -> None:
         """封印指定卡（默认 session.card_id）：close_streaming + 全量重建。失败仅记录日志。
 
@@ -1131,7 +1222,12 @@ class StreamingController:
         # 中途换卡只封存过程；完整回答由最后一张卡承载。
         seal_segments = [s for s in seal_segments if s.type != SegmentType.ANSWER]
         all_steps = session.tool_use.build_display_steps()
+        config = config or self._card_config(session)
+        show_reasoning, show_tool_use = display_options or (
+            self._cfg.show_reasoning, self._cfg.show_tool_use,
+        )
         seal_card = build_complete_card(
+            config=config,
             segments=seal_segments,
             all_tool_steps=all_steps,
             is_continuation=True,
@@ -1140,16 +1236,16 @@ class StreamingController:
             footer_show_label=False,
             footer_enabled=False,
             panel_fields=self._cfg.panel_fields,
-            panel_expanded=self._cfg.panel_expanded,
+            panel_expanded=config.panel_expanded,
             panel_text_size=self._cfg.panel_text_size,
             header_enabled=False,
-            body_text_size=self._cfg.body_text_size,
-            show_tool_use=self._cfg.show_tool_use,
-            show_reasoning=self._cfg.show_reasoning,
+            body_text_size=config.body_text_size,
+            show_tool_use=show_tool_use,
+            show_reasoning=show_reasoning,
             reasoning_count=session.process_counts[0],
             tool_count=session.process_counts[1],
             total_tool_elapsed_ms=session.total_tool_elapsed_ms,
-            width_mode=self._cfg.width_mode,
+            width_mode=config.width_mode,
         )
         try:
             seq = (session.sequence if sequence is None else sequence) + 1
@@ -1168,12 +1264,14 @@ class StreamingController:
             await self._remove_loading_icon(old_card_id, seq + 1)
 
     async def _remove_loading_icon(self, card_id: str, sequence: int) -> None:
-        """从卡片删除 loading 转圈图标（seal/complete 失败时的降级补救）。"""
+        """从卡片删除插入锚点与流式光标（seal/complete 失败时的降级补救）。"""
         assert self._client is not None
         try:
             await self._client.cardkit_batch_update(
                 card_id,
-                [{"type": "delete", "element_id": LOADING_ELEMENT_ID}],
+                [{"action": "delete_elements", "params": {
+                    "element_ids": [LOADING_ELEMENT_ID, LOADING_CURSOR_ELEMENT_ID],
+                }}],
                 sequence=sequence,
             )
         except Exception:
@@ -1183,7 +1281,9 @@ class StreamingController:
                 exc_info=True,
             )
 
-    async def _create_streaming_card(self, session: CardSession) -> tuple[str, str] | None:
+    async def _create_streaming_card(
+        self, session: CardSession, *, display_options: tuple[bool, bool] | None = None,
+    ) -> tuple[str, str] | None:
         """创建空白流式卡并挂到 anchor，返回 (card_id, msg_id)。失败返回 None。
 
         不修改 session.card_id —— 调用方负责 set_card。
@@ -1191,18 +1291,24 @@ class StreamingController:
         assert self._client is not None
         try:
             # 换卡沿用工具展示开关；隐藏的工具段只保留内部阶段边界。
-            need_tool_panel = self._cfg.show_tool_use
+            show_reasoning, need_tool_panel = display_options or (
+                self._cfg.show_reasoning, self._cfg.show_tool_use,
+            )
+            panel_limit = (
+                None if show_reasoning and not need_tool_panel else self._cfg.max_reasoning_panels
+            )
             notice_text = _latest_notice(session)
-            self._configure_reasoning_timeline(session)
+            config = self._snapshot_config()
             card = build_streaming_card_v2(
+                config=config,
                 show_tool_use=need_tool_panel,
-                show_reasoning=session.reasoning_timeline,
+                show_reasoning=show_reasoning,
                 show_streaming_element=False,
-                header_enabled=self._cfg.header_enabled,
-                text_size=self._cfg.body_text_size,
-                width_mode=self._cfg.width_mode,
+                header_enabled=config.header_enabled,
+                text_size=config.body_text_size,
+                width_mode=config.width_mode,
                 notice=notice_text,
-                process_expanded=self._cfg.process_expanded,
+                process_expanded=config.process_expanded,
             )
             new_card_id = await self._client.cardkit_create(card)
             if session.synthetic:
@@ -1227,6 +1333,12 @@ class StreamingController:
             session.segment_state.bind_notice_element(
                 NOTICE_ELEMENT_ID if notice_text else None, notice_text
             )
+        session.pending_render_config = config
+        session.pending_reasoning_structure = (show_reasoning, panel_limit)
+        session.pending_process_panels = {
+            el["element_id"] for el in body_content_elements(card)
+            if el.get("tag") == "collapsible_panel"
+        }
         return new_card_id, new_msg_id
 
     async def _do_split_card(
@@ -1237,6 +1349,8 @@ class StreamingController:
         new_el_ids: set[str],
         new_el_estimates: dict[str, int],
         updated_tool_segs: list[Segment],
+        *,
+        display_options: tuple[bool, bool] | None = None,
     ) -> bool:
         """拆卡：先 flush pending actions，封旧卡，创建新卡。返回 False 表示失败需中断 flush."""
         assert self._client is not None
@@ -1255,12 +1369,12 @@ class StreamingController:
         seal_segments = [s for s in segments[seal_start_idx:split_idx] if s.created]
 
         # create → seal → set_card（顺序与原实现一致）
-        new_card = await self._create_streaming_card(session)
+        new_card = await self._create_streaming_card(session, display_options=display_options)
         if new_card is None:
             session.split_disabled = True  # 降级：继续写当前卡
             return True
 
-        await self._seal_current_card(session, seal_segments)
+        await self._seal_current_card(session, seal_segments, display_options=display_options)
 
         new_card_id, new_msg_id = new_card
         session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
@@ -1326,6 +1440,7 @@ class StreamingController:
             # 且 CardKit sequence 要求单调递增，不能用新卡的计数）。
             old_card_id = session.card_id
             old_seq = session.sequence
+            old_config = self._card_config(session)
             new_card_id, new_msg_id = new_card
             session.set_card(card_id=new_card_id, card_msg_id=new_msg_id)
             session.sequence = 1  # 新卡从 1 重新计数
@@ -1335,13 +1450,14 @@ class StreamingController:
                 session.active_segments(),
                 card_id=old_card_id,
                 sequence=old_seq,
+                config=old_config,
             )
 
             # Retain full-turn counters while starting a fresh detail range.
             session.tool_elapsed_base_ms = session.total_tool_elapsed_ms
             session.process_count_base = session.process_counts
-            session.segment_state = SegmentState(max_reasoning_panels=self._cfg.max_reasoning_panels)
-            self._configure_reasoning_timeline(session)
+            panel_limit = session.segment_state.max_reasoning_panels if session.segment_state else 3
+            session.segment_state = SegmentState(max_reasoning_panels=panel_limit)
             session.split_index = 0
             session.element_count = self._skeleton_element_count(session)  # loading(+过程外框)
             # 新卡同样带着最新一条提示：记账与元素登记一起迁到新段状态（#issue 原地接管）
@@ -1386,9 +1502,9 @@ class StreamingController:
 
     def _complete_header_enabled(self, session: "CardSession", all_tool_steps: list) -> bool:
         """完成态卡片是否显示顶部 header. 快回复(耗时 < header_min_duration 且无工具调用)时隐藏."""
-        if not self._cfg.header_enabled:
+        if not self._card_config(session).header_enabled:
             return False
-        thresh = self._cfg.header_min_duration
+        thresh = self._card_config(session).header_min_duration
         if thresh > 0 and not all_tool_steps:
             duration = session.footer.get("duration") if isinstance(session.footer, dict) else None
             try:
@@ -1432,26 +1548,27 @@ class StreamingController:
         # 进行中提示落底部（footer 之前）。记账仍按总条数。
         top_notices, progress_notices = _split_notice_slots(session)
         card = build_complete_card(
+            config=self._card_config(session),
             segments=active_segments,
             all_tool_steps=all_tool_steps,
             footer_data=session.footer,
             is_error=is_error,
             is_aborted=is_aborted,
-            footer_fields=self._cfg.footer_fields,
-            footer_show_label=self._cfg.footer_show_label,
-            footer_enabled=self._cfg.footer_enabled,
-            footer_text_size=self._cfg.footer_text_size,
+            footer_fields=self._card_config(session).footer_fields,
+            footer_show_label=self._card_config(session).footer_show_label,
+            footer_enabled=self._card_config(session).footer_enabled,
+            footer_text_size=self._card_config(session).footer_text_size,
             panel_fields=self._cfg.panel_fields,
-            panel_expanded=self._cfg.panel_expanded,
+            panel_expanded=self._card_config(session).panel_expanded,
             panel_text_size=self._cfg.panel_text_size,
             header_enabled=self._complete_header_enabled(session, all_tool_steps),
-            body_text_size=self._cfg.body_text_size,
+            body_text_size=self._card_config(session).body_text_size,
             show_tool_use=self._cfg.show_tool_use,
             show_reasoning=self._cfg.show_reasoning,
             reasoning_count=session.process_counts[0],
             tool_count=session.process_counts[1],
             total_tool_elapsed_ms=session.total_tool_elapsed_ms,
-            width_mode=self._cfg.width_mode,
+            width_mode=self._card_config(session).width_mode,
             notices=top_notices,
             progress_notices=progress_notices,
         )
@@ -1564,7 +1681,7 @@ class StreamingController:
                 session.sequence += 2
                 await self._client.cardkit_update(
                     session.card_id,
-                    build_overflow_fallback_card(),
+                    build_overflow_fallback_card(config=self._card_config(session)),
                     sequence=session.sequence,
                 )
             except Exception:
@@ -1581,7 +1698,9 @@ class StreamingController:
     ) -> None:
         await self._ensure_init()
         assert self._client is not None
-        card = build_cron_card(_clean_delivered_text(content), task_name=task_name, run_time=run_time)
+        card = build_cron_card(
+            _clean_delivered_text(content), task_name=task_name, run_time=run_time, config=self._snapshot_config(),
+        )
         await self._client.send_card_to_chat(chat_id, card)
 
     async def _do_background_deliver(
@@ -1594,7 +1713,8 @@ class StreamingController:
     ) -> None:
         await self._ensure_init()
         assert self._client is not None
-        card = build_background_card(preview, _clean_delivered_text(content))
+        card = build_background_card("", _clean_delivered_text(content), config=self._snapshot_config(),
+                                     has_reference=bool(reply_to_message_id))
         await self._client.send_card_to_chat(
             chat_id,
             card,

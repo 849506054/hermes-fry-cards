@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 import asyncio
 import copy
 import logging
@@ -32,6 +34,7 @@ from hermes_fry_cards.streaming.session import CardSession, SessionState
 
 
 def _enable(ctrl: StreamCardController) -> None:
+    ctrl._cfg._reload = lambda: ctrl._cfg._raw
     ctrl._cfg._raw = {
         "streaming": {"enabled": True},
         "feishu": {"app_id": "app", "app_secret": "secret"},
@@ -1244,15 +1247,18 @@ class TestAwaitedCompletion:
     @pytest.mark.asyncio
     async def test_completion_notice_send_failure_is_isolated(self) -> None:
         ctrl = _setup_ctrl()
-        ctrl._client.send_text_to_chat = AsyncMock(side_effect=RuntimeError("send failed"))
+        ctrl._client.send_card_to_chat = AsyncMock(side_effect=RuntimeError("send failed"))
         session = CardSession("msg_notice_send_fail", "chat", asyncio.get_running_loop())
         session.card_msg_id = "card_msg_notice_send_fail"
 
         await ctrl._send_completion_notice(session, "回答结束 · 出错")
 
-        ctrl._client.send_text_to_chat.assert_awaited_once_with(
-            "chat", "回答结束 · 出错", reply_to_message_id="card_msg_notice_send_fail"
-        )
+        ctrl._client.send_card_to_chat.assert_awaited_once()
+        args = ctrl._client.send_card_to_chat.call_args
+        assert args.args[0] == "chat"
+        assert args.kwargs["reply_to_message_id"] == "card_msg_notice_send_fail"
+        elements = args.args[1]["body"]["elements"][0]["columns"][0]["elements"]
+        assert elements[0]["content"] == "回答结束 · 出错"
 
     @pytest.mark.asyncio
     async def test_completion_notice_not_sent_when_card_finish_fails(self) -> None:
@@ -1793,7 +1799,7 @@ class TestDoFlush:
 
         assert await ctrl._do_split_card(session, 5, [], set(), {}, []) is True
 
-        contents = [element["content"] for element in sealed_cards[0]["body"]["elements"]]
+        contents = [element["content"] for element in body_content_elements(sealed_cards[0])]
         assert contents == ["This turn continues in the next card."]
         assert "page content" not in str(sealed_cards[0])
         assert sealed_cards[0]["config"]["width_mode"] == "compact"
@@ -2484,7 +2490,7 @@ class TestCronDeliver:
     )
     def test_returns_false_without_deliverable_content(self, enabled: bool, content: str) -> None:
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.enabled = enabled
         assert ctrl.on_cron_deliver(chat_id="c1", content=content, loop=MagicMock()) is False
 
@@ -2492,7 +2498,7 @@ class TestCronDeliver:
         import threading
 
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
@@ -2510,7 +2516,7 @@ class TestCronDeliver:
             assert args[0] == "c1"
             card = args[1]
             assert card["schema"] == "2.0"
-            assert "hello" in card["body"]["elements"][0]["content"]
+            assert "hello" in body_content_elements(card)[0]["content"]
         finally:
             loop.call_soon_threadsafe(loop.stop)
 
@@ -2518,7 +2524,7 @@ class TestCronDeliver:
         import threading
 
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
@@ -2534,7 +2540,7 @@ class TestCronDeliver:
             )
             assert result is True
             args = mock_client.send_card_to_chat.call_args[0]
-            body = args[1]["body"]["elements"][0]["content"]
+            body = body_content_elements(args[1])[0]["content"]
             assert "think" not in body
             assert "hello" in body
         finally:
@@ -2544,7 +2550,7 @@ class TestCronDeliver:
         import threading
 
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
@@ -2561,14 +2567,14 @@ class TestCronDeliver:
             )
             assert result is True
             args = mock_client.send_card_to_chat.call_args[0]
-            body = args[1]["body"]["elements"][0]["content"]
+            body = body_content_elements(args[1])[0]["content"]
             assert "pure reasoning" in body
         finally:
             loop.call_soon_threadsafe(loop.stop)
 
     def test_sends_card_without_gateway_loop(self) -> None:
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.enabled = True
         ctrl._cfg.feishu_app_id = "app_id"
         ctrl._cfg.feishu_app_secret = "app_secret"
@@ -2586,7 +2592,7 @@ class TestCronDeliver:
 
     def test_initializes_once_across_standalone_workers(self) -> None:
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.feishu_app_id = "app_id"
         ctrl._cfg.feishu_app_secret = "app_secret"
         ctrl._cfg.env_app_id = ""
@@ -2624,7 +2630,7 @@ class TestCronDeliver:
 
     def test_returns_false_on_standalone_send_failure(self) -> None:
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.enabled = True
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.side_effect = RuntimeError("API error")
@@ -2635,7 +2641,7 @@ class TestCronDeliver:
 
     def test_falls_back_when_gateway_loop_is_not_running(self) -> None:
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.enabled = True
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.return_value = "msg_123"
@@ -2654,7 +2660,7 @@ class TestCronDeliver:
         import threading
 
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
+        ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
@@ -2675,8 +2681,7 @@ class TestBackgroundDeliver:
     @pytest.mark.asyncio
     async def test_sends_cleaned_text_card(self) -> None:
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
-        ctrl._cfg.enabled = True
+        _enable(ctrl)
 
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.return_value = "msg_123"
@@ -2697,14 +2702,13 @@ class TestBackgroundDeliver:
         assert args[0] == "c1"
         assert kwargs["reply_to_message_id"] == "om_1"
         card = args[1]
-        body = card["body"]["elements"][0]["content"]
+        body = body_content_elements(card)[0]["content"]
         assert "Here\n\nDone" in body
 
     @pytest.mark.asyncio
     async def test_strips_reasoning_tags_from_content(self) -> None:
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
-        ctrl._cfg.enabled = True
+        _enable(ctrl)
 
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.return_value = "msg_123"
@@ -2719,15 +2723,14 @@ class TestBackgroundDeliver:
 
         assert result is True
         args, _ = mock_client.send_card_to_chat.call_args
-        body = args[1]["body"]["elements"][0]["content"]
+        body = body_content_elements(args[1])[0]["content"]
         assert "think" not in body
         assert "Here" in body
 
     @pytest.mark.asyncio
     async def test_returns_false_on_empty_cleaned_text(self) -> None:
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
-        ctrl._cfg.enabled = True
+        _enable(ctrl)
 
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.return_value = "msg_123"
@@ -2750,8 +2753,7 @@ class TestBackgroundDeliver:
     ) -> None:
         """completion/后台通知回复已失效消息：单行 warning，不打堆栈，仍返回 False."""
         ctrl = StreamCardController()
-        ctrl._cfg = MagicMock()
-        ctrl._cfg.enabled = True
+        _enable(ctrl)
         ctrl._client = AsyncMock()
         ctrl._initialized = True
         ctrl._do_background_deliver = AsyncMock(
@@ -3078,6 +3080,7 @@ def _mock_cfg(header_enabled: bool = True, min_duration: float = 0.0) -> MagicMo
 
 def _session_with_duration(seconds: float | None) -> CardSession:
     sess = CardSession.__new__(CardSession)
+    sess.render_config = None
     sess.footer = {"duration": seconds} if seconds is not None else {}
     return sess
 
@@ -3150,8 +3153,8 @@ class TestOverflowFallbackReplace:
         # 3 次全量重建失败 + 第 4 次降级替换成功
         assert len(attempts) == 4
         fallback = attempts[-1]
-        assert fallback["header"]["template"] == "red"
-        assert "exceeded the Feishu card element limit" in fallback["body"]["elements"][0]["content"]
+        assert set(fallback["header"]) == {"title"}
+        assert "exceeded the Feishu card element limit" in body_content_elements(fallback)[0]["content"]
 
     @pytest.mark.asyncio
     async def test_fallback_update_sequence_skips_loading_delete(self) -> None:
@@ -3223,12 +3226,12 @@ class TestCompletePanelStripRetry:
         assert len(attempts) == 2
         # 首发带统一面板，重发不带（正文与状态保留）
         assert any(
-            el.get("element_id") == "unified_panel" for el in attempts[0]["body"]["elements"]
+            el.get("element_id") == "unified_panel" for el in body_content_elements(attempts[0])
         )
         assert all(
-            el.get("element_id") != "unified_panel" for el in attempts[1]["body"]["elements"]
+            el.get("element_id") != "unified_panel" for el in body_content_elements(attempts[1])
         )
-        assert attempts[1]["body"]["elements"]  # 非空：正文/状态仍在
+        assert body_content_elements(attempts[1])  # 非空：正文/状态仍在
 
     @pytest.mark.asyncio
     async def test_non_300305_failure_keeps_panel(self) -> None:
@@ -3258,7 +3261,7 @@ class TestCompletePanelStripRetry:
         assert len(attempts) == 2
         # 非 300305 失败不剥离面板
         assert any(
-            el.get("element_id") == "unified_panel" for el in attempts[1]["body"]["elements"]
+            el.get("element_id") == "unified_panel" for el in body_content_elements(attempts[1])
         )
 
     @pytest.mark.asyncio

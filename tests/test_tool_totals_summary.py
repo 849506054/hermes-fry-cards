@@ -1,4 +1,6 @@
 """Final tool totals are available in each display mode."""
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 import asyncio
 from unittest.mock import AsyncMock, patch
 
@@ -20,7 +22,7 @@ def test_final_totals_shared_by_modes(reasoning, tools):
     card = build_complete_card(segments=state.segments, all_tool_steps=[],
                                show_reasoning=reasoning, show_tool_use=tools,
                                reasoning_count=1, tool_count=3, total_tool_elapsed_ms=3500)
-    panel = next(e for e in card["body"]["elements"] if e["tag"] == "collapsible_panel")
+    panel = next(e for e in body_content_elements(card) if e["tag"] == "collapsible_panel")
     assert "💭1·🔧3" in panel["header"]["title"]["i18n_content"]["zh_cn"]
     totals = [e for e in panel["elements"] if e.get("element_id") == "tool_totals"]
     assert len(totals) == 1

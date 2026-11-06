@@ -1,6 +1,8 @@
 """Compression preserves the turn's card until final delivery is acknowledged."""
 from __future__ import annotations
 
+from hermes_fry_cards.cardkit.builder import body_content_elements
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -41,7 +43,7 @@ async def gateway_complete(ctrl, session, answer, *, already_sent=False):
 
 
 def body_answers(card):
-    return [el["content"] for el in card["body"]["elements"] if el.get("tag") == "markdown"]
+    return [el["content"] for el in body_content_elements(card) if el.get("tag") == "markdown"]
 
 
 @pytest.mark.asyncio
