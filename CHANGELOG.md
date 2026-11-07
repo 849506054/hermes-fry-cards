@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Card styles use a configuration snapshot throughout creation, updates, completion and Studio previews.
 - Reply text uses a theme-aware background with one color declaration. The loading cursor sits below that background.
-- Completed process counters are centered, with the expand arrow hidden.
+- Completed process counters hide the expand arrow.
 - Standalone system notices have a title when they have no reply reference.
 
 ### Fixed
