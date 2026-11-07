@@ -9,7 +9,7 @@ from typing import Any
 from ..config import Config
 from ..streaming.segments import Segment, SegmentType
 from ..streaming.tooluse import ToolDisplayStep
-from .i18n import _LOCALES, _T, _content_t, _i18n, _t
+from .i18n import _LOCALES, _T, _content_lang, _content_t, _i18n, _t
 from .markdown import (
     _REASONING_MAX_BYTES,
     _downgrade_tables,
@@ -206,16 +206,18 @@ def _panel_header(
 @styled_builder
 def _process_title(
     reasoning_count: int = 0, tool_count: int = 0, *, element_id: str | None = None,
-    config: Config | None = None,
+    tool_mode: bool = False, config: Config | None = None,
 ) -> dict:
-    en, zh = (
-        _T["reasoning_count_streaming"][locale].format(reasoning_count)
-        + " · " + _T["tool_count_streaming"][locale].format(tool_count)
-        for locale in (0, 1)
-    )
+    def counts(locale: int) -> str:
+        reasoning = _T["reasoning_count_streaming"][locale].format(reasoning_count)
+        tools = _T["tool_count_streaming"][locale].format(tool_count)
+        if tool_mode:
+            return tools + " · " + reasoning.removeprefix("💭 ")
+        return reasoning + " · " + tools.removeprefix("🔧 ")
+
+    en, zh = (counts(locale) for locale in (0, 1))
     if element_id:
-        content = (_content_t("reasoning_count_streaming").format(reasoning_count)
-                   + " · " + _content_t("tool_count_streaming").format(tool_count))
+        content = en if _content_lang() == "en" else zh
         return text_element({"tag": "plain_text", "element_id": element_id, "content": content,
                 "text_color": "grey", "text_size": "notation"}, "process_title")
     return text_element({"tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh),
@@ -1048,7 +1050,7 @@ def _context_progress_with_text(used: int, total: int, width: int = 8) -> str:
 @styled_builder
 def build_streaming_tool_use_pending_panel(*, expanded: bool = True, config: Config | None = None) -> dict[str, Any]:
     panel = _collapsible_panel(
-        expanded=expanded, title_el=_process_title(element_id=f"{TOOL_PANEL_ELEMENT_ID}_count"),
+        expanded=expanded, title_el=_process_title(element_id=f"{TOOL_PANEL_ELEMENT_ID}_count", tool_mode=True),
         elements=[],
     )
     panel["element_id"] = TOOL_PANEL_ELEMENT_ID
@@ -1105,7 +1107,7 @@ def build_streaming_card_v2(
         if tool_steps:
             panel = _build_tool_panel(tool_steps, elapsed_ms, running=True, expanded=False, config=config)
             panel["header"] = _panel_header(_process_title(
-                0, len(tool_steps), element_id=f"{TOOL_PANEL_ELEMENT_ID}_count",
+                0, len(tool_steps), element_id=f"{TOOL_PANEL_ELEMENT_ID}_count", tool_mode=True,
             ))
             elements.append(panel)
         else:

@@ -153,6 +153,8 @@ class CardSession:
         self.process_header_counts = (0, 0)
         self.card_id = card_id
         self.card_msg_id = card_msg_id
+        # 300309 是每张卡各自的流式会话状态：换到新卡后重新从流式写入开始。
+        self.stream_closed = False
         if self.pending_render_config is not None:
             self.render_config = self.pending_render_config
             self.pending_render_config = None

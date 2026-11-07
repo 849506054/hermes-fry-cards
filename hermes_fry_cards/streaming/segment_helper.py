@@ -233,7 +233,9 @@ def build_process_panel_header_action(
     return {
         "action": "partial_update_element",
         "params": {"element_id": element_id,
-                   "partial_element": {"header": _panel_header(_process_title(rounds, tools))}},
+                   "partial_element": {"header": _panel_header(_process_title(
+                       rounds, tools, tool_mode=element_id != PROCESS_PANEL_ELEMENT_ID,
+                   ))}},
     }
 
 

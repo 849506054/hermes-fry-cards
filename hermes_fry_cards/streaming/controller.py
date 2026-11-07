@@ -728,7 +728,10 @@ class StreamingController:
             ):
                 if not visible:
                     continue
-                title = _process_title(*counts, element_id=f"{panel_id}_count", config=self._card_config(session))
+                title = _process_title(
+                    *counts, element_id=f"{panel_id}_count",
+                    tool_mode=panel_id == TOOL_PANEL_ELEMENT_ID, config=self._card_config(session),
+                )
                 session.sequence += 1
                 try:
                     await self._stream_or_update(

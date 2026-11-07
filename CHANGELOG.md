@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.15] - 2026-11-07
+
+### Changed
+
+- Streaming process counters lead with the panel’s own count and icon, followed by the other count.
+
+### Fixed
+
+- A card replacement after the server closes a streaming session resumes streaming writes on the new card.
+
 ## [0.6.2.14] - 2026-11-07
 
 ### Changed
