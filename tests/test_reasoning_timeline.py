@@ -56,18 +56,18 @@ def test_streaming_outer_title_starts_with_both_zero_counts():
     card = build_streaming_card_v2(show_reasoning=True, show_tool_use=False)
     panel = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
     assert panel["header"]["title"]["element_id"] == f"{PROCESS_PANEL_ELEMENT_ID}_count"
-    assert panel["header"]["title"]["content"] == "💭 已思考 0 段 · 工具执行中 0 步"
+    assert panel["header"]["title"]["content"] == "💭 已思考 0 轮 · 工具执行中 0 步"
 
 
 def test_process_panel_header_tracks_round_count():
-    """标题形态对齐工具面板：「工具执行中 · 4 步」→「💭 思考中 · 3 段」。"""
+    """标题形态对齐工具面板：「工具执行中 · 4 步」→「💭 思考中 · 3 轮」。"""
     action = build_process_panel_header_action(3)
     assert action["action"] == "partial_update_element"
     assert action["params"]["element_id"] == PROCESS_PANEL_ELEMENT_ID
     header = action["params"]["partial_element"]["header"]
     title = header["title"]
     assert title["content"] == "💭 Thinking 3 stages · Tools 0 steps"
-    assert title["i18n_content"]["zh_cn"] == "💭 已思考 3 段 · 工具执行中 0 步"
+    assert title["i18n_content"]["zh_cn"] == "💭 已思考 3 轮 · 工具执行中 0 步"
     # 飞书按整块替换 header：少给 icon 展开箭头就没了（与工具面板同一套结构）
     assert header["icon"]["token"] == "down-small-ccm_outlined"
     assert header["icon_position"] == "right"
@@ -101,7 +101,7 @@ def test_reasoning_survives_hidden_tools_and_keeps_chronological_order(duration)
     assert len(outer["elements"]) == 2
     assert outer["elements"][-1]["element_id"] == "tool_totals"
     assert outer["elements"][0]["tag"] == "markdown"
-    assert "思考了 4 段" in outer["elements"][0]["content"]
+    assert "思考了 4 轮" in outer["elements"][0]["content"]
     assert "验证用阶段" not in json.dumps(outer, ensure_ascii=False)
     assert not any(n.get("element_id", "").startswith("tool_panel") for n in nodes(card))
     assert "验证用最终正文" in json.dumps(card, ensure_ascii=False)
@@ -133,7 +133,7 @@ def test_sealed_summary_counts_all_rounds(tmp_path):
     outer = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
     assert len(outer["elements"]) == 2
     assert outer["elements"][-1]["element_id"] == "tool_totals"
-    assert "思考了 57 段" in outer["elements"][0]["content"]
+    assert "思考了 57 轮" in outer["elements"][0]["content"]
 
 
 def test_many_rounds_keep_distinct_timeline_segments():

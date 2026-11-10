@@ -24,8 +24,8 @@ def panels(card):
 
 def running_counts(reasoning, tools, *, tool_mode=False):
     if tool_mode:
-        return f'🔧 工具执行中 {tools} 步 · 已思考 {reasoning} 段'
-    return f'💭 已思考 {reasoning} 段 · 工具执行中 {tools} 步'
+        return f'🔧 工具执行中 {tools} 步 · 已思考 {reasoning} 轮'
+    return f'💭 已思考 {reasoning} 轮 · 工具执行中 {tools} 步'
 
 
 def assert_header(header, reasoning, tools, *, streaming=True, tool_mode=False):

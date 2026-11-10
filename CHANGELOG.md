@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.16] - 2026-11-10
+
+### Changed
+
+- 中文思考计数按轮标注：`思考了 N 轮`、`已思考 N 轮`；阶段编号继续用「段」。
+
 ## [0.6.2.15] - 2026-11-07
 
 ### Changed
