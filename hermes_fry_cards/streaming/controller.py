@@ -175,7 +175,7 @@ class StreamingController:
         if reasoning:
             segment_state.on_reasoning_delta(reasoning, visible=self._cfg.show_reasoning)
         if answer:
-            segment_state.on_answer_delta(answer)
+            segment_state.on_interim_answer(answer)
         if not reasoning and not answer:
             return False
         self._schedule_flush(session)
@@ -1222,7 +1222,10 @@ class StreamingController:
         old_card_id = card_id or session.card_id
         if not old_card_id:
             return
-        # 中途换卡只封存过程；完整回答由最后一张卡承载。
+        # Intermediate cards carry their own visible process history.
+        segment_state = session.segment_state
+        source_segments = seal_segments
+        process_messages = segment_state.seal_process_messages(source_segments) if segment_state is not None else []
         seal_segments = [s for s in seal_segments if s.type != SegmentType.ANSWER]
         all_steps = session.tool_use.build_display_steps()
         config = config or self._card_config(session)
@@ -1232,6 +1235,7 @@ class StreamingController:
         seal_card = build_complete_card(
             config=config,
             segments=seal_segments,
+            process_messages=process_messages,
             all_tool_steps=all_steps,
             is_continuation=True,
             footer_data=session.footer,
@@ -1255,6 +1259,8 @@ class StreamingController:
             await self._client.cardkit_close_streaming(old_card_id, sequence=seq)
             seq += 1
             await self._client.cardkit_update(old_card_id, seal_card, sequence=seq)
+            if segment_state is not None:
+                segment_state.seal_process_messages(source_segments, consume=True)
         except Exception:
             _logger.warning(
                 "CardKit seal failed for old card %s, trying loading-icon cleanup",
@@ -1553,6 +1559,7 @@ class StreamingController:
         card = build_complete_card(
             config=self._card_config(session),
             segments=active_segments,
+            process_messages=segment_state.completed_process_texts() if segment_state is not None else [],
             all_tool_steps=all_tool_steps,
             footer_data=session.footer,
             is_error=is_error,
@@ -1602,6 +1609,13 @@ class StreamingController:
                         sequence=session.sequence,
                     )
                 session.state = SessionState.COMPLETED
+                _logger.info(
+                    "completed_process_details: msg=%s messages=%d chars=%d panel_dropped=%s",
+                    session.message_id[:12],
+                    len(segment_state.completed_process_texts()) if segment_state is not None else 0,
+                    sum(map(len, segment_state.completed_process_texts())) if segment_state is not None else 0,
+                    panel_dropped,
+                )
                 return True
             except FeishuAPIError as e:
                 _logger.warning(

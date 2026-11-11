@@ -1,13 +1,12 @@
 """Completed cards render the authoritative answer independently of preview chunks."""
 from __future__ import annotations
 
-from hermes_fry_cards.cardkit.builder import body_content_elements
-
 import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
 
+from hermes_fry_cards.cardkit.builder import body_content_elements
 from hermes_fry_cards.controller import StreamCardController
 from hermes_fry_cards.streaming.segments import SegmentState, SegmentType
 from hermes_fry_cards.streaming.session import CardSession, SessionState
@@ -131,12 +130,15 @@ async def test_final_renders_on_active_card_after_split(active_preview):
 @pytest.mark.asyncio
 async def test_rollover_card_keeps_process_and_continuation_status():
     ctrl, session = make_session()
+    session.segment_state.on_interim_answer("本卡中途消息")
     session.segment_state.on_answer_delta("应当消失的预览")
     session.segment_state.on_reasoning_delta("思考内容" * 50)
     session.footer["duration"] = 60
     await ctrl._seal_current_card(session, session.active_segments())
     card = ctrl._client.cardkit_update.call_args.args[1]
+    assert "应当消失的预览" not in body_texts(card)
     assert "应当消失的预览" not in str(card)
+    assert "本卡中途消息" in str(card)
     assert any("continues" in t for t in body_texts(card))
     assert any(e["tag"] == "collapsible_panel" for e in body_content_elements(card))
 

@@ -115,7 +115,7 @@ async def test_stream_and_final_separate_count_from_detail(reasoning, tools):
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
-    assert_header(panels(final)[0]['header'], 2, 1, streaming=False)
+    assert not panels(final)  # 本回合没有中途消息，封卡不留空详情框
     if not reasoning:
         assert 'THOUGHT_DETAILS' not in json.dumps(final)
     if not tools:
@@ -165,7 +165,7 @@ async def test_clarify_rollover_keeps_full_turn_counts():
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
-    assert_header(panels(final)[0]['header'], 3, 3, streaming=False)
+    assert not panels(final)
 
 
 @pytest.mark.asyncio

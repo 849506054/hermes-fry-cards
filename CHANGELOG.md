@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.32] - 2026-11-11
+
+### Added
+
+- 封卡详情框保留更新期显示在正文区、随后被定稿覆盖的过渡文字：工具调用打断正文流时登记，并随重定向带到新卡。
+- `streaming.body.deep_light_color` 与 `deep_dark_color`：比正文深一档的颜色，可配置。
+
+### Changed
+
+- 封卡详情框只放中途消息，按到达顺序排列；框内没有中途消息时落一句占位。
+- 详情框背景、框头与边框取同一档深色；`streaming.process.background_color` / `completed_color` / `border_radius` 可热覆盖。
+- 每个封卡回合都建详情框，存续与框内内容、计数和渲染开关无关。
+
 ## [0.6.2.16] - 2026-11-10
 
 ### Changed

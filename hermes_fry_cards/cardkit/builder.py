@@ -41,6 +41,7 @@ PROCESS_ANCHOR_ELEMENT_ID = "process_anchor"
 BODY_SURFACE_ELEMENT_ID = "fry_body_surface"
 BODY_SURFACE_ELEMENT_COUNT = 2
 BODY_SURFACE_COLOR = "cus-0"
+BODY_SURFACE_DEEP_COLOR = "cus-1"
 LOADING_ELEMENT_ID = "loading_icon"
 LOADING_CURSOR_ELEMENT_ID = "loading_cursor"
 _LOADING_ELEMENT_ID = LOADING_ELEMENT_ID  # 兼容旧私有引用
@@ -98,10 +99,22 @@ def _body_style(config: Config | None = None) -> dict:
     def rgba(value: str) -> str:
         channels = (int(value[i:i + 2], 16) for i in (1, 3, 5))
         return "rgba(" + ",".join(map(str, channels)) + ",1)"
-    style = {"color": {BODY_SURFACE_COLOR: {
-        "light_mode": rgba(cfg.body_light_color),
-        "dark_mode": rgba(cfg.body_dark_color),
-    }}}
+    def deeper_hex(value: str, factor: float) -> str:
+        """One shade below the given colour, kept inside the 0-255 range."""
+        channels = (min(255, round(int(value[i:i + 2], 16) * factor)) for i in (1, 3, 5))
+        return "#" + "".join(f"{channel:02x}" for channel in channels)
+    style = {"color": {
+        BODY_SURFACE_COLOR: {
+            "light_mode": rgba(cfg.body_light_color),
+            "dark_mode": rgba(cfg.body_dark_color),
+        },
+        BODY_SURFACE_DEEP_COLOR: {
+            "light_mode": rgba(option("body", "deep_light_color")
+                               or deeper_hex(cfg.body_light_color, 0.94)),
+            "dark_mode": rgba(option("body", "deep_dark_color")
+                              or deeper_hex(cfg.body_dark_color, 0.75)),
+        },
+    }}
     text_sizes = cfg.style_options("text_sizes")
     if isinstance(text_sizes, dict) and text_sizes:
         style["text_size"] = text_sizes
@@ -673,7 +686,7 @@ def _build_process_summary(
     text: str, *, zh_text: str | None = None, element_id: str | None = None,
     config: Config | None = None,
 ) -> dict[str, Any]:
-    """Shared typography for completed reasoning and tool summaries."""
+    """Build a styled summary element for the component style API."""
     content = f"<font color='grey'>{text}</font>"
     element: dict[str, Any] = {"tag": "markdown", "content": content, "text_size": "notation"}
     if zh_text is not None:
@@ -681,18 +694,6 @@ def _build_process_summary(
     if element_id:
         element["element_id"] = element_id
     return text_element(element, "summary")
-
-
-@styled_builder
-def _build_reasoning_summary(rounds: list[dict], *, config: Config | None = None) -> list[dict[str, Any]]:
-    """封卡后的思考摘要：只报轮数，逐步耗时与正文都不进卡。"""
-    if not rounds:
-        return []
-    total_ms = sum(float(rnd.get("elapsed_ms") or 0) for rnd in rounds)
-    label = _content_t("thought_rounds").format(len(rounds))
-    if total_ms > 0:
-        label = f"{label} · {_content_t('elapsed').format(_format_elapsed(total_ms))}"
-    return [_build_process_summary(f"💭 {label}")]
 
 
 @styled_builder
@@ -1153,6 +1154,7 @@ def build_complete_card(
     *,
     segments: list[Segment],
     all_tool_steps: list[ToolDisplayStep],
+    process_messages: list[str] | None = None,
     footer_data: dict | None = None,
     is_error: bool = False,
     is_aborted: bool = False,
@@ -1238,112 +1240,65 @@ def build_complete_card(
     if total_tool_elapsed_ms is None:
         total_tool_elapsed_ms = sum(max(0, step.get("elapsed_ms", 0) or 0) for step in all_tool_steps)
 
-    # 推理+工具合并成底部一个统一面板（在答案之后、footer 之前）
-    # 短回复或无工具调用时不展示统一面板（避免冗余 header）
-    _panel_duration_ms = 0
-    if footer_data:
-        _d = footer_data.get("duration")
-        if isinstance(_d, (int, float)) and _d > 0:
-            _panel_duration_ms = _d * 1000
-    _min_duration_ms = 0
-    try:
-        _min_duration_ms = float(config.unified_panel_min_duration) * 1000
-    except Exception:
-        _min_duration_ms = 5000
-    _show_unified_panel = (show_reasoning or show_tool_use) and (
-        bool(tool_count) or (
-            bool(reasoning_count) and (not show_tool_use or _panel_duration_ms >= _min_duration_ms)
+    # Completed details preserve visible progress text in arrival order.
+    detail_messages = list(process_messages or [])
+    # 框一律出现（用户口径：没说不要框就必须在）；框内只放中途消息，没有则一句占位。
+    if is_error:
+        border_color = "red"
+    elif is_aborted:
+        border_color = "yellow"
+    else:
+        border_color = "green"
+    unified_children: list[dict] = []
+    for message in detail_messages:
+        _append_content_elements(unified_children, message, text_size=body_text_size)
+    if not unified_children:
+        en, zh = _T["no_details"]
+        _append_content_elements(
+            unified_children, en, text_size=body_text_size,
         )
+        unified_children[-1]["i18n_content"] = _i18n(en, zh)
+    # 框头保持原样：字段池、计数与耗时都不动。
+    panel_elapsed_ms = tool_elapsed_ms
+    if not panel_elapsed_ms and footer_data:
+        _p_duration = footer_data.get("duration")
+        if isinstance(_p_duration, (int, float)) and _p_duration > 0:
+            panel_elapsed_ms = _p_duration * 1000
+    header_en, header_zh = _build_panel_header(
+        panel_fields,
+        footer_data or {},
+        reasoning_count=reasoning_count,
+        tool_count=tool_count,
+        panel_elapsed_ms=panel_elapsed_ms,
+        show_context=config.show_context,
+        context_mode=config.context_display_mode,
     )
-    if _show_unified_panel:
-        # 状态边框颜色：完成=绿色, 中断=黄色, 异常=红色
-        if is_error:
-            border_color = "red"
-        elif is_aborted:
-            border_color = "yellow"
-        else:
-            border_color = "green"
-        # 构建统一面板内容：按 timeline 真实顺序交错（💭思考 → 🔧工具组 → 💭思考 …）
-        unified_children: list[dict] = []
-        _reasoning_seq = 0
-        _tool_group_seq = 0
-        for entry in timeline:
-            if entry["kind"] == "reasoning":
-                rnd = entry["round"]
-                if not rnd["text"].strip():
-                    continue
-                # 复用流式阶段 text_el_id，避免与已完成卡片上现有元素重名（Duplicate ID）。
-                # 流式阶段 text_el_id 形如 reasoning_{c}_text，非空；若为空则用带索引后缀的唯一 ID，
-                # 绝不回落到固定 REASONING_TEXT_ELEMENT_ID，防止单轮 reasoning 在 merge 更新下重复。
-                text_el_id = rnd.get("text_el_id") or f"reasoning_text_{_reasoning_seq}"
-                _reasoning_seq += 1
-                if show_tool_use:
-                    unified_children.append(_build_reasoning_panel(
-                        text=rnd["text"], elapsed_ms=rnd["elapsed_ms"],
-                        expanded=panel_expanded, text_element_id=text_el_id,
-                    ))
-                else:
-                    # 封卡后只留一行「思考了 N 段 · 耗时 Xs」，逐步内容与耗时都不进卡。
-                    unified_children.extend(_build_reasoning_summary(reasoning_rounds))
-                    break
-            elif entry["kind"] == "tools":
-                # 每个工具组独立成一个嵌套 🔧 面板（保留 fry 现有工具面板样式），
-                # 交错在思考轮次之间，而非全部堆到末尾。
-                # compact=True（#53）：完成态整卡重建会把面板子元素重复计数，
-                # 每步只留标题行把子元素数压回 1/3，长工具轮次不再撞 300305。
-                _tool_group_seq += 1
-                tool_panel = _build_tool_panel(
-                    entry["steps"],
-                    entry["elapsed_ms"],
-                    expanded=panel_expanded,
-                    element_id=f"tool_panel_{_tool_group_seq}",
-                    compact=True,
-                )
-                unified_children.append(tool_panel)
-        elapsed_label = _format_elapsed(total_tool_elapsed_ms)
-        en_summary = _T["tool_totals_summary"][0].format(tool_count, elapsed_label)
-        zh_summary = _T["tool_totals_summary"][1].format(tool_count, elapsed_label)
-        unified_children.append(_build_process_summary(
-            en_summary, zh_text=zh_summary, element_id="tool_totals",
-        ))
-        # header: 字段化组合（默认 🍟 model · 💭n · 🔧n · context · ⏱️ elapsed），
-        # 与 footer 共用字段池，可经 display.platforms.feishu.panel_fields 自由组合
-        _panel_cfg = config
-        # 优先用 tool_elapsed_ms，否则用 footer_data 的 duration，否则用 session 总耗时
-        panel_elapsed_ms = tool_elapsed_ms
-        if not panel_elapsed_ms and footer_data:
-            _p_duration = footer_data.get("duration")
-            if isinstance(_p_duration, (int, float)) and _p_duration > 0:
-                panel_elapsed_ms = _p_duration * 1000
-        header_en, header_zh = _build_panel_header(
-            panel_fields,
-            footer_data or {},
-            reasoning_count=reasoning_count,
-            tool_count=tool_count,
-            panel_elapsed_ms=panel_elapsed_ms,
-            show_context=_panel_cfg.show_context,
-            context_mode=_panel_cfg.context_display_mode,
-        )
-        unified_panel = {
-            "tag": "collapsible_panel",
-            # 固定 id：封卡撞 300305 时按 id 精确剥离整个面板重发（#53 修法 2）
-            "element_id": UNIFIED_PANEL_ELEMENT_ID,
-            "expanded": panel_expanded,
-            "header": {
-                **_panel_header({
-                    "tag": "plain_text", "content": header_en,
-                    "i18n_content": _i18n(header_en, header_zh),
-                }, position="top", arrow=False),
-                "text_color": option("process_title", "text_color", "grey"),
-                "text_size": panel_text_size,
-            },
-            "border": {"color": border_color, "corner_radius": "5px"},
-            "elements": unified_children,
-        }
-        unified_panel = panel_element(
-            unified_panel, completed=True, status="error" if is_error else "stopped" if is_aborted else "completed",
-        )
-        elements.append(unified_panel)
+    unified_panel = {
+        "tag": "collapsible_panel",
+        # 固定 id：封卡撞 300305 时按 id 精确剥离整个面板重发（#53 修法 2）
+        "element_id": UNIFIED_PANEL_ELEMENT_ID,
+        "expanded": panel_expanded,
+        # 折叠与展开共用比正文深一号的底色：header 未单独指定时继承它；
+        # 边框同色，出错/中止仍保留红黄。
+        "background_color": BODY_SURFACE_DEEP_COLOR,
+        "header": {
+            **_panel_header({
+                "tag": "plain_text", "content": header_en,
+                "i18n_content": _i18n(header_en, header_zh),
+            }, position="top", arrow=False),
+            "text_color": option("process_title", "text_color", "grey"),
+            "text_size": panel_text_size,
+        },
+        "border": {
+            "color": border_color if is_error or is_aborted else BODY_SURFACE_DEEP_COLOR,
+            "corner_radius": "5px",
+        },
+        "elements": unified_children,
+    }
+    unified_panel = panel_element(
+        unified_panel, completed=True, status="error" if is_error else "stopped" if is_aborted else "completed",
+    )
+    elements.append(unified_panel)
 
     if not has_answer:
         # 有思考段却没有正文 = 回合在正文写出前被截断（服务重启、上游断流），

@@ -1,12 +1,10 @@
 """Final tool totals are available in each display mode."""
-from hermes_fry_cards.cardkit.builder import body_content_elements
-
 import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from hermes_fry_cards.cardkit.builder import _build_reasoning_summary, build_complete_card
+from hermes_fry_cards.cardkit.builder import body_content_elements, build_complete_card
 from hermes_fry_cards.controller import StreamCardController
 from hermes_fry_cards.streaming.segments import SegmentState
 from hermes_fry_cards.streaming.session import CardSession, SessionState
@@ -20,20 +18,16 @@ def test_final_totals_shared_by_modes(reasoning, tools):
     state.on_tool_event(1)
     state.on_completion_answer("FINAL")
     card = build_complete_card(segments=state.segments, all_tool_steps=[],
+                               process_messages=["Visible progress"],
                                show_reasoning=reasoning, show_tool_use=tools,
                                reasoning_count=1, tool_count=3, total_tool_elapsed_ms=3500)
     panel = next(e for e in body_content_elements(card) if e["tag"] == "collapsible_panel")
     assert "💭1·🔧3" in panel["header"]["title"]["i18n_content"]["zh_cn"]
-    totals = [e for e in panel["elements"] if e.get("element_id") == "tool_totals"]
-    assert len(totals) == 1
-    assert totals[0]["i18n_content"]["zh_cn"] == "<font color='grey'>🔧 工具执行 3 步 · 耗时 3.5s</font>"
-    reference = _build_reasoning_summary([{"elapsed_ms": 1600}])[0]
-    assert totals[0]["tag"] == reference["tag"] == "markdown"
-    assert totals[0]["text_size"] == reference["text_size"] == "notation"
-    for text in [totals[0]["content"], *totals[0]["i18n_content"].values(), reference["content"]]:
-        assert text.startswith("<font color='grey'>") and text.endswith("</font>")
+    assert [e["content"] for e in panel["elements"]] == ["Visible progress"]
+    assert all(e["tag"] == "markdown" for e in panel["elements"])
     assert panel["expanded"] is False
     assert panel["header"]["position"] == "top"
+    assert "tool_totals" not in str(card)
 
 
 def test_tool_duration_sums_execution_including_unfinished_call():

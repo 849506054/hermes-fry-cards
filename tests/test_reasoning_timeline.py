@@ -95,14 +95,7 @@ def test_reasoning_survives_hidden_tools_and_keeps_chronological_order(duration)
         segments=state.segments, all_tool_steps=[], show_tool_use=False,
         footer_data={"duration": duration}, footer_enabled=False,
     )
-    outer = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
-    assert outer["expanded"] is False
-    # 封卡保留思考摘要与工具总计两行。
-    assert len(outer["elements"]) == 2
-    assert outer["elements"][-1]["element_id"] == "tool_totals"
-    assert outer["elements"][0]["tag"] == "markdown"
-    assert "思考了 4 轮" in outer["elements"][0]["content"]
-    assert "验证用阶段" not in json.dumps(outer, ensure_ascii=False)
+    assert not any(n.get("element_id") == PROCESS_PANEL_ELEMENT_ID for n in nodes(card))
     assert not any(n.get("element_id", "").startswith("tool_panel") for n in nodes(card))
     assert "验证用最终正文" in json.dumps(card, ensure_ascii=False)
 
@@ -121,7 +114,7 @@ def test_streaming_stage_is_two_siblings_under_one_outer():
     assert sum(n.get("tag") == "collapsible_panel" for n in nodes(card)) == 1
 
 
-def test_sealed_summary_counts_all_rounds(tmp_path):
+def test_sealed_card_keeps_reasoning_out_of_details(tmp_path):
     state = stages(57)
     for seg in state.segments:
         if seg.type == "reasoning":
@@ -130,10 +123,7 @@ def test_sealed_summary_counts_all_rounds(tmp_path):
         segments=state.segments, all_tool_steps=[], show_tool_use=False,
         footer_data={"duration": 10.0}, footer_enabled=False,
     )
-    outer = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
-    assert len(outer["elements"]) == 2
-    assert outer["elements"][-1]["element_id"] == "tool_totals"
-    assert "思考了 57 轮" in outer["elements"][0]["content"]
+    assert not any(n.get("element_id") == PROCESS_PANEL_ELEMENT_ID for n in nodes(card))
 
 
 def test_many_rounds_keep_distinct_timeline_segments():

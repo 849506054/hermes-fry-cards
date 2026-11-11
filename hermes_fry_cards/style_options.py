@@ -46,6 +46,7 @@ STYLE_FIELDS: dict[str, dict[str, str]] = {
     },
     "body": {
         **_TEXT_FIELDS, "light_color": "hex_color", "dark_color": "hex_color",
+        "deep_light_color": "hex_color", "deep_dark_color": "hex_color",
         "body_padding": "padding", "horizontal_spacing": "spacing", "vertical_spacing": "spacing",
         "horizontal_align": "align", "vertical_align": "vertical_align",
         "surface_padding": "padding", "surface_margin": "margin",

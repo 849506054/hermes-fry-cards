@@ -77,12 +77,14 @@ class SegmentState:
         "_counter",
         "_last_content_kind",
         "_notice_live_seq",
+        "_process_kind",
         "completed_seen",
         "max_answer_segments",
         "max_reasoning_panels",
         "notice_element_id",
         "notice_element_text",
         "notices",
+        "process_messages",
         "reasoning_count",
         "segments",
     )
@@ -109,8 +111,54 @@ class SegmentState:
         self.max_answer_segments = max_answer_segments
         # 完成事件确定本轮正文；后续增量保持预览期边界。
         self.completed_seen = False
+        self.process_messages: list[tuple[str, str]] = []
+        self._process_kind: str | None = None
         self.reasoning_count = 0
         self._last_content_kind = None
+
+    def _record_process_message(self, kind: str, text: str) -> None:
+        """Track visible message boundaries independently of panel merging."""
+        if not text or not text.strip() or self.completed_seen:
+            return
+        if self.process_messages and self._process_kind == kind:
+            previous_kind, previous_text = self.process_messages[-1]
+            self.process_messages[-1] = (previous_kind, previous_text + text)
+        else:
+            self.process_messages.append((kind, text))
+        self._process_kind = kind
+
+    def completed_process_texts(self) -> list[str]:
+        """Return interim messages shown during updates, in arrival order."""
+        retained_body = {
+            seg.text.strip() for seg in self.segments
+            if seg.type == SegmentType.ANSWER and seg.text.strip()
+        } if not self.completed_seen else set()
+        return [text for kind, text in self.process_messages
+                if text.strip() and (kind != "answer" or text.strip() not in retained_body)]
+
+    def seal_process_messages(self, segments: list[Segment], *, consume: bool = False) -> list[str]:
+        """Select the leading messages carried by a card being sealed."""
+        selected = []
+        for kind, text in self.process_messages:
+            if kind != "notice" and not any(
+                seg.type.value == kind and text in seg.text for seg in segments
+            ):
+                break
+            selected.append(text)
+        if consume and selected:
+            del self.process_messages[:len(selected)]
+            if not self.process_messages:
+                self._process_kind = None
+        return selected
+
+    def adopt_process_messages(self, previous: SegmentState) -> None:
+        """Carry this turn's interim messages across a redirect onto the new card."""
+        if previous is None or previous is self:
+            return
+        carried = previous.completed_process_texts()
+        if carried:
+            self.process_messages = [("answer", text) for text in carried]
+            self._process_kind = "answer"
 
     def mark_completed(self) -> None:
         """结束本轮预览，后续正文由完成事件更新。"""
@@ -302,6 +350,15 @@ class SegmentState:
                     return
         self._new_reasoning(text)
 
+    def on_interim_answer(self, text: str) -> None:
+        """Accept one complete commentary message through the answer preview path."""
+        self._process_kind = None
+        self.on_answer_delta(text)
+        self._process_kind = None
+        if text and text.strip() and not self.completed_seen:
+            self.process_messages.append(("answer", text))
+            self._process_kind = None
+
     def on_answer_delta(self, text: str) -> None:
         """处理 answer 增量，同类型追加否则新建 segment."""
         if self.completed_seen or not text:
@@ -342,6 +399,16 @@ class SegmentState:
         retain their positions so reasoning/tool ranges and split indices stay stable.
         ``replaced`` remains accepted for hook compatibility; every final replaces.
         """
+        if not self.completed_seen:
+            # The final answer stays in the body only; drop the trailing preview
+            # entries that make it up (a streamed answer can arrive in several parts).
+            final = text.strip()
+            if final:
+                self.process_messages = [
+                    (kind, message) for kind, message in self.process_messages
+                    if not (kind == "answer" and message.strip() and message.strip() in final)
+                ]
+            self._process_kind = None
         self.mark_completed()
         if not text and keep_streamed:
             # 被打断的回合没有最终答案（原始 final 为空）时保留已上屏的正文：
@@ -369,6 +436,19 @@ class SegmentState:
         """处理工具调用事件，同类型标记 dirty 否则新建 segment 并终结前序 tool segment."""
         if tool_step_count <= 0:
             return
+        # 工具调用打断正文流：此刻正文区已经显示的那段过渡文字封卡时会被定稿覆盖，
+        # 它就是用户看到的中途消息，按到达顺序收进详情框。
+        if (self.segments and self.segments[-1].type == SegmentType.ANSWER
+                and self.segments[-1].text.strip()):
+            preview = self.segments[-1].text.strip()
+            already = ""
+            for _kind, message in reversed(self.process_messages):
+                already = message.strip() + already
+                if already == preview:
+                    break
+            else:
+                self.process_messages.append(("answer", preview))
+        self._process_kind = None
         self._last_content_kind = SegmentType.TOOL
         if self.segments and self.segments[-1].type == SegmentType.TOOL:
             self.segments[-1].dirty = True

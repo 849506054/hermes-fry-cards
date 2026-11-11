@@ -39,7 +39,8 @@ def test_completed_title_keeps_its_existing_size_owner(config_factory):
     state.on_answer_delta("Answer")
     card = builder.build_complete_card(
         segments=state.segments, all_tool_steps=[], reasoning_count=1,
-        footer_data={"duration": 30}, panel_text_size="small", config=cfg,
+        process_messages=["Progress"], footer_data={"duration": 30},
+        panel_text_size="small", config=cfg,
     )
     panel = next(el for el in builder.body_content_elements(card)
                  if el.get("element_id") == "unified_panel")
@@ -241,14 +242,16 @@ def test_process_reasoning_summary_footer_and_status_borders(config_factory):
     state.on_answer_delta("Answer")
     for status, kwargs in (("purple", {}), ("orange", {"is_error": True}), ("yellow", {"is_aborted": True})):
         complete = builder.build_complete_card(
-            segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False, config=cfg, **kwargs
+            segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False,
+            process_messages=["Progress"], config=cfg, **kwargs
         )
         panel = next(e for e in builder.body_content_elements(complete) if e["tag"] == "collapsible_panel")
         assert panel["border"] == {"color": status, "corner_radius": "8px"}
         assert panel["header"]["position"] == "top"
     cfg = config_factory(process={"completed_border": False})
     complete = builder.build_complete_card(
-        segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False, config=cfg
+        segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False,
+        process_messages=["Progress"], config=cfg
     )
     panel = next(e for e in builder.body_content_elements(complete) if e["tag"] == "collapsible_panel")
     assert "border" not in panel
@@ -393,11 +396,13 @@ def test_complete_count_style_and_plain_detail_alignment(config_factory):
     state._new_reasoning("Reason")
     state.on_answer_delta("Answer")
     card = builder.build_complete_card(
-        segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False, config=cfg
+        segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False,
+        process_messages=["Progress"], config=cfg,
     )
     panel = next(e for e in builder.body_content_elements(card) if e.get("element_id") == "unified_panel")
     title = panel["header"]["title"]
     assert title["tag"] == "plain_text"
+    assert "💭1" in title["i18n_content"]["zh_cn"]
     assert panel["header"]["text_size"] == "notation"
     assert panel["header"]["text_color"] == "purple"
     detail = builder._build_tool_step_detail({"detail": "literal <tag> **text**"}, config=cfg)
@@ -452,16 +457,18 @@ def test_running_panel_arrow_can_be_disabled(config_factory):
     assert "icon" not in _panel_of(card)["header"]
 
 
-def test_completed_panel_preserves_content_and_hides_arrow(config_factory):
+def test_completed_panel_keeps_messages_without_counts(config_factory):
     state = SegmentState()
     state._new_reasoning("Thought")
     state.on_answer_delta("Answer")
     card = builder.build_complete_card(
         segments=state.segments, all_tool_steps=[], reasoning_count=1,
-        footer_data={"duration": 30}, config=config_factory(),
+        process_messages=["Progress line"], footer_data={"duration": 30}, config=config_factory(),
     )
     panel = _panel_of(card)
+    assert [e["content"] for e in panel["elements"]] == ["Progress line"]
     assert "icon" not in panel["header"]
+    assert "💭1" in panel["header"]["title"]["content"]
 
 
 

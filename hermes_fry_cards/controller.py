@@ -666,6 +666,9 @@ class StreamCardController(StreamingController):
         """
         previous = self._session_keys.get(session_key) if session_key else None
         if previous is not None and previous is not session and not previous.state.is_terminal:
+            # 重定向换卡：这句回合的中途消息跟到新卡，封卡后仍在详情框里。
+            if session.segment_state is not None and previous.segment_state is not None:
+                session.segment_state.adopt_process_messages(previous.segment_state)
             previous.state = SessionState.ABORTED
             previous.flush.mark_completed()
             _logger.info(

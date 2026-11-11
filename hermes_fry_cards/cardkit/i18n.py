@@ -51,6 +51,7 @@ _T: dict[str, tuple[str, str]] = {
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),
     "continued": ("This turn continues in the next card.", "本轮继续。正文见后续卡片。"),
+    "no_details": ("No interim messages in this turn.", "本轮没有中途消息"),
     # 有思考过程却没有正文：回合被截断（服务重启、上游中断），不是「做完了没话说」。
     # 这类卡原先落一行 Done.，用户读成「回复只有一个 Done」，实际是内容没送达。
     "interrupted_no_answer": (
