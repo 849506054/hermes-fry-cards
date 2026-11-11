@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.35] - 2026-11-11
+
+### Changed
+
+- 压缩状态卡改按文案归组，不再看时间窗：开始那句开卡，心跳进同一张，完成关掉；没等到完成就再次开始时，旧卡收尾、另起新卡。心跳单独成类，不再被当成开始。
+
 ## [0.6.2.34] - 2026-11-11
 
 ### Added

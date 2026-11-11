@@ -14,7 +14,7 @@ DONE = "✓ Context compaction complete — continuing turn..."
 
 def test_classify_separates_compaction_from_other_status():
     assert compaction_card.classify(START) == "start"
-    assert compaction_card.classify(HEARTBEAT) == "start"
+    assert compaction_card.classify(HEARTBEAT) == "heartbeat"
     assert compaction_card.classify(DONE) == "done"
     assert compaction_card.classify("⚠️ Hermes 正在关闭") is None
     assert compaction_card.classify("") is None
@@ -33,16 +33,17 @@ def test_done_line_closes_the_turn_so_the_next_compaction_starts_a_new_card():
     assert fresh["lines"] == [START]
 
 
-def test_window_expiry_starts_a_new_card(monkeypatch):
-    now = [1000.0]
-    monkeypatch.setattr(compaction_card.time, "monotonic", lambda: now[0])
+def test_start_before_done_closes_the_stale_card():
+    """没有等到完成行就再次开始：旧卡收尾，另起一张，不把两轮混在一起。"""
     cards = compaction_card.CompactionCards()
-    entry = cards.take("chat", START)
-    cards.bind("chat", entry, "msg-1")
-    now[0] += compaction_card.WINDOW_SECONDS + 1
-    fresh = cards.take("chat", START)
-    assert fresh["message_id"] is None
-    assert len(fresh["lines"]) == 1
+    first = cards.take("chat", START)
+    cards.bind("chat", first, "msg-1")
+    assert cards.take("chat", HEARTBEAT)["message_id"] == "msg-1"
+    second = cards.take("chat", START)
+    assert second is not first
+    assert second["message_id"] is None
+    assert second["lines"] == [START]
+    assert first["final"] is True
 
 
 @pytest.mark.asyncio
