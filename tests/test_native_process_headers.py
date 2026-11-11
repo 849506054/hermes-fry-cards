@@ -115,7 +115,8 @@ async def test_stream_and_final_separate_count_from_detail(reasoning, tools):
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
-    assert not panels(final)  # 本回合没有中途消息，封卡不留空详情框
+    # 封卡框一律出现（0.6.2.32 口径）：本回合没有中途消息时框内落一句占位
+    assert [e["tag"] for e in panels(final)[0]["elements"]] == ["markdown"]
     if not reasoning:
         assert 'THOUGHT_DETAILS' not in json.dumps(final)
     if not tools:
@@ -165,7 +166,7 @@ async def test_clarify_rollover_keeps_full_turn_counts():
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
-    assert not panels(final)
+    assert [e["tag"] for e in panels(final)[0]["elements"]] == ["markdown"]
 
 
 @pytest.mark.asyncio
@@ -180,12 +181,13 @@ async def test_rollover_before_first_tool_creates_both_headers():
     assert ids == {PROCESS_PANEL_ELEMENT_ID, TOOL_PANEL_ELEMENT_ID}
 
 
-def test_both_modes_hidden_have_no_process_panel():
+def test_both_modes_hidden_keep_placeholder_panel():
     state = SegmentState()
     state.on_reasoning_delta('hidden')
     state.on_completion_answer('FINAL')
     card = build_complete_card(segments=state.segments, all_tool_steps=[], show_reasoning=False, show_tool_use=False)
-    assert not panels(card)
+    # 框存续与渲染开关无关：两种模式都关也建框，框内一句占位
+    assert [e["tag"] for e in panels(card)[0]["elements"]] == ["markdown"]
     assert 'hidden' not in json.dumps(card)
 
 

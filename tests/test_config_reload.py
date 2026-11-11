@@ -372,23 +372,24 @@ def test_language_reloads_and_markdown_cache_keys_resolved_language(tmp_path, li
     raw = "\n\n".join(["| A | B |\n|---|---|\n| 1 | 2 |"] * 6)
     _write(tmp_path, {"streaming": {"content_lang": "zh"}})
     config = i18n._content_config(tmp_path)
-    first = prepare_streaming_markdown(raw)
+    # 传入同一 profile 的配置：内容语言由卡片快照决定，热重读仍走 Config 的安全路径
+    first = prepare_streaming_markdown(raw, config=config)
     assert "紧凑字段列表" in first
     assert "已截断" in clamp_utf8("a" * 20000, preserve_tail=False)
-    assert prepare_streaming_markdown(raw) == first
+    assert prepare_streaming_markdown(raw, config=config) == first
     _write(tmp_path, {"streaming": {"content_lang": "en"}})
-    second = prepare_streaming_markdown(raw)
+    second = prepare_streaming_markdown(raw, config=config)
     assert "compact field lists" in second
     assert "紧凑字段列表" not in second
     assert "truncated" in clamp_utf8("a" * 20000, preserve_tail=False)
-    assert prepare_streaming_markdown(raw) == second
+    assert prepare_streaming_markdown(raw, config=config) == second
     assert i18n._content_config(tmp_path) is config
     assert prepare_streaming_markdown.cache_info().misses == 2
     assert prepare_streaming_markdown.cache_info().hits == 2
     _write(tmp_path, "streaming: [")
-    assert prepare_streaming_markdown(raw) == second
+    assert prepare_streaming_markdown(raw, config=config) == second
     _write(tmp_path, {"streaming": {"content_lang": "zh"}})
-    assert prepare_streaming_markdown(raw) == first
+    assert prepare_streaming_markdown(raw, config=config) == first
     assert prepare_streaming_markdown.cache_info().misses == 2
     prepare_streaming_markdown.cache_clear()
     assert prepare_streaming_markdown.cache_info().currsize == 0

@@ -22,6 +22,7 @@ ROLE_SAMPLES = {
     "body": {
         "text_size": "heading-2", "text_color": "default", "text_align": "right", "bold": True,
         "italic": False, "margin": "-99px 0 99px 2px", "light_color": "#aabbcc", "dark_color": "#001122",
+        "deep_light_color": "#99aabb", "deep_dark_color": "#000f11",
         "body_padding": "99px 0", "horizontal_spacing": "extra_large", "vertical_spacing": "0px",
         "horizontal_align": "center", "vertical_align": "bottom", "surface_padding": "4px", "surface_margin": "0",
     },

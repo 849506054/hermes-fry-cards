@@ -1591,6 +1591,8 @@ class StreamingController:
         # #56：飞书 300305 校验的是全树递归节点数，顶层 len 看不出来——统一面板里
         # 嵌的工具组/思考面板每个都带一串子元素。诊断日志同时打两个数。
         card_elements_recursive = count_elements_recursive(card)
+        # 完成态按真实渲染数回写记账：框恒建之后，流式期估算会少于卡上元素数。
+        session.element_count = max(session.element_count, card_elements_recursive)
         for attempt in range(3):
             try:
                 assert self._client is not None

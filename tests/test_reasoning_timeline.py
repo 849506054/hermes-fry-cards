@@ -95,7 +95,9 @@ def test_reasoning_survives_hidden_tools_and_keeps_chronological_order(duration)
         segments=state.segments, all_tool_steps=[], show_tool_use=False,
         footer_data={"duration": duration}, footer_enabled=False,
     )
-    assert not any(n.get("element_id") == PROCESS_PANEL_ELEMENT_ID for n in nodes(card))
+    # 封卡框一律出现（0.6.2.32）：思考与工具都不进框，框内只有一句占位
+    panel = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
+    assert [e["tag"] for e in panel["elements"]] == ["markdown"]
     assert not any(n.get("element_id", "").startswith("tool_panel") for n in nodes(card))
     assert "验证用最终正文" in json.dumps(card, ensure_ascii=False)
 
@@ -123,7 +125,9 @@ def test_sealed_card_keeps_reasoning_out_of_details(tmp_path):
         segments=state.segments, all_tool_steps=[], show_tool_use=False,
         footer_data={"duration": 10.0}, footer_enabled=False,
     )
-    assert not any(n.get("element_id") == PROCESS_PANEL_ELEMENT_ID for n in nodes(card))
+    panel = next(n for n in nodes(card) if n.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
+    assert [e["tag"] for e in panel["elements"]] == ["markdown"]
+    assert "验证阶段" not in json.dumps(card, ensure_ascii=False)
 
 
 def test_many_rounds_keep_distinct_timeline_segments():

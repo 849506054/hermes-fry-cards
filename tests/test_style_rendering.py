@@ -240,7 +240,7 @@ def test_process_reasoning_summary_footer_and_status_borders(config_factory):
     state = SegmentState()
     state._new_reasoning("Reason")
     state.on_answer_delta("Answer")
-    for status, kwargs in (("purple", {}), ("orange", {"is_error": True}), ("yellow", {"is_aborted": True})):
+    for status, kwargs in (("purple", {}), ("orange", {"is_error": True})):
         complete = builder.build_complete_card(
             segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False,
             process_messages=["Progress"], config=cfg, **kwargs
@@ -248,6 +248,11 @@ def test_process_reasoning_summary_footer_and_status_borders(config_factory):
         panel = next(e for e in builder.body_content_elements(complete) if e["tag"] == "collapsible_panel")
         assert panel["border"] == {"color": status, "corner_radius": "8px"}
         assert panel["header"]["position"] == "top"
+    stopped = builder.build_complete_card(
+        segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False,
+        process_messages=["Progress"], config=cfg, is_aborted=True,
+    )
+    assert not any(e["tag"] == "collapsible_panel" for e in builder.body_content_elements(stopped))
     cfg = config_factory(process={"completed_border": False})
     complete = builder.build_complete_card(
         segments=state.segments, all_tool_steps=[], reasoning_count=1, show_tool_use=False,

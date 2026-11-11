@@ -62,10 +62,13 @@ def test_reply_body_uses_theme_surface_and_preserves_children(status, show_tools
         assert panels and all("border" not in panel for panel in panels)
         assert all(panel["header"]["icon"]["token"] == "down-small-ccm_outlined"
                    for panel in panels)
+    elif status == "stopped":
+        # 停止卡不建过程框（用户口径）：停止后由新卡接手。
+        assert not panels
     elif status != "overflow":
         panel = next(node for node in panels if node.get("element_id") == "unified_panel")
-        color = {"completed": "green", "error": "red", "stopped": "yellow"}[status]
-        assert panel["border"] == {"color": color, "corner_radius": "5px"}
+        expected = "red" if status == "error" else builder.BODY_SURFACE_DEEP_COLOR
+        assert panel["border"] == {"color": expected, "corner_radius": "5px"}
 
     unwrapped = deepcopy(card)
     unwrapped["body"]["elements"] = builder.body_content_elements(unwrapped)

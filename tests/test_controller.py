@@ -1799,7 +1799,8 @@ class TestDoFlush:
 
         assert await ctrl._do_split_card(session, 5, [], set(), {}, []) is True
 
-        contents = [element["content"] for element in body_content_elements(sealed_cards[0])]
+        contents = [element["content"] for element in body_content_elements(sealed_cards[0])
+                    if element.get("tag") == "markdown"]
         assert contents == ["This turn continues in the next card."]
         assert "page content" not in str(sealed_cards[0])
         assert sealed_cards[0]["config"]["width_mode"] == "compact"
@@ -2491,6 +2492,7 @@ class TestCronDeliver:
     def test_returns_false_without_deliverable_content(self, enabled: bool, content: str) -> None:
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.enabled = enabled
         assert ctrl.on_cron_deliver(chat_id="c1", content=content, loop=MagicMock()) is False
 
@@ -2499,6 +2501,7 @@ class TestCronDeliver:
 
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
@@ -2525,6 +2528,7 @@ class TestCronDeliver:
 
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
@@ -2551,6 +2555,7 @@ class TestCronDeliver:
 
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()
@@ -2575,6 +2580,7 @@ class TestCronDeliver:
     def test_sends_card_without_gateway_loop(self) -> None:
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.enabled = True
         ctrl._cfg.feishu_app_id = "app_id"
         ctrl._cfg.feishu_app_secret = "app_secret"
@@ -2593,6 +2599,7 @@ class TestCronDeliver:
     def test_initializes_once_across_standalone_workers(self) -> None:
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.feishu_app_id = "app_id"
         ctrl._cfg.feishu_app_secret = "app_secret"
         ctrl._cfg.env_app_id = ""
@@ -2631,6 +2638,7 @@ class TestCronDeliver:
     def test_returns_false_on_standalone_send_failure(self) -> None:
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.enabled = True
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.side_effect = RuntimeError("API error")
@@ -2642,6 +2650,7 @@ class TestCronDeliver:
     def test_falls_back_when_gateway_loop_is_not_running(self) -> None:
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.enabled = True
         mock_client = AsyncMock()
         mock_client.send_card_to_chat.return_value = "msg_123"
@@ -2661,6 +2670,7 @@ class TestCronDeliver:
 
         ctrl = StreamCardController()
         ctrl._cfg = MagicMock(body_light_color="#F5F6F7", body_dark_color="#222222")
+        ctrl._cfg.style_options.return_value = {}
         ctrl._cfg.enabled = True
 
         mock_client = AsyncMock()

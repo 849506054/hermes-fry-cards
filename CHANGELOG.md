@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.33] - 2026-11-11
+
+### Changed
+
+- 停止卡不建过程框：停止后由新卡接手，`is_aborted` 收尾的卡不再渲染计数与详情框；出错卡与正常完成卡照旧建框。
+
+### Fixed
+
+- 完成态把真实渲染元素数回写记账，恒建详情框之后流式期估算会少于卡上元素数。
+- Studio 校验 `display.panel_text_size` 非法值时按用户键名报错，不再露出内部 `process_title.text_size`。
+- Studio 样式编辑器补上封卡框深浅底色的中英文标签。
+
+### Tests
+
+- 退役「封卡态思考/工具进框」的过时断言与用例，改为当前「框内只放中途消息」契约；停止卡按无框断言。
+- 补停止卡无框的 builder 与控制器各一条断言。
+
 ## [0.6.2.32] - 2026-11-11
 
 ### Added

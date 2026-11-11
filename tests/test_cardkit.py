@@ -415,20 +415,6 @@ class TestCompactToolPanel:
         # 摘要 1 行 + 最近 30 步各 1 个标题元素
         assert len(panel["elements"]) == MAX_TOOL_PANEL_STEPS + 1
 
-    def test_complete_card_tool_groups_are_compact(self) -> None:
-        """统一面板里的嵌套工具组按紧凑渲染，长工具轮次完成态不再撞 300305（#53）."""
-        seg = _seg("tool", "", tool_offset=0, tool_end_offset=5)
-        card = build_complete_card(
-            segments=[seg], all_tool_steps=self._steps(5), footer_data={"duration": 10.0},
-        )
-        unified = next(
-            el for el in body_content_elements(card)
-            if el.get("tag") == "collapsible_panel"
-        )
-        tool_panel = unified["elements"][0]
-        # 5 步 → 5 个标题元素，无 detail/output 元素
-        assert len(tool_panel["elements"]) == 5
-        assert all("detail of" not in str(el) for el in tool_panel["elements"])
 
     def test_unified_panel_has_stable_element_id(self) -> None:
         seg = _seg("reasoning", "thinking text")
@@ -438,27 +424,7 @@ class TestCompactToolPanel:
         )
         assert unified["element_id"] == "unified_panel"
 
-    def test_complete_card_reasoning_text_clamped_to_budget(self) -> None:
-        """完成态统一面板的 reasoning 全文按同一预算钳制（#52）：28KB 级思考全文
-        叠加正文会越过 ~30KB 卡片 JSON 上限，且与流式期钳制后的观感保持一致."""
-        from hermes_fry_cards.cardkit.markdown import _REASONING_MAX_BYTES
 
-        seg = _seg("reasoning", "思" * 20_000)  # ~60KB 全文
-        card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
-        unified = next(
-            el for el in body_content_elements(card) if el.get("tag") == "collapsible_panel"
-        )
-        reasoning_panel = unified["elements"][0]
-        content = reasoning_panel["elements"][0]["content"]
-        assert len(content.encode("utf-8")) <= _REASONING_MAX_BYTES
-
-    def test_complete_card_short_reasoning_text_untouched(self) -> None:
-        seg = _seg("reasoning", "短思考")
-        card = build_complete_card(segments=[seg], all_tool_steps=[], footer_data={"duration": 10.0})
-        unified = next(
-            el for el in body_content_elements(card) if el.get("tag") == "collapsible_panel"
-        )
-        assert "短思考" in unified["elements"][0]["elements"][0]["content"]
 
 
 class TestStripUnifiedPanel:
@@ -783,29 +749,7 @@ class TestBuildSegmentCompleteCard:
         assert any("hello world" in str(e) for e in elements)
         assert not any("Done" in str(e) for e in elements)
 
-    def test_reasoning_before_answer(self) -> None:
-        card = build_complete_card(
-            segments=[_seg("reasoning", "think"), _seg("answer", "reply")],
-            all_tool_steps=[],
-            footer_data={"duration": 8.0},  # 思考较久（>5s），应展示统一面板
-        )
-        contents = [str(e) for e in body_content_elements(card)]
-        r_idx = next(i for i, c in enumerate(contents) if "think" in c)
-        a_idx = next(i for i, c in enumerate(contents) if "reply" in c)
-        # 答案在上面，推理+工具统一面板在底部（二次开发特性）
-        assert a_idx < r_idx
 
-    def test_tool_segment_uses_steps_slice(self) -> None:
-        steps = [_STEP_RUNNING, _STEP_SUCCESS, _STEP_RUNNING]
-        card = build_complete_card(
-            segments=[_seg("tool", tool_offset=1, tool_end_offset=3)],
-            all_tool_steps=steps,
-        )
-        # 统一面板（header 带 💭）内含一个嵌套 🔧 工具面板，覆盖 steps[1:3]
-        unified = _unified_panel(card)
-        tool_panels = [e for e in unified["elements"] if e.get("tag") == "collapsible_panel"]
-        assert len(tool_panels) == 1
-        assert len(tool_panels[0].get("elements", [])) == 2  # steps[1:3]
 
     def test_multiple_tool_segments_merged_into_single_bottom_panel(self) -> None:
         """推理+工具合并成底部统一面板（二次开发特性）."""
@@ -855,62 +799,8 @@ class TestBuildSegmentCompleteCard:
         if unified:
             assert a2 < unified[0]  # 第二个答案也在统一面板之前
 
-    def test_workflow_interleaving_reasoning_and_tools(self) -> None:
-        """统一面板内按真实发生顺序交错：💭思考 → 🔧工具组 → 💭思考 → 🔧工具组."""
-        steps = [_STEP_SUCCESS, _STEP_RUNNING, _STEP_SUCCESS]
-        card = build_complete_card(
-            segments=[
-                _seg("reasoning", "think-A", elapsed_ms=3200),
-                _seg("tool", tool_offset=0, tool_end_offset=2, elapsed_ms=1000),
-                _seg("answer", "answer"),
-                _seg("reasoning", "think-B", elapsed_ms=5000),
-                _seg("tool", tool_offset=2, tool_end_offset=3, elapsed_ms=800),
-            ],
-            all_tool_steps=steps,
-        )
-        unified = _unified_panel(card)
-        kinds = [
-            "reasoning" if "💭" in str(e.get("header", {})) else "tools"
-            for e in unified["elements"]
-            if e.get("tag") == "collapsible_panel"
-        ]
-        # 交错顺序：思考1 → 工具组1 → 思考2 → 工具组2（不再是「所有思考→所有工具」）
-        assert kinds == ["reasoning", "tools", "reasoning", "tools"]
-        # 两个思考面板文本按序
-        r_texts = [
-            e["elements"][0]["content"]
-            for e in unified["elements"]
-            if e.get("tag") == "collapsible_panel" and "💭" in str(e.get("header", {}))
-        ]
-        assert r_texts == ["think-A", "think-B"]
-        # 工具组各自覆盖自己的步骤区间
-        t_panels = [
-            e for e in unified["elements"]
-            if e.get("tag") == "collapsible_panel" and "🔧" in str(e.get("header", {}))
-        ]
-        assert len(t_panels[0]["elements"]) == 2  # steps[0:2]
-        assert len(t_panels[1]["elements"]) == 1  # steps[2:3]
 
-    def test_workflow_interleaving_tool_only_after_reasoning(self) -> None:
-        """只有工具、无思考时，统一面板内仍含一个 🔧 面板（不回归平铺）."""
-        card = build_complete_card(
-            segments=[_seg("tool", tool_offset=0, tool_end_offset=1)],
-            all_tool_steps=[_STEP_SUCCESS],
-        )
-        unified = _unified_panel(card)
-        assert [e.get("tag") for e in unified["elements"]] == ["collapsible_panel", "markdown"]
-        assert unified["elements"][-1]["element_id"] == "tool_totals"
-        assert "🔧" in str(unified["elements"][0].get("header", {}))
 
-    def test_tool_end_offset_zero_uses_all_steps(self) -> None:
-        steps = [_STEP_SUCCESS, _STEP_RUNNING]
-        card = build_complete_card(
-            segments=[_seg("tool", tool_offset=0, tool_end_offset=0)],
-            all_tool_steps=steps,
-        )
-        unified = _unified_panel(card)
-        tool_panel = next(e for e in unified["elements"] if e.get("tag") == "collapsible_panel")
-        assert len(tool_panel["elements"]) == 2
 
     def test_complete_card_width_mode_default(self) -> None:
         card = build_complete_card(
@@ -927,27 +817,7 @@ class TestBuildSegmentCompleteCard:
         )
         assert card["config"]["width_mode"] == "fill"
 
-    def test_tool_empty_steps_skipped(self) -> None:
-        card = build_complete_card(
-            segments=[_seg("tool", tool_offset=5, tool_end_offset=5)],
-            all_tool_steps=[_STEP_SUCCESS],
-        )
-        assert not any(e.get("tag") == "collapsible_panel" for e in body_content_elements(card))
 
-    def test_show_tool_use_false_hides_tool_panel(self) -> None:
-        """show_tool_use=False → TOOL segment rendered as nothing (无工具面板)."""
-        steps = [_STEP_RUNNING, _STEP_SUCCESS]
-        card = build_complete_card(
-            segments=[_seg("tool", tool_offset=0, tool_end_offset=2), _seg("answer", "hello")],
-            all_tool_steps=steps,
-            show_tool_use=False,
-        )
-        panel = next(e for e in body_content_elements(card) if e.get("tag") == "collapsible_panel")
-        assert [e["element_id"] for e in panel["elements"]] == ["tool_totals"]
-        assert "🔧2" in panel["header"]["title"]["content"]
-        # 但 answer 依然在
-        assert any(e.get("tag") == "markdown" and "hello" in str(e.get("content", ""))
-                   for e in body_content_elements(card))
 
     def test_show_tool_use_true_default_shows_panel(self) -> None:
         """show_tool_use 默认 True → 工具面板保留（向后兼容）."""

@@ -227,3 +227,31 @@ async def test_answer_limit_still_preserves_message_boundaries():
     assert await ctrl._do_complete_card_inner(session)
     card = ctrl._client.cardkit_update.call_args.args[1]
     assert detail_texts(card) == [f"进度{i}" for i in range(12)]
+
+
+@pytest.mark.asyncio
+async def test_stopped_card_has_no_details_panel():
+    """停止卡不建框：停止后由新卡接手，旧卡不留计数与过程框。"""
+    ctrl, session = make_session()
+    state = session.segment_state
+    state.on_interim_answer(PROGRESS)
+    state.on_tool_event(1)
+    state.on_answer_delta("被中断前的正文")
+    session.state = SessionState.ABORTED
+    assert await ctrl._do_complete_card_inner(session)
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    body = body_content_elements(card)
+    assert PROCESS_PANEL_ELEMENT_ID not in [e.get("element_id") for e in body]
+    assert not any(e.get("tag") == "collapsible_panel" for e in body)
+    assert "被中断前的正文" in str(card)
+
+
+def test_stopped_card_builder_skips_panel_but_completed_keeps_it():
+    from hermes_fry_cards.cardkit.builder import build_complete_card
+
+    stopped = build_complete_card(segments=[], all_tool_steps=[], is_aborted=True,
+                                  footer_data={"duration": 5}, process_messages=[PROGRESS])
+    assert PROCESS_PANEL_ELEMENT_ID not in [e.get("element_id") for e in body_content_elements(stopped)]
+    completed = build_complete_card(segments=[], all_tool_steps=[],
+                                    footer_data={"duration": 5}, process_messages=[PROGRESS])
+    assert PROCESS_PANEL_ELEMENT_ID in [e.get("element_id") for e in body_content_elements(completed)]

@@ -62,6 +62,8 @@ window.FryI18n = (function () {
     "style.field.error_color": ["错误颜色", "Error color"],
     "style.field.separator": ["字段分隔符", "Separator"],
     "style.field.background_color": ["背景色", "Background color"],
+    "style.field.deep_light_color": ["封卡框浅色底色", "Details panel light background"],
+    "style.field.deep_dark_color": ["封卡框深色底色", "Details panel dark background"],
     "style.field.border_color": ["边框色", "Border color"],
     "style.field.border_radius": ["边框圆角", "Border radius"],
     "style.field.completed_border": ["完成态边框", "Completed border"],

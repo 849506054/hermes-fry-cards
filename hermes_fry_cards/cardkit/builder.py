@@ -1242,63 +1242,58 @@ def build_complete_card(
 
     # Completed details preserve visible progress text in arrival order.
     detail_messages = list(process_messages or [])
-    # 框一律出现（用户口径：没说不要框就必须在）；框内只放中途消息，没有则一句占位。
-    if is_error:
-        border_color = "red"
-    elif is_aborted:
-        border_color = "yellow"
-    else:
-        border_color = "green"
-    unified_children: list[dict] = []
-    for message in detail_messages:
-        _append_content_elements(unified_children, message, text_size=body_text_size)
-    if not unified_children:
-        en, zh = _T["no_details"]
-        _append_content_elements(
-            unified_children, en, text_size=body_text_size,
+    # 停止卡不建框（用户口径）：停止卡会被新卡接手，旧卡上的计数与过程没人看。
+    # 出错卡与正常完成卡照旧建框：框内只放中途消息，没有则一句占位。
+    if not is_aborted:
+        border_color = "red" if is_error else "green"
+        unified_children: list[dict] = []
+        for message in detail_messages:
+            _append_content_elements(unified_children, message, text_size=body_text_size)
+        if not unified_children:
+            en, zh = _T["no_details"]
+            _append_content_elements(unified_children, en, text_size=body_text_size)
+            unified_children[-1]["i18n_content"] = _i18n(en, zh)
+        # 框头保持原样：字段池、计数与耗时都不动。
+        panel_elapsed_ms = tool_elapsed_ms
+        if not panel_elapsed_ms and footer_data:
+            _p_duration = footer_data.get("duration")
+            if isinstance(_p_duration, (int, float)) and _p_duration > 0:
+                panel_elapsed_ms = _p_duration * 1000
+        header_en, header_zh = _build_panel_header(
+            panel_fields,
+            footer_data or {},
+            reasoning_count=reasoning_count,
+            tool_count=tool_count,
+            panel_elapsed_ms=panel_elapsed_ms,
+            show_context=config.show_context,
+            context_mode=config.context_display_mode,
         )
-        unified_children[-1]["i18n_content"] = _i18n(en, zh)
-    # 框头保持原样：字段池、计数与耗时都不动。
-    panel_elapsed_ms = tool_elapsed_ms
-    if not panel_elapsed_ms and footer_data:
-        _p_duration = footer_data.get("duration")
-        if isinstance(_p_duration, (int, float)) and _p_duration > 0:
-            panel_elapsed_ms = _p_duration * 1000
-    header_en, header_zh = _build_panel_header(
-        panel_fields,
-        footer_data or {},
-        reasoning_count=reasoning_count,
-        tool_count=tool_count,
-        panel_elapsed_ms=panel_elapsed_ms,
-        show_context=config.show_context,
-        context_mode=config.context_display_mode,
-    )
-    unified_panel = {
-        "tag": "collapsible_panel",
-        # 固定 id：封卡撞 300305 时按 id 精确剥离整个面板重发（#53 修法 2）
-        "element_id": UNIFIED_PANEL_ELEMENT_ID,
-        "expanded": panel_expanded,
-        # 折叠与展开共用比正文深一号的底色：header 未单独指定时继承它；
-        # 边框同色，出错/中止仍保留红黄。
-        "background_color": BODY_SURFACE_DEEP_COLOR,
-        "header": {
-            **_panel_header({
-                "tag": "plain_text", "content": header_en,
-                "i18n_content": _i18n(header_en, header_zh),
-            }, position="top", arrow=False),
-            "text_color": option("process_title", "text_color", "grey"),
-            "text_size": panel_text_size,
-        },
-        "border": {
-            "color": border_color if is_error or is_aborted else BODY_SURFACE_DEEP_COLOR,
-            "corner_radius": "5px",
-        },
-        "elements": unified_children,
-    }
-    unified_panel = panel_element(
-        unified_panel, completed=True, status="error" if is_error else "stopped" if is_aborted else "completed",
-    )
-    elements.append(unified_panel)
+        unified_panel = {
+            "tag": "collapsible_panel",
+            # 固定 id：封卡撞 300305 时按 id 精确剥离整个面板重发（#53 修法 2）
+            "element_id": UNIFIED_PANEL_ELEMENT_ID,
+            "expanded": panel_expanded,
+            # 折叠与展开共用比正文深一号的底色：header 未单独指定时继承它；
+            # 边框同色，出错仍保留红色。
+            "background_color": BODY_SURFACE_DEEP_COLOR,
+            "header": {
+                **_panel_header({
+                    "tag": "plain_text", "content": header_en,
+                    "i18n_content": _i18n(header_en, header_zh),
+                }, position="top", arrow=False),
+                "text_color": option("process_title", "text_color", "grey"),
+                "text_size": panel_text_size,
+            },
+            "border": {
+                "color": border_color if is_error else BODY_SURFACE_DEEP_COLOR,
+                "corner_radius": "5px",
+            },
+            "elements": unified_children,
+        }
+        unified_panel = panel_element(
+            unified_panel, completed=True, status="error" if is_error else "completed",
+        )
+        elements.append(unified_panel)
 
     if not has_answer:
         # 有思考段却没有正文 = 回合在正文写出前被截断（服务重启、上游断流），

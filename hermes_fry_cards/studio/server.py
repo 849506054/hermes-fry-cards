@@ -337,7 +337,12 @@ def _validate_section(
                 raise ValueError(f"{section}.{key} 含未知字段: {', '.join(sorted(sub_unknown))}")
             result[key] = {k: _validate_scalar(v, f"{section}.{key}.{k}", kind[k]) for k, v in val.items()}
         elif kind == "textsize":
-            result[key] = validate_style_role("process_title", {"text_size": val}, text_sizes=text_sizes)["text_size"]
+            try:
+                result[key] = validate_style_role(
+                    "process_title", {"text_size": val}, text_sizes=text_sizes,
+                )["text_size"]
+            except ValueError as exc:
+                raise ValueError(f"Invalid value for {section}.{key}: {val}") from exc
         else:
             result[key] = _validate_scalar(val, f"{section}.{key}", kind)
     return result
@@ -442,7 +447,10 @@ def validate_payload(
     display = _validate_section(payload, "display", _DISPLAY_KEYS, text_sizes=sizes)
     panel_size = display.get("panel_text_size", (base_display or {}).get("panel_text_size"))
     if panel_size is not None:
-        validate_style_role("process_title", {"text_size": panel_size}, text_sizes=sizes)
+        try:
+            validate_style_role("process_title", {"text_size": panel_size}, text_sizes=sizes)
+        except ValueError as exc:
+            raise ValueError(f"Invalid value for display.panel_text_size: {panel_size}") from exc
     if display:
         result["display"] = display
     gateway = _validate_section(payload, "gateway", {"group_security_boundary": _GATEWAY_KEYS})
