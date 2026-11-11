@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.36] - 2026-11-11
+
+### Added
+
+- 手动 `/compress` 也走压缩卡：给临时压缩 agent 补上状态回调，开始、心跳、完成三条经正常发送路径进入同一张卡。此前手动压缩只有命令结束那一条结果。
+
 ## [0.6.2.35] - 2026-11-11
 
 ### Changed

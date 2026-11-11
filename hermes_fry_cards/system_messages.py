@@ -103,6 +103,16 @@ def apply_producer_scopes(*, import_missing: bool = False):
         applied += bool(_scope_method(cls, 'send'))
     except (ImportError, AttributeError):
         _logger.debug('system_card_scope_deferred: module=update_target')
+    # Manual /compress builds a quiet agent whose status callback is unset; attach it so the
+    # compaction lines reach this card path too. Same late-import retry as the producer scopes.
+    try:
+        from .manual_compaction import apply_patch as _apply_manual_compaction
+        module = sys.modules.get('gateway.slash_commands_session')
+        if module is None and import_missing:
+            module = importlib.import_module('gateway.slash_commands_session')
+        applied += bool(_apply_manual_compaction(getattr(module, 'GatewaySessionCommandsMixin', None)))
+    except ImportError:
+        _logger.debug('system_card_scope_deferred: module=slash_commands_session')
     return applied
 
 
