@@ -65,8 +65,10 @@ async def test_three_status_lines_land_in_one_card(adapter):  # noqa: F811
     last_request = adapter._run_blocking.await_args_list[-1].args[1]
     final_card = json.loads(last_request.request_body.content)
     rendered = json.dumps(final_card, ensure_ascii=False)
-    for line in (START, HEARTBEAT, DONE):
-        assert line in rendered
+    # Each line overwrites the previous one: the finished card carries the done line alone.
+    assert DONE in rendered
+    assert START not in rendered
+    assert HEARTBEAT not in rendered
 
 
 def test_manual_result_replaces_the_done_line_in_the_open_card():
@@ -81,8 +83,17 @@ def test_manual_result_replaces_the_done_line_in_the_open_card():
     assert result is done
     assert result["message_id"] == "msg-1"
     assert result["final"] is True
-    assert result["lines"][:2] == [START, HEARTBEAT]
-    assert result["lines"][2:] == RESULT.splitlines()
+    assert result["lines"] == RESULT.splitlines()
+
+
+def test_heartbeat_overwrites_the_start_line():
+    """心跳顶掉开始行，卡里只有当前状态。"""
+    cards = compaction_card.CompactionCards()
+    first = cards.take("chat", START)
+    cards.bind("chat", first, "msg-1")
+    entry = cards.take("chat", HEARTBEAT)
+    assert entry["lines"] == [HEARTBEAT]
+    assert entry["final"] is False
 
 
 def test_result_without_a_progress_card_opens_one():

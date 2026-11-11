@@ -2,7 +2,8 @@
 
 The core emits up to three status lines while compacting (start, heartbeat, done).
 They arrive over the plain status channel, so the Feishu adapter would post each
-as its own text bubble. Grouping them keeps a single card that grows in place.
+as its own text bubble. Grouping them keeps one card whose text is the current
+line, so a finished compaction shows its result and nothing above it.
 """
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ def classify(content: str) -> str | None:
 
 
 def build_compaction_card(lines: list[str], config: Config) -> dict[str, Any]:
-    """One card carrying every compaction line for this turn, in arrival order."""
+    """One card carrying the current compaction line (the manual result uses two)."""
     with style_scope(config):
         elements = [
             text_element(
@@ -87,10 +88,10 @@ class CompactionCards:
         already exists; a fresh entry has no ``message_id`` yet.
 
         Grouping follows the wording alone: a start line opens a card, heartbeat
-        lines join it, the done line closes it, and the manual /compress result
-        replaces the done line so the statistics end the card. A second start
-        before the done line closes the previous card and opens a new one, so a
-        compaction that never reported completion cannot swallow the next turn.
+        lines overwrite it in place, the done line closes it, and the manual
+        /compress result overwrites the done line. A second start before the done
+        line closes the previous card and opens a new one, so a compaction that
+        never reported completion cannot swallow the next turn.
         """
         kind = classify(content)
         if kind is None:
@@ -106,10 +107,9 @@ class CompactionCards:
             entry = {"message_id": None, "lines": [], "final": False, "updated": now}
             self._entries[str(chat_id)] = entry
             self._prune()
-        lines = [line for line in str(content).strip().splitlines() if line.strip()]
-        if kind == "result" and entry["lines"] and classify(entry["lines"][-1]) == "done":
-            entry["lines"].pop()
-        entry["lines"].extend(lines)
+        # The card shows the current line only: each new line overwrites the previous one,
+        # so a finished compaction keeps the result (or the done line) and nothing above it.
+        entry["lines"] = [line for line in str(content).strip().splitlines() if line.strip()]
         entry["updated"] = now
         entry["final"] = kind in {"done", "result"}
         return entry

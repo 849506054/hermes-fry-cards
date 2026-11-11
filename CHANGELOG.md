@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.38] - 2026-11-11
+
+### Changed
+
+- 压缩卡改成原地覆盖：每来一条状态就顶掉上一条，卡里始终只有当前这行；手动 `/compress` 结束后只剩 `Compressed: N → M` 和 token 两行，不再把开始、心跳逐条堆在卡里。
+
 ## [0.6.2.37] - 2026-11-11
 
 ### Changed
