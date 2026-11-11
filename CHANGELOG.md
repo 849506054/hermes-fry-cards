@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.34] - 2026-11-11
+
+### Added
+
+- 压缩上下文的三条状态（开始、心跳、完成）合成一张卡片：首次发卡，后续原地追加行，完成那句留在最后一行。合并范围按同一聊天十分钟内，完成或超时后下一条另起新卡；其他系统提示保持各自成卡。
+
 ## [0.6.2.33] - 2026-11-11
 
 ### Changed

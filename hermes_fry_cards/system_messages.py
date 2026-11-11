@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-from contextlib import contextmanager
-from contextvars import ContextVar
 import importlib
+import inspect
 import json
 import logging
 import sys
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import wraps
 from typing import Any
 
 from .cardkit.builder import _body_style, _build_body, build_notice_header, count_elements_recursive
-from .cardkit.styles import text_element, style_scope
+from .cardkit.styles import style_scope, text_element
+from .compaction_card import CompactionCards, build_compaction_card
+from .compaction_card import classify as classify_compaction
 from .config import Config
 
 _logger = logging.getLogger('hermes_fry_cards')
@@ -60,7 +62,7 @@ def _scope_method(cls, name: str, *, commands_only: bool = False):
         with system_notice_scope(chat_type=chat_type, enabled=enabled):
             return await original(*args, **kwargs)
 
-    setattr(scoped, '_fry_notice_scoped', True)
+    scoped._fry_notice_scoped = True
     setattr(cls, name, staticmethod(scoped) if static else scoped)
     return True
 
@@ -149,6 +151,11 @@ async def _send(self, chat_id: str, content: str, reply_to=None, metadata=None):
     original = self._hl_system_original_send
     if not self._client:
         return await original(chat_id, content, reply_to=reply_to, metadata=metadata)
+    if classify_compaction(content) is not None:
+        compaction = await _send_compaction(
+            self, chat_id, content, reply_to=reply_to, metadata=metadata)
+        if compaction is not None:
+            return compaction
     config = Config().card_snapshot()
     formatted = self.format_message(content)
     if not formatted or not _allowed(config, metadata):
@@ -198,6 +205,62 @@ async def _send(self, chat_id: str, content: str, reply_to=None, metadata=None):
         _logger.info('system_card_sent: chars=%d chunk=%d/%d header=%s',
                      len(chunk), index + 1, len(chunks), not has_reference)
     return last
+
+
+async def _send_compaction(self, chat_id: str, content: str, *, reply_to=None, metadata=None):
+    """Route a context-compaction status line into the turn's shared card.
+
+    The first line posts a card, heartbeat and completion lines patch that same
+    card, so three routine notices land as one message instead of three bubbles.
+    """
+    cards = getattr(self, '_hl_compaction_cards', None)
+    if cards is None:
+        cards = self._hl_compaction_cards = CompactionCards()
+    entry = cards.take(chat_id, content)
+    if entry is None:
+        return None
+    config = Config().card_snapshot()
+    card = build_compaction_card(list(entry['lines']), config)
+    payload = json.dumps(card, ensure_ascii=False)
+    has_reference = bool(reply_to or ((metadata or {}).get('thread_id')
+                                     and (metadata or {}).get('reply_to_message_id')))
+    message_id = entry.get('message_id')
+    try:
+        if message_id:
+            from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+            request = PatchMessageRequest.builder().message_id(message_id).request_body(
+                PatchMessageRequestBody.builder().content(payload).build()).build()
+            response = await self._run_blocking(self._client.im.v1.message.patch, request)
+            result = self._finalize_send_result(response, 'compaction card edit failed')
+            if result.success:
+                result.message_id = message_id
+            _logger.info('compaction_card_updated: lines=%d success=%s',
+                         len(entry['lines']), result.success)
+            return result
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id, msg_type='interactive', payload=payload,
+            reply_to=reply_to, metadata=metadata,
+        )
+        result = self._finalize_send_result(response, 'compaction card send failed')
+    except Exception as exc:
+        _logger.warning('compaction_card_failed: reason=transport type=%s', type(exc).__name__)
+        timed_out = isinstance(exc, TimeoutError)
+        return self._hl_SendResult(
+            success=False,
+            error='Compaction card transport timed out' if timed_out else (str(exc) or type(exc).__name__),
+        )
+    if result.success:
+        new_id = getattr(result, 'message_id', None)
+        if new_id:
+            cards.bind(chat_id, entry, new_id)
+            registry = getattr(self, '_hl_system_cards', None)
+            if registry is None:
+                registry = self._hl_system_cards = OrderedDict()
+            registry[str(new_id)] = (str(chat_id), config, has_reference)
+            while len(registry) > _MAX_TRACKED:
+                registry.popitem(last=False)
+    _logger.info('compaction_card_sent: lines=%d success=%s', len(entry['lines']), result.success)
+    return result
 
 
 async def _edit(self, chat_id: str, message_id: str, content: str, *, finalize=False):
