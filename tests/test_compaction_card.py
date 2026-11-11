@@ -10,12 +10,14 @@ from tests.test_system_messages import Result, adapter  # noqa: F401  (shared fi
 START = "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
 HEARTBEAT = "🗜️ Compacting context — still summarizing earlier conversation so I can continue..."
 DONE = "✓ Context compaction complete — continuing turn..."
+RESULT = "🗜️ Compressed: 232 → 41 messages\nApprox request size: ~157,901 → ~40,062 tokens"
 
 
 def test_classify_separates_compaction_from_other_status():
     assert compaction_card.classify(START) == "start"
     assert compaction_card.classify(HEARTBEAT) == "heartbeat"
     assert compaction_card.classify(DONE) == "done"
+    assert compaction_card.classify(RESULT) == "result"
     assert compaction_card.classify("⚠️ Hermes 正在关闭") is None
     assert compaction_card.classify("") is None
 
@@ -65,6 +67,45 @@ async def test_three_status_lines_land_in_one_card(adapter):  # noqa: F811
     rendered = json.dumps(final_card, ensure_ascii=False)
     for line in (START, HEARTBEAT, DONE):
         assert line in rendered
+
+
+def test_manual_result_replaces_the_done_line_in_the_open_card():
+    """手动 /compress 的结果顶掉完成行，统计留在同一张卡的最后。"""
+    cards = compaction_card.CompactionCards()
+    first = cards.take("chat", START)
+    cards.bind("chat", first, "msg-1")
+    cards.take("chat", HEARTBEAT)
+    done = cards.take("chat", DONE)
+    cards.bind("chat", done, "msg-1")
+    result = cards.take("chat", RESULT)
+    assert result is done
+    assert result["message_id"] == "msg-1"
+    assert result["final"] is True
+    assert result["lines"][:2] == [START, HEARTBEAT]
+    assert result["lines"][2:] == RESULT.splitlines()
+
+
+def test_result_without_a_progress_card_opens_one():
+    cards = compaction_card.CompactionCards()
+    entry = cards.take("chat", RESULT)
+    assert entry["message_id"] is None
+    assert entry["final"] is True
+    assert entry["lines"] == RESULT.splitlines()
+
+
+@pytest.mark.asyncio
+async def test_manual_compress_result_lands_in_the_same_bubble(adapter):  # noqa: F811
+    for line in (START, HEARTBEAT, DONE):
+        await adapter.send("chat", line)
+    await adapter.send("chat", RESULT)
+
+    assert adapter._feishu_send_with_retry.await_count == 1
+    assert adapter._run_blocking.await_count == 3
+    last_request = adapter._run_blocking.await_args_list[-1].args[1]
+    rendered = json.dumps(json.loads(last_request.request_body.content), ensure_ascii=False)
+    assert "Compressed: 232 → 41 messages" in rendered
+    assert "Approx request size" in rendered
+    assert DONE not in rendered
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.37] - 2026-11-11
+
+### Changed
+
+- 手动 `/compress` 的命令结果并入压缩卡：到达时顶掉完成行，统计两行留在同一张卡末尾，不再在卡下面另发一条结果消息。
+
 ## [0.6.2.36] - 2026-11-11
 
 ### Added

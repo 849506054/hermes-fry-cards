@@ -20,6 +20,7 @@ from .config import Config
 START_MARKERS = ("Compacting context",)
 HEARTBEAT_MARKERS = ("still summarizing",)
 DONE_MARKERS = ("Context compaction complete",)
+RESULT_MARKERS = ("Approx request size:",)
 
 _MAX_TRACKED = 64
 _TITLE_EN = "Context compaction"
@@ -27,7 +28,12 @@ _TITLE_ZH = "上下文压缩"
 
 
 def classify(content: str) -> str | None:
-    """Return ``start`` / ``heartbeat`` / ``done`` for a compaction line, else ``None``."""
+    """Return ``start`` / ``heartbeat`` / ``done`` / ``result`` for a compaction line, else ``None``.
+
+    ``result`` is the summary the manual ``/compress`` command answers with
+    (``Compressed: 232 -> 41 messages`` plus the request-size line). It belongs in
+    the same card as the progress lines, not in a second bubble below them.
+    """
     text = str(content or "")
     if any(marker in text for marker in DONE_MARKERS):
         return "done"
@@ -35,6 +41,8 @@ def classify(content: str) -> str | None:
         return "heartbeat"
     if any(marker in text for marker in START_MARKERS):
         return "start"
+    if "Compressed" in text and any(marker in text for marker in RESULT_MARKERS):
+        return "result"
     return None
 
 
@@ -79,16 +87,17 @@ class CompactionCards:
         already exists; a fresh entry has no ``message_id`` yet.
 
         Grouping follows the wording alone: a start line opens a card, heartbeat
-        lines join it, the done line closes it. A second start before the done
-        line closes the previous card and opens a new one, so a compaction that
-        never reported completion cannot swallow the next turn.
+        lines join it, the done line closes it, and the manual /compress result
+        replaces the done line so the statistics end the card. A second start
+        before the done line closes the previous card and opens a new one, so a
+        compaction that never reported completion cannot swallow the next turn.
         """
         kind = classify(content)
         if kind is None:
             return None
         now = time.monotonic()
         entry = self._entries.get(str(chat_id))
-        if entry is not None and entry["final"]:
+        if entry is not None and entry["final"] and kind != "result":
             entry = None
         if kind == "start" and entry is not None:
             entry["final"] = True
@@ -97,9 +106,12 @@ class CompactionCards:
             entry = {"message_id": None, "lines": [], "final": False, "updated": now}
             self._entries[str(chat_id)] = entry
             self._prune()
-        entry["lines"].append(str(content).strip())
+        lines = [line for line in str(content).strip().splitlines() if line.strip()]
+        if kind == "result" and entry["lines"] and classify(entry["lines"][-1]) == "done":
+            entry["lines"].pop()
+        entry["lines"].extend(lines)
         entry["updated"] = now
-        entry["final"] = kind == "done"
+        entry["final"] = kind in {"done", "result"}
         return entry
 
     def bind(self, chat_id: str, entry: dict[str, Any], message_id: str) -> None:
@@ -110,7 +122,7 @@ class CompactionCards:
         self._entries.pop(str(chat_id), None)
 
     def _prune(self) -> None:
-        for key in [key for key, entry in self._entries.items() if entry["final"]]:
-            self._entries.pop(key, None)
+        # Closed entries stay until the next line replaces them: the manual
+        # /compress result arrives after the done line and must land in the same card.
         while len(self._entries) > _MAX_TRACKED:
             self._entries.popitem(last=False)
