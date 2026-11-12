@@ -954,12 +954,12 @@ def _render_footer_field(
         # （同 cli_status_bar_mixin，prompt 已含缓存部分）。零读取时隐藏。
         turn_pct = data.get("cache_hit_pct")
         if isinstance(turn_pct, (int, float)) and turn_pct > 0:
-            pct = min(int(round(turn_pct)), 100)
+            pct = f"{min(float(turn_pct), 100.0):.1f}"
             return _T["cache_hit"][0].format(pct), _T["cache_hit"][1].format(pct)
         cache_read = data.get("cache_read_tokens", 0) or 0
         input_t = data.get("input_tokens", 0) or 0
         if cache_read > 0 and input_t > 0:
-            pct = min(round(cache_read / input_t * 100), 100)
+            pct = f"{min(cache_read / input_t * 100, 100.0):.1f}"
             return _T["cache_hit"][0].format(pct), _T["cache_hit"][1].format(pct)
         return None, None
 

@@ -542,8 +542,8 @@ class TestBuildFooterElements:
             {"cache_read_tokens": 8300, "input_tokens": 15420},
             fields=[["cache"]],
         )
-        assert "54%" in result[0]["content"]
-        assert "54%" in result[0]["i18n_content"]["zh_cn"]
+        assert "53.8%" in result[0]["content"]
+        assert "53.8%" in result[0]["i18n_content"]["zh_cn"]
 
     def test_cache_hidden_without_data(self) -> None:
         # 无缓存读取或无 prompt 分母时隐藏（零读取 ≠ 0%）
@@ -559,7 +559,7 @@ class TestBuildFooterElements:
             {"cache_read_tokens": 2000, "input_tokens": 1000},
             fields=[["cache"]],
         )
-        assert "100%" in result[0]["content"]
+        assert "100.0%" in result[0]["content"]
 
     def test_default_fields_include_speed_and_cache(self) -> None:
         result = _build_footer_elements(
@@ -573,7 +573,7 @@ class TestBuildFooterElements:
             },
         )
         content = result[0]["content"]
-        for piece in ("208 t/s", "54%", "50.0K", "deepseek-v4"):
+        for piece in ("208 t/s", "53.8%", "50.0K", "deepseek-v4"):
             assert piece in content
 
 
@@ -896,7 +896,7 @@ class TestPanelHeaderFields:
             },
         ))
         title = panel["header"]["title"]["content"]
-        assert "54%" in title
+        assert "53.8%" in title
         assert "208 t/s" in title
         assert "💭1" not in title
 
@@ -905,7 +905,7 @@ class TestPanelHeaderFields:
             panel_fields=["cache"],
             footer_data={"duration": 8.0, "input_tokens": 15420, "cache_read_tokens": 8300},
         ))
-        assert panel["header"]["title"]["i18n_content"]["zh_cn"] == "54%"
+        assert panel["header"]["title"]["i18n_content"]["zh_cn"] == "53.8%"
 
     def test_unknown_fields_ignored(self) -> None:
         panel = self._panel(self._card(
@@ -1157,4 +1157,4 @@ def test_panel_header_prefers_turn_cache_hit_rate():
     )
     panel = next(e for e in body_content_elements(card) if e.get("tag") == "collapsible_panel")
     title = panel["header"]["title"]["content"]
-    assert title == "91%"
+    assert title == "91.0%"

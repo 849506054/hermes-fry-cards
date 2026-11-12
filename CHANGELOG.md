@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.46] - 2026-11-12
+
+### Changed
+
+- 完成卡框头缓存命中率保留一位小数（`99.2%`）：满会话里四舍五入到整数会长期停在 100%，一位小数还看得出变化。
+
 ## [0.6.2.45] - 2026-11-12
 
 ### Changed
