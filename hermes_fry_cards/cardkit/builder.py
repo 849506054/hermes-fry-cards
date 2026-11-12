@@ -949,8 +949,13 @@ def _render_footer_field(
         return None, None
 
     if name == "cache":
-        # 口径同 Hermes（cli_status_bar_mixin）：hit = cache_read / prompt_tokens，
-        # prompt（input_tokens）已含缓存部分；零读取时隐藏（无数据 ≠ 0%）。
+        # 优先本回合口径：fry_metrics 汇总本轮各次调用的 cache_read 与 prompt，
+        # 与 tok/s 同窗口；缺样本时回退会话累计 cache_read ÷ 本轮输入 token
+        # （同 cli_status_bar_mixin，prompt 已含缓存部分）。零读取时隐藏。
+        turn_pct = data.get("cache_hit_pct")
+        if isinstance(turn_pct, (int, float)) and turn_pct > 0:
+            pct = min(int(round(turn_pct)), 100)
+            return _T["cache_hit"][0].format(pct), _T["cache_hit"][1].format(pct)
         cache_read = data.get("cache_read_tokens", 0) or 0
         input_t = data.get("input_tokens", 0) or 0
         if cache_read > 0 and input_t > 0:

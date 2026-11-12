@@ -392,6 +392,8 @@ def collect_stream_stats(gateway: Any, session_key: str | None) -> dict[str, Any
             stats["tokens_per_sec"] = float(decode)
         if exact.get("ttft_ms"):
             stats["ttft_ms"] = float(exact["ttft_ms"])
+        if exact.get("cache_hit_pct") is not None:
+            stats["cache_hit_pct"] = float(exact["cache_hit_pct"])
     except Exception:
         pass
     return stats

@@ -118,3 +118,36 @@ def test_only_this_turns_calls_count():
     agent._inflight_turn_started = 0.0
     stats = patch.collect_stream_stats(_Gateway(agent), "sk")
     assert stats["tokens_per_sec"] == pytest.approx(700.0 / 3.0)
+
+
+def test_summary_reports_this_turns_cache_hit_rate():
+    """缓存命中率按本回合各次调用累计：Σcache_read ÷ Σprompt。"""
+    metrics = _load_metrics()
+    metrics.clear()
+    metrics.on_post_api_request(
+        session_id="sess-1", started_at=100.0, ended_at=102.0, first_chunk_at=100.5,
+        usage={"output_tokens": 10, "prompt_tokens": 1000, "cache_read_tokens": 800},
+    )
+    metrics.on_post_api_request(
+        session_id="sess-1", started_at=110.0, ended_at=112.0, first_chunk_at=110.5,
+        usage={"output_tokens": 10, "prompt_tokens": 1000, "cache_read_tokens": 900},
+    )
+    got = metrics.summary("sess-1")
+    assert got["cache_hit_pct"] == pytest.approx(85.0)
+
+
+def test_cache_hit_rate_skips_the_previous_turn():
+    metrics = _load_metrics()
+    metrics.clear()
+    metrics.on_post_api_request(
+        session_id="sess-1", started_at=100.0, ended_at=102.0, first_chunk_at=100.5,
+        usage={"output_tokens": 10, "prompt_tokens": 1000, "cache_read_tokens": 0},
+    )
+    metrics.on_post_api_request(
+        session_id="sess-1", started_at=200.0, ended_at=202.0, first_chunk_at=200.5,
+        usage={"output_tokens": 10, "prompt_tokens": 1000, "cache_read_tokens": 950},
+    )
+    agent = _Agent()
+    agent._inflight_turn_started = 199.0
+    stats = patch.collect_stream_stats(_Gateway(agent), "sk")
+    assert stats["cache_hit_pct"] == pytest.approx(95.0)

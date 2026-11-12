@@ -542,8 +542,8 @@ class TestBuildFooterElements:
             {"cache_read_tokens": 8300, "input_tokens": 15420},
             fields=[["cache"]],
         )
-        assert "Cache hit 54%" in result[0]["content"]
-        assert "缓存命中 54%" in result[0]["i18n_content"]["zh_cn"]
+        assert "54%" in result[0]["content"]
+        assert "54%" in result[0]["i18n_content"]["zh_cn"]
 
     def test_cache_hidden_without_data(self) -> None:
         # 无缓存读取或无 prompt 分母时隐藏（零读取 ≠ 0%）
@@ -573,7 +573,7 @@ class TestBuildFooterElements:
             },
         )
         content = result[0]["content"]
-        for piece in ("208 t/s", "Cache hit 54%", "50.0K", "deepseek-v4"):
+        for piece in ("208 t/s", "54%", "50.0K", "deepseek-v4"):
             assert piece in content
 
 
@@ -896,7 +896,7 @@ class TestPanelHeaderFields:
             },
         ))
         title = panel["header"]["title"]["content"]
-        assert "Cache hit 54%" in title
+        assert "54%" in title
         assert "208 t/s" in title
         assert "💭1" not in title
 
@@ -905,7 +905,7 @@ class TestPanelHeaderFields:
             panel_fields=["cache"],
             footer_data={"duration": 8.0, "input_tokens": 15420, "cache_read_tokens": 8300},
         ))
-        assert "缓存命中 54%" in panel["header"]["title"]["i18n_content"]["zh_cn"]
+        assert panel["header"]["title"]["i18n_content"]["zh_cn"] == "54%"
 
     def test_unknown_fields_ignored(self) -> None:
         panel = self._panel(self._card(
@@ -1140,3 +1140,21 @@ class TestOverflowFallbackCard:
         content = elements[0]["content"]
         assert "plain text" in content
         assert "纯文本" in elements[0]["i18n_content"]["zh_cn"]
+
+
+def test_panel_header_prefers_turn_cache_hit_rate():
+    """本回合命中率优先于「会话累计 ÷ 本轮输入」的回退算法。"""
+    card = build_complete_card(
+        segments=[_seg("answer", "ok")],
+        all_tool_steps=[],
+        footer_data={
+            "duration": 5.0,
+            "cache_read_tokens": 100,   # 回退算法会给出 10%
+            "input_tokens": 1000,
+            "cache_hit_pct": 91.0,      # 本轮真值
+        },
+        panel_fields=["cache"],
+    )
+    panel = next(e for e in body_content_elements(card) if e.get("tag") == "collapsible_panel")
+    title = panel["header"]["title"]["content"]
+    assert title == "91%"

@@ -24,7 +24,7 @@ _T: dict[str, tuple[str, str]] = {
     "status_stopped": ("🛑 Stopped", "🛑 已停止"),
     "elapsed": ("Elapsed {}", "耗时 {}"),
     "context": ("Context {}", "上下文 {}"),
-    "cache_hit": ("Cache hit {}%", "缓存命中 {}%"),
+    "cache_hit": ("{}%", "{}%"),
     "processing": ("Processing...", "处理中..."),
     "processing_prefix": ("💭 Processing...", "💭 处理中..."),
     "processing_prefix_plain": ("Processing...", "处理中..."),
