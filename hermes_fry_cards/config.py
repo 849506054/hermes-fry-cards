@@ -518,15 +518,16 @@ class Config:
     def panel_fields(self) -> list[str]:
         """统一面板 header 字段组合（有序一维列表）.
 
-        与 footer 共用字段池：status/elapsed/speed/cache/tokens/context/model，
-        另有面板专属计数 reasoning（💭 推理轮数）/ tools（🔧 工具步数）。
+        与 footer 共用字段池：status/elapsed/speed/cache/tokens/context/model。
+        封卡的思考轮数与工具步数不在 header 里，改由详情框首行呈现（分叉线口径）；
+        这里的 reasoning / tools 只对仍按旧布局配置的卡片生效。
         context 受 show_context 总闸与 context_display_mode 样式控制。
 
         优先级：display.platforms.feishu.panel_fields → display.panel_fields，
-        默认 ["model", "reasoning", "tools", "context", "elapsed"]（历史默认布局）。
+        默认 ["model", "speed", "context", "elapsed"]。
         非法或为空回落默认。
         """
-        default = ["model", "reasoning", "tools", "context", "elapsed"]
+        default = ["model", "speed", "context", "elapsed"]
         display = self._reload().get("display")
         if not isinstance(display, dict):
             return default

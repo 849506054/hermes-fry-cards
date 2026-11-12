@@ -485,6 +485,23 @@ class TestBuildFooterElements:
         assert "50.0K" in result[0]["content"]
         assert "25%" in result[0]["content"]
 
+    def test_context_max_has_no_decimal(self) -> None:
+        """上限是容量值，按整数显示；用量仍保留一位小数。"""
+        result = _build_footer_elements(
+            {"context_used": 50000, "context_max": 200000},
+            fields=[["context"]],
+        )
+        content = result[0]["content"]
+        assert "50.0K/200K" in content
+        assert "200.0K" not in content
+
+    def test_context_text_max_has_no_decimal(self) -> None:
+        from hermes_fry_cards.cardkit.builder import _context_progress_with_text, _context_text
+
+        assert _context_text(261000, 512000) == "261.0k/512k (51%)"
+        assert _context_text(261000, 1000000) == "261.0k/1m (26%)"
+        assert "261.0k/512k [" in _context_progress_with_text(261000, 512000)
+
     def test_tokens_displayed(self) -> None:
         result = _build_footer_elements(
             {"input_tokens": 1000, "output_tokens": 500},

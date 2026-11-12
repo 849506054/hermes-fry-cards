@@ -4,6 +4,10 @@ The core emits up to three status lines while compacting (start, heartbeat, done
 They arrive over the plain status channel, so the Feishu adapter would post each
 as its own text bubble. Grouping them keeps one card whose text is the current
 line, so a finished compaction shows its result and nothing above it.
+
+A compression that a pre-check starts announces itself first with the ``📦 Pre-API
+compression: …`` or ``📦 Preflight compression: …`` line. It opens the same card, so
+that line lands in the card instead of becoming a separate bubble above it.
 """
 from __future__ import annotations
 
@@ -22,6 +26,9 @@ START_MARKERS = ("Compacting context",)
 HEARTBEAT_MARKERS = ("still summarizing",)
 DONE_MARKERS = ("Context compaction complete",)
 RESULT_MARKERS = ("Approx request size:",)
+# Announced ahead of the compaction by the pre-API check (mid-turn) or the turn-start
+# threshold check; the start line that follows belongs to the same compression.
+PRE_ANNOUNCE_MARKERS = ("Pre-API compression", "Preflight compression")
 
 _MAX_TRACKED = 64
 _TITLE_EN = "Context compaction"
@@ -29,11 +36,13 @@ _TITLE_ZH = "上下文压缩"
 
 
 def classify(content: str) -> str | None:
-    """Return ``start`` / ``heartbeat`` / ``done`` / ``result`` for a compaction line, else ``None``.
+    """Return ``prestart`` / ``start`` / ``heartbeat`` / ``done`` / ``result`` for a compaction line, else ``None``.
 
-    ``result`` is the summary the manual ``/compress`` command answers with
-    (``Compressed: 232 -> 41 messages`` plus the request-size line). It belongs in
-    the same card as the progress lines, not in a second bubble below them.
+    ``prestart`` is the announcement that opens the card for the compaction that
+    follows it (pre-API or turn-start preflight). ``result`` is the summary the
+    manual ``/compress`` command answers with (``Compressed: 232 -> 41 messages``
+    plus the request-size line). It belongs in the same card as the progress lines,
+    not in a second bubble below them.
     """
     text = str(content or "")
     if any(marker in text for marker in DONE_MARKERS):
@@ -42,6 +51,8 @@ def classify(content: str) -> str | None:
         return "heartbeat"
     if any(marker in text for marker in START_MARKERS):
         return "start"
+    if any(marker in text for marker in PRE_ANNOUNCE_MARKERS):
+        return "prestart"
     if "Compressed" in text and any(marker in text for marker in RESULT_MARKERS):
         return "result"
     return None
@@ -87,11 +98,12 @@ class CompactionCards:
         entry carries ``lines`` to render plus ``message_id`` when the card
         already exists; a fresh entry has no ``message_id`` yet.
 
-        Grouping follows the wording alone: a start line opens a card, heartbeat
-        lines overwrite it in place, the done line closes it, and the manual
-        /compress result overwrites the done line. A second start before the done
-        line closes the previous card and opens a new one, so a compaction that
-        never reported completion cannot swallow the next turn.
+        Grouping follows the wording alone: the pre-API line opens a card, the
+        start line of that same compaction overwrites it, heartbeat lines
+        overwrite it in place, the done line closes it, and the manual /compress
+        result overwrites the done line. A start or pre-API line that finds a card
+        opened by anything else closes that card and opens a new one, so a
+        compaction that never reported completion cannot swallow the next turn.
         """
         kind = classify(content)
         if kind is None:
@@ -100,11 +112,16 @@ class CompactionCards:
         entry = self._entries.get(str(chat_id))
         if entry is not None and entry["final"] and kind != "result":
             entry = None
-        if kind == "start" and entry is not None:
-            entry["final"] = True
-            entry = None
+        if kind in {"start", "prestart"} and entry is not None:
+            # The pre-API announcement and the start line of the compaction it
+            # announced are one compression: both stay in the card it opened.
+            same_compression = entry.get("opened_by") == "prestart"
+            if not same_compression:
+                entry["final"] = True
+                entry = None
         if entry is None:
-            entry = {"message_id": None, "lines": [], "final": False, "updated": now}
+            entry = {"message_id": None, "lines": [], "final": False, "updated": now,
+                     "opened_by": kind}
             self._entries[str(chat_id)] = entry
             self._prune()
         # The card shows the current line only: each new line overwrites the previous one,

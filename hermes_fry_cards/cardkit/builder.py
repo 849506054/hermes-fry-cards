@@ -237,6 +237,22 @@ def _process_title(
             "text_color": "grey", "text_size": "notation"}, "process_title")
 
 
+def _completed_counts_element(reasoning_count: int, tool_count: int) -> dict | None:
+    """封卡详情框首行：思考轮数与工具执行步数，文案沿用更新期的计数形态.
+
+    两者都是 0 时不出这一行，框内退回中途消息或占位句。
+    """
+    if reasoning_count <= 0 and tool_count <= 0:
+        return None
+    en_tpl, zh_tpl = _T["process_counts_done"]
+    en = en_tpl.format(reasoning_count, tool_count)
+    zh = zh_tpl.format(reasoning_count, tool_count)
+    return text_element({
+        "tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh),
+        "text_color": "grey", "text_size": "notation",
+    }, "process_title")
+
+
 @styled_builder
 def _collapsible_panel(
     *,
@@ -794,14 +810,22 @@ def _build_panel_header(
     panel_elapsed_ms: int | float,
     show_context: bool,
     context_mode: str,
+    counts_in_header: bool = True,
 ) -> tuple[str, str]:
-    """组装统一面板 header 文本，返回 (en, zh)。无效/缺数据字段自动隐藏."""
+    """组装统一面板 header 文本，返回 (en, zh)。无效/缺数据字段自动隐藏.
+
+    ``counts_in_header=False`` 供封卡用：思考轮数与工具步数改由详情框首行呈现
+    （``_completed_counts_element``），header 只留调用方点名的其余字段。
+    """
     if not fields:
         fields = list(_PANEL_DEFAULT_FIELDS)
+    trailing = ("reasoning", "tools") if counts_in_header else ()
     fields = list(dict.fromkeys(
         "process_counts" if name in ("reasoning", "tools") else name
-        for name in [*fields, "reasoning", "tools"]
+        for name in [*fields, *trailing]
     ))
+    if not counts_in_header:
+        fields = [name for name in fields if name != "process_counts"]
     en_parts: list[str] = []
     zh_parts: list[str] = []
     for name in fields:
@@ -942,7 +966,7 @@ def _render_footer_field(
         max_c = data.get("context_max", 0) or 0
         if max_c:
             pct = int(used / max_c * 100)
-            val = f"{_compact(used)}/{_compact(max_c)} ({pct}%)"
+            val = f"{_compact(used)}/{_capacity(max_c)} ({pct}%)"
             if show_label:
                 return _T["context"][0].format(val), _T["context"][1].format(val)
             return val, val
@@ -957,6 +981,20 @@ def _compact(n: int) -> str:
         return f"{int(m)}M" if m >= 100 else f"{m:.1f}M"
     if n >= 1_000:
         return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+def _capacity(n: int, *, upper: bool = True) -> str:
+    """模型上下文上限按整数单位显示（512K / 1M），容量值不带小数。
+
+    用量会随轮次变化，保留一位小数有意义；上限是固定容量，小数只是噪音。
+    面板文本用小写单位（512k），footer 用大写（512K），靠 ``upper`` 区分。
+    """
+    unit_k, unit_m = ("K", "M") if upper else ("k", "m")
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.0f}{unit_m}"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}{unit_k}"
     return str(n)
 
 
@@ -1005,21 +1043,21 @@ def _context_progress_block(used: int, total: int, width: int = 10) -> str:
 
 
 def _context_text(used: int, total: int) -> str:
-    """生成上下文纯文本，格式: 55.6k/1.0m (5%)"""
+    """生成上下文纯文本，格式: 55.6k/512k (5%)  —— 上限取整，用量保留一位小数"""
     if total <= 0:
         return ""
     pct = min(used / total * 100, 100)
+    total_str = _capacity(total, upper=False)
     if total >= 1_000_000:
         # total 用 m，used 根据大小用 k 或 m
-        total_str = f"{total / 1_000_000:.1f}m"
         if used < 1_000_000:
             used_str = f"{used / 1_000:.1f}k"
         else:
             used_str = f"{used / 1_000_000:.1f}m"
         return f"{used_str}/{total_str} ({pct:.0f}%)"
     if total >= 1_000:
-        return f"{used / 1_000:.1f}k/{total / 1_000:.1f}k ({pct:.0f}%)"
-    return f"{used}/{total} ({pct:.0f}%)"
+        return f"{used / 1_000:.1f}k/{total_str} ({pct:.0f}%)"
+    return f"{used}/{total_str} ({pct:.0f}%)"
 
 
 def _context_pct(used: int, total: int) -> str:
@@ -1031,21 +1069,21 @@ def _context_pct(used: int, total: int) -> str:
 
 
 def _context_progress_with_text(used: int, total: int, width: int = 8) -> str:
-    """生成文本+渐变进度条，格式: 55.6k/1.0m [███▓▒░░░] 5%"""
+    """生成文本+渐变进度条，格式: 55.6k/512k [███▓▒░░░] 5%（上限取整）"""
     if total <= 0:
         return ""
     pct = min(used / total * 100, 100)
     bar = _context_progress_bar(used, total, width)
+    total_str = _capacity(total, upper=False)
     if total >= 1_000_000:
-        total_str = f"{total / 1_000_000:.1f}m"
         if used < 1_000_000:
             used_str = f"{used / 1_000:.1f}k"
         else:
             used_str = f"{used / 1_000_000:.1f}m"
         return f"{used_str}/{total_str} [{bar}] {pct:.0f}%"
     if total >= 1_000:
-        return f"{used / 1_000:.1f}k/{total / 1_000:.1f}k [{bar}] {pct:.0f}%"
-    return f"{used}/{total} [{bar}] {pct:.0f}%"
+        return f"{used / 1_000:.1f}k/{total_str} [{bar}] {pct:.0f}%"
+    return f"{used}/{total_str} [{bar}] {pct:.0f}%"
 
 
 @styled_builder
@@ -1247,13 +1285,16 @@ def build_complete_card(
     if not is_aborted:
         border_color = "red" if is_error else "green"
         unified_children: list[dict] = []
+        # 框内首行放本轮计数（思考轮数 · 工具步数），框头只留 context/耗时/速度这类字段。
+        counts_el = _completed_counts_element(reasoning_count, tool_count)
+        if counts_el is not None:
+            unified_children.append(counts_el)
         for message in detail_messages:
             _append_content_elements(unified_children, message, text_size=body_text_size)
         if not unified_children:
             en, zh = _T["no_details"]
             _append_content_elements(unified_children, en, text_size=body_text_size)
             unified_children[-1]["i18n_content"] = _i18n(en, zh)
-        # 框头保持原样：字段池、计数与耗时都不动。
         panel_elapsed_ms = tool_elapsed_ms
         if not panel_elapsed_ms and footer_data:
             _p_duration = footer_data.get("duration")
@@ -1267,6 +1308,7 @@ def build_complete_card(
             panel_elapsed_ms=panel_elapsed_ms,
             show_context=config.show_context,
             context_mode=config.context_display_mode,
+            counts_in_header=False,
         )
         unified_panel = {
             "tag": "collapsible_panel",

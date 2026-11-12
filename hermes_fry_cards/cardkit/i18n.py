@@ -47,6 +47,7 @@ _T: dict[str, tuple[str, str]] = {
     "process_counts_compact": ("💭{0}·🔧{1}", "💭{0}·🔧{1}"),
     "reasoning_count_streaming": ("💭 Thinking {0} stages", "💭 已思考 {0} 轮"),
     "tool_count_streaming": ("🔧 Tools {0} steps", "🔧 工具执行中 {0} 步"),
+    "process_counts_done": ("💭 Thought {0} rounds · Ran {1} tool steps", "💭 思考 {0} 轮 · 工具执行 {1} 步"),
     "tool_totals_summary": ("🔧 Tools executed: {0} steps · Elapsed {1}", "🔧 工具执行 {0} 步 · 耗时 {1}"),
     "thought_for": ("Thought for {}", "思考了 {}"),
     "done": ("Done.", "完成。"),

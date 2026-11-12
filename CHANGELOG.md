@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.39] - 2026-11-12
+
+### Changed
+
+- 预检那两行 `📦 Pre-API compression: …`（回合中调模型前）和 `📦 Preflight compression: …`（回合开始的阈值预检）并入压缩卡：先开卡，紧接着的开始行顶掉它，一次预检压缩只出一条卡，不再在卡上方单独占一条消息。
+- 上下文上限按整数显示：面板和 footer 里的「用量/上限」从 `261.0k/512.0k` 变成 `261.0k/512k`，用量保留一位小数；纯文本、文本+进度条两种模式同步。
+
 ## [0.6.2.38] - 2026-11-11
 
 ### Changed

@@ -11,6 +11,10 @@ START = "🗜️ Compacting context — summarizing earlier conversation so I ca
 HEARTBEAT = "🗜️ Compacting context — still summarizing earlier conversation so I can continue..."
 DONE = "✓ Context compaction complete — continuing turn..."
 RESULT = "🗜️ Compressed: 232 → 41 messages\nApprox request size: ~157,901 → ~40,062 tokens"
+PRE_API = ("📦 Pre-API compression: ~259,245 tokens near the context/output limit. "
+           "Compacting before the next model call.")
+PREFLIGHT = ("📦 Preflight compression: ~260,000 tokens >= 256,000 threshold. "
+             "This may take a moment.")
 
 
 def test_classify_separates_compaction_from_other_status():
@@ -18,8 +22,44 @@ def test_classify_separates_compaction_from_other_status():
     assert compaction_card.classify(HEARTBEAT) == "heartbeat"
     assert compaction_card.classify(DONE) == "done"
     assert compaction_card.classify(RESULT) == "result"
+    assert compaction_card.classify(PRE_API) == "prestart"
+    assert compaction_card.classify(PREFLIGHT) == "prestart"
     assert compaction_card.classify("⚠️ Hermes 正在关闭") is None
     assert compaction_card.classify("") is None
+
+
+def test_pre_api_line_opens_the_card_the_start_line_then_fills():
+    """预检那行先开卡，紧接着的开始行进同一张卡，不另起一条气泡。"""
+    cards = compaction_card.CompactionCards()
+    first = cards.take("chat", PRE_API)
+    cards.bind("chat", first, "msg-1")
+    assert first["lines"] == [PRE_API]
+    entry = cards.take("chat", START)
+    assert entry is first
+    assert entry["message_id"] == "msg-1"
+    assert entry["lines"] == [START]
+
+
+def test_pre_api_after_done_opens_a_new_card():
+    cards = compaction_card.CompactionCards()
+    first = cards.take("chat", START)
+    cards.bind("chat", first, "msg-1")
+    done = cards.take("chat", DONE)
+    cards.bind("chat", done, "msg-1")
+    fresh = cards.take("chat", PRE_API)
+    assert fresh is not first
+    assert fresh["message_id"] is None
+    assert fresh["lines"] == [PRE_API]
+
+
+def test_pre_api_closes_a_card_still_open_from_another_compaction():
+    cards = compaction_card.CompactionCards()
+    first = cards.take("chat", START)
+    cards.bind("chat", first, "msg-1")
+    second = cards.take("chat", PRE_API)
+    assert second is not first
+    assert second["message_id"] is None
+    assert first["final"] is True
 
 
 def test_done_line_closes_the_turn_so_the_next_compaction_starts_a_new_card():
@@ -69,6 +109,25 @@ async def test_three_status_lines_land_in_one_card(adapter):  # noqa: F811
     assert DONE in rendered
     assert START not in rendered
     assert HEARTBEAT not in rendered
+
+
+@pytest.mark.asyncio
+async def test_pre_api_line_and_three_status_lines_land_in_one_card(adapter):  # noqa: F811
+    """预检那行跟后面的三行进同一张卡：一次压缩只出一条卡。"""
+    results = [await adapter.send("chat", line) for line in (PRE_API, START, HEARTBEAT, DONE)]
+
+    assert [r.success for r in results] == [True, True, True, True]
+    assert adapter._feishu_send_with_retry.await_count == 1
+    assert adapter._run_blocking.await_count == 3
+    adapter.plain.assert_not_awaited()
+
+    first_card = json.loads(adapter._feishu_send_with_retry.call_args.kwargs["payload"])
+    assert PRE_API in str(first_card)
+
+    last_request = adapter._run_blocking.await_args_list[-1].args[1]
+    rendered = json.dumps(json.loads(last_request.request_body.content), ensure_ascii=False)
+    assert DONE in rendered
+    assert PRE_API not in rendered
 
 
 def test_manual_result_replaces_the_done_line_in_the_open_card():
