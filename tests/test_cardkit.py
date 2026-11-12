@@ -878,7 +878,8 @@ class TestPanelHeaderFields:
         panel = self._panel(self._card(footer_data={"duration": 8.0, "model": "deepseek-v4"}))
         title = panel["header"]["title"]["content"]
         assert "🍟 deepseek-v4" in title
-        assert "用时 8.0s" in title
+        assert "8.0s" in title
+        assert "用时" not in title  # 裸时长：不加任何前缀
         # 封卡计数落详情框首行，不再占框头。
         assert "💭" not in title and "🔧" not in title
         assert panel["elements"][0]["tag"] == "markdown"

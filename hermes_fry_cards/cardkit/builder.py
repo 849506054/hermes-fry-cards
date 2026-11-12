@@ -756,7 +756,7 @@ def _render_panel_field(
 ) -> tuple[str | None, str | None]:
     """统一面板 header 字段渲染 — 与 footer 共用字段池，外加面板专属计数.
 
-    面板 flair：model 前缀 🍟、elapsed 前缀「用时」（工具执行/会话耗时）、💭/🔧 为面板
+    面板 flair：model 前缀 🍟、elapsed 为裸时长（工具执行/会话耗时）、💭/🔧 为面板
     专属计数（推理轮数/工具步数）；context 按 context_display_mode 渲染；
     其余共享字段（speed/cache/tokens/status）原样回落 footer 渲染器。
     """
@@ -776,7 +776,7 @@ def _render_panel_field(
         return (_T["tool_count"][0].format(tool_count), _T["tool_count"][1].format(tool_count))
     if name == "elapsed":
         if panel_elapsed_ms > 0:
-            v = f"用时 {_format_elapsed(panel_elapsed_ms)}"
+            v = _format_elapsed(panel_elapsed_ms)
             return v, v
         return None, None
     if name == "context":
