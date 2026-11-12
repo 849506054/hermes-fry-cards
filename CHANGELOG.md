@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- 完成卡的 tok/s 改取纯解码吞吐：新增 `fry-metrics` 插件挂在 `post_api_request` 上，按每次调用记录开始、首字、结束时刻与输出 token 数，卡片用「首字到调用结束」这段的 token 数除以其耗时（与 dsh 同口径），首字等待单独作为 `ttft_ms` 采到。插件不在或缺样本时回退到原来的近十次调用 `sum(output)/sum(latency)` 端到端口径。
+- 完成卡的 tok/s 改取纯解码吞吐：新增 `fry-metrics` 插件挂在 `post_api_request` 上，按每次调用记录开始、首字、结束时刻与输出 token 数，卡片用「首字到调用结束」这段的 token 数除以其耗时（与 dsh 同口径），只算本回合的调用（拆卡时几张卡同属一个回合），首字等待单独作为 `ttft_ms` 采到。插件不在或缺样本时回退到原来的近十次调用 `sum(output)/sum(latency)` 端到端口径。
 
 ## [0.6.2.42] - 2026-11-12
 

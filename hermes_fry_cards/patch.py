@@ -326,8 +326,9 @@ def collect_stream_stats(gateway: Any, session_key: str | None) -> dict[str, Any
     - 缓存读取: ``agent.session_cache_read_tokens``（会话累计；命中率 =
       cache_read / prompt_tokens，prompt 已含缓存，见 agent/turn_usage.py 的归一化）；
     - 速度: 优先取 ``fry_metrics``（fry-metrics 插件经 post_api_request hook 采集的
-      每次调用样本：首字时刻 → 调用结束的纯解码吞吐，与 dsh 同口径），插件不在或缺样本
-      时回退到 ``_api_latency_history`` / ``_api_output_history`` 滚动近 10 次 API 调用的
+      每次调用样本：首字时刻 → 调用结束的纯解码吞吐，与 dsh 同口径），只算本回合的调用
+      （按 ``agent._inflight_turn_started`` 切；拆卡时几张卡同属一个回合）；插件不在或缺
+      样本时回退到 ``_api_latency_history`` / ``_api_output_history`` 滚动近 10 次 API 调用的
       sum(output)/sum(latency) 端到端吞吐（同 CLI 状态栏，剔除工具执行时间）。
 
     任一数据不可得即省略对应键；agent 不在缓存（被逐出/非方法作用域）返回 {}，
@@ -375,7 +376,16 @@ def collect_stream_stats(gateway: Any, session_key: str | None) -> dict[str, Any
     try:
         import fry_metrics  # type: ignore  # fry-metrics 插件
 
-        exact = fry_metrics.summary(str(getattr(agent, "session_id", "") or ""))
+        # 只算本回合的调用：卡片一张可能跨多条请求，上一轮的调用不该算进来。
+        # agent._inflight_turn_started 是核心在回合开始时打的 time.time() 时间戳。
+        try:
+            turn_start = float(getattr(agent, "_inflight_turn_started", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            turn_start = 0.0
+        exact = fry_metrics.summary(
+            str(getattr(agent, "session_id", "") or ""),
+            since=turn_start or None,
+        )
         decode = exact.get("decode_tokens_per_sec")
         if decode:
             stats["decode_tokens_per_sec"] = float(decode)

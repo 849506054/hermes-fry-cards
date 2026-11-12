@@ -32,6 +32,8 @@ def _load_metrics():
 class _Agent:
     session_id = "sess-1"
     session_cache_read_tokens = 0
+    # turn boundary stamped by the core; 0 means "unknown", which keeps every sample
+    _inflight_turn_started: float = 0.0
     # end-to-end history: 2 calls of 4s latency each, 100 output tokens each → 25 tok/s
     _api_latency_history: ClassVar[list[float]] = [4.0, 4.0]
     _api_output_history: ClassVar[list[float]] = [100.0, 100.0]
@@ -91,3 +93,28 @@ def test_collect_stream_stats_falls_back_without_samples():
     stats = patch.collect_stream_stats(_Gateway(_Agent()), "sk")
     assert "decode_tokens_per_sec" not in stats
     assert stats["tokens_per_sec"] == pytest.approx(25.0)
+
+
+def test_only_this_turns_calls_count():
+    """上一轮的调用不进本卡：窗口按回合开始时刻切。"""
+    metrics = _load_metrics()
+    metrics.clear()
+    # previous turn: 500 tokens over 1s decode → 500 tok/s, must be excluded
+    metrics.on_post_api_request(
+        session_id="sess-1", started_at=100.0, ended_at=102.0, first_chunk_at=101.0,
+        usage={"output_tokens": 500},
+    )
+    # this turn: 200 tokens over 2s decode → 100 tok/s
+    metrics.on_post_api_request(
+        session_id="sess-1", started_at=200.0, ended_at=203.0, first_chunk_at=201.0,
+        usage={"output_tokens": 200},
+    )
+
+    agent = _Agent()
+    agent._inflight_turn_started = 199.0
+    stats = patch.collect_stream_stats(_Gateway(agent), "sk")
+    assert stats["tokens_per_sec"] == pytest.approx(100.0)
+
+    agent._inflight_turn_started = 0.0
+    stats = patch.collect_stream_stats(_Gateway(agent), "sk")
+    assert stats["tokens_per_sec"] == pytest.approx(700.0 / 3.0)
