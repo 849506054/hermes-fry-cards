@@ -216,7 +216,8 @@ async def test_consecutive_interim_messages_with_unstreamed_final_keep_boundarie
 
 
 @pytest.mark.asyncio
-async def test_rollover_retains_each_cards_own_history():
+async def test_rollover_hands_history_to_the_next_card():
+    """交接卡不带过程历史（没有计数框），历史归最后一张卡。"""
     ctrl, session = make_session()
     state = session.segment_state
     state.on_interim_answer("旧卡进度一")
@@ -227,7 +228,8 @@ async def test_rollover_retains_each_cards_own_history():
     state.on_tool_event(2)
     await ctrl._seal_current_card(session, seal_segments)
     old_card = ctrl._client.cardkit_update.call_args.args[1]
-    assert detail_texts(old_card) == ["旧卡进度一", "旧卡进度二"]
+    assert "旧卡进度一" not in str(old_card)
+    assert "collapsible_panel" not in str(old_card)
     session.split_index = len(seal_segments)
     state.on_completion_answer("最终定稿")
     assert await ctrl._do_complete_card_inner(session)

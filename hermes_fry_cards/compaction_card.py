@@ -104,6 +104,8 @@ class CompactionCards:
         result overwrites the done line. A start or pre-API line that finds a card
         opened by anything else closes that card and opens a new one, so a
         compaction that never reported completion cannot swallow the next turn.
+        The one exception is the in-flight window: the announcement joins a start
+        card that has not been posted yet, since that is the same compression.
         """
         kind = classify(content)
         if kind is None:
@@ -116,6 +118,13 @@ class CompactionCards:
             # The pre-API announcement and the start line of the compaction it
             # announced are one compression: both stay in the card it opened.
             same_compression = entry.get("opened_by") == "prestart"
+            if (not same_compression and kind == "prestart"
+                    and entry.get("opened_by") == "start"
+                    and entry.get("message_id") is None):
+                # The two lines can be dispatched at once. If the announcement
+                # reaches the card before the start line's card is posted, it
+                # joins that card instead of opening a second one beside it.
+                same_compression = True
             if not same_compression:
                 entry["final"] = True
                 entry = None

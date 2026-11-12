@@ -128,7 +128,8 @@ async def test_final_renders_on_active_card_after_split(active_preview):
 
 
 @pytest.mark.asyncio
-async def test_rollover_card_keeps_process_and_continuation_status():
+async def test_rollover_card_keeps_continuation_status_only():
+    """交接卡只留一句「正文见后续卡片」：过程与计数随面板一起去掉（同停止卡）。"""
     ctrl, session = make_session()
     session.segment_state.on_interim_answer("本卡中途消息")
     session.segment_state.on_answer_delta("应当消失的预览")
@@ -138,9 +139,10 @@ async def test_rollover_card_keeps_process_and_continuation_status():
     card = ctrl._client.cardkit_update.call_args.args[1]
     assert "应当消失的预览" not in body_texts(card)
     assert "应当消失的预览" not in str(card)
-    assert "本卡中途消息" in str(card)
+    assert "本卡中途消息" not in str(card)
     assert any("continues" in t for t in body_texts(card))
-    assert any(e["tag"] == "collapsible_panel" for e in body_content_elements(card))
+    assert not any(e["tag"] == "collapsible_panel" for e in body_content_elements(card))
+    assert "collapsible_panel" not in str(card)
 
 
 @pytest.mark.asyncio

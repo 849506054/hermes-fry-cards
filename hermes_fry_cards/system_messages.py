@@ -222,55 +222,68 @@ async def _send_compaction(self, chat_id: str, content: str, *, reply_to=None, m
 
     The first line posts a card, heartbeat and completion lines patch that same
     card, so three routine notices land as one message instead of three bubbles.
+
+    The gateway dispatches status callbacks as independent tasks, so two lines of
+    one compaction can be in flight together. Resolving the entry, posting the
+    card and recording its message id therefore runs under one lock per chat:
+    otherwise the second line still sees "no card yet" and posts a card beside
+    the first instead of overwriting it.
     """
     cards = getattr(self, '_hl_compaction_cards', None)
     if cards is None:
         cards = self._hl_compaction_cards = CompactionCards()
-    entry = cards.take(chat_id, content)
-    if entry is None:
-        return None
-    config = Config().card_snapshot()
-    card = build_compaction_card(list(entry['lines']), config)
-    payload = json.dumps(card, ensure_ascii=False)
-    has_reference = bool(reply_to or ((metadata or {}).get('thread_id')
-                                     and (metadata or {}).get('reply_to_message_id')))
-    message_id = entry.get('message_id')
-    try:
-        if message_id:
-            from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
-            request = PatchMessageRequest.builder().message_id(message_id).request_body(
-                PatchMessageRequestBody.builder().content(payload).build()).build()
-            response = await self._run_blocking(self._client.im.v1.message.patch, request)
-            result = self._finalize_send_result(response, 'compaction card edit failed')
-            if result.success:
-                result.message_id = message_id
-            _logger.info('compaction_card_updated: lines=%d success=%s',
-                         len(entry['lines']), result.success)
-            return result
-        response = await self._feishu_send_with_retry(
-            chat_id=chat_id, msg_type='interactive', payload=payload,
-            reply_to=reply_to, metadata=metadata,
-        )
-        result = self._finalize_send_result(response, 'compaction card send failed')
-    except Exception as exc:
-        _logger.warning('compaction_card_failed: reason=transport type=%s', type(exc).__name__)
-        timed_out = isinstance(exc, TimeoutError)
-        return self._hl_SendResult(
-            success=False,
-            error='Compaction card transport timed out' if timed_out else (str(exc) or type(exc).__name__),
-        )
-    if result.success:
-        new_id = getattr(result, 'message_id', None)
-        if new_id:
-            cards.bind(chat_id, entry, new_id)
-            registry = getattr(self, '_hl_system_cards', None)
-            if registry is None:
-                registry = self._hl_system_cards = OrderedDict()
-            registry[str(new_id)] = (str(chat_id), config, has_reference)
-            while len(registry) > _MAX_TRACKED:
-                registry.popitem(last=False)
-    _logger.info('compaction_card_sent: lines=%d success=%s', len(entry['lines']), result.success)
-    return result
+    locks = getattr(self, '_hl_compaction_locks', None)
+    if locks is None:
+        locks = self._hl_compaction_locks = {}
+    lock = locks.get(str(chat_id))
+    if lock is None:
+        lock = locks[str(chat_id)] = asyncio.Lock()
+    async with lock:
+        entry = cards.take(chat_id, content)
+        if entry is None:
+            return None
+        config = Config().card_snapshot()
+        card = build_compaction_card(list(entry['lines']), config)
+        payload = json.dumps(card, ensure_ascii=False)
+        has_reference = bool(reply_to or ((metadata or {}).get('thread_id')
+                                         and (metadata or {}).get('reply_to_message_id')))
+        message_id = entry.get('message_id')
+        try:
+            if message_id:
+                from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+                request = PatchMessageRequest.builder().message_id(message_id).request_body(
+                    PatchMessageRequestBody.builder().content(payload).build()).build()
+                response = await self._run_blocking(self._client.im.v1.message.patch, request)
+                result = self._finalize_send_result(response, 'compaction card edit failed')
+                if result.success:
+                    result.message_id = message_id
+                _logger.info('compaction_card_updated: lines=%d success=%s',
+                             len(entry['lines']), result.success)
+                return result
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id, msg_type='interactive', payload=payload,
+                reply_to=reply_to, metadata=metadata,
+            )
+            result = self._finalize_send_result(response, 'compaction card send failed')
+        except Exception as exc:
+            _logger.warning('compaction_card_failed: reason=transport type=%s', type(exc).__name__)
+            timed_out = isinstance(exc, TimeoutError)
+            return self._hl_SendResult(
+                success=False,
+                error='Compaction card transport timed out' if timed_out else (str(exc) or type(exc).__name__),
+            )
+        if result.success:
+            new_id = getattr(result, 'message_id', None)
+            if new_id:
+                cards.bind(chat_id, entry, new_id)
+                registry = getattr(self, '_hl_system_cards', None)
+                if registry is None:
+                    registry = self._hl_system_cards = OrderedDict()
+                registry[str(new_id)] = (str(chat_id), config, has_reference)
+                while len(registry) > _MAX_TRACKED:
+                    registry.popitem(last=False)
+        _logger.info('compaction_card_sent: lines=%d success=%s', len(entry['lines']), result.success)
+        return result
 
 
 async def _edit(self, chat_id: str, message_id: str, content: str, *, finalize=False):

@@ -1,5 +1,7 @@
 """Context-compaction status lines collapse into one card per turn."""
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -161,6 +163,41 @@ def test_result_without_a_progress_card_opens_one():
     assert entry["message_id"] is None
     assert entry["final"] is True
     assert entry["lines"] == RESULT.splitlines()
+
+
+@pytest.mark.asyncio
+async def test_pre_api_and_start_in_flight_together_stay_in_one_card(adapter):  # noqa: F811
+    """网关把状态回调派发成独立任务：两行同时在路上时也只出一条卡。"""
+    release = asyncio.Event()
+    posted = []
+
+    async def slow_send(**kwargs):
+        posted.append(json.loads(kwargs['payload']))
+        release.set()
+        await asyncio.sleep(0.05)
+        return SimpleNamespace(success=lambda: True)
+
+    adapter._feishu_send_with_retry = slow_send
+    first = asyncio.create_task(adapter.send('chat', PRE_API))
+    await asyncio.wait_for(release.wait(), 1)
+    second = asyncio.create_task(adapter.send('chat', START))
+    await asyncio.gather(first, second)
+
+    assert len(posted) == 1
+    assert adapter._run_blocking.await_count == 1
+    last_request = adapter._run_blocking.await_args.args[1]
+    rendered = json.dumps(json.loads(last_request.request_body.content), ensure_ascii=False)
+    assert START in rendered and PRE_API not in rendered
+
+
+def test_pre_api_joins_a_start_card_that_is_still_being_posted():
+    """开始行先到、卡还没拿到 message_id 时，预检那行并入同一张卡。"""
+    cards = compaction_card.CompactionCards()
+    first = cards.take('chat', START)
+    assert first is not None and first['message_id'] is None
+    entry = cards.take('chat', PRE_API)
+    assert entry is first
+    assert entry['lines'] == [PRE_API]
 
 
 @pytest.mark.asyncio

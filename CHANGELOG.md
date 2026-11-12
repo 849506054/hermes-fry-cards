@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.43] - 2026-11-12
+
+### Fixed
+
+- 同一次压缩的预检行（`📦 Pre-API compression`）与开始行（`🗜️ Compacting context`）各自变成一张卡：网关把状态回调派发成独立任务，两行同时在飞时第二次 `take` 仍看到「卡还没 message_id」，于是又发一条卡。现在按 chat 加锁，解析条目 → 发卡 → 记录 message_id 一次完成；预检行若先于开始行落到卡上（开始行的卡尚未发出）并入同一张卡。
+- 拆卡后的交接卡不再建计数框（同停止卡口径）：本段正文已交给下一张卡，旧卡只留一句「本轮继续。正文见后续卡片。」，框内的过程消息随面板一起去掉。
+
+### Changed
+
+- 完成卡的 tok/s 改取纯解码吞吐：新增 `fry-metrics` 插件挂在 `post_api_request` 上，按每次调用记录开始、首字、结束时刻与输出 token 数，卡片用「首字到调用结束」这段的 token 数除以其耗时（与 dsh 同口径），首字等待单独作为 `ttft_ms` 采到。插件不在或缺样本时回退到原来的近十次调用 `sum(output)/sum(latency)` 端到端口径。
+
 ## [0.6.2.42] - 2026-11-12
 
 ### Fixed

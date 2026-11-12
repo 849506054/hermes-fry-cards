@@ -1278,8 +1278,9 @@ def build_complete_card(
     # Completed details preserve visible progress text in arrival order.
     detail_messages = list(process_messages or [])
     # 停止卡不建框（用户口径）：停止卡会被新卡接手，旧卡上的计数与过程没人看。
+    # 拆卡后的交接卡同理不建框：本段正文全部交给新卡，旧卡只留一句「正文见后续卡片」。
     # 出错卡与正常完成卡照旧建框：框内只放中途消息，没有则一句占位。
-    if not is_aborted:
+    if not is_aborted and not is_continuation:
         border_color = "red" if is_error else "green"
         # 首行是本轮计数（思考轮数 · 工具步数），它本身就是框内内容，
         # 因此不再另外补「本轮没有中途消息」这句占位。
