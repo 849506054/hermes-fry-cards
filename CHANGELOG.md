@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.44] - 2026-11-12
+
+### Changed
+
+- 完成卡框头去掉图形前缀，按手机窄屏一行放得下取简写：耗时由 `⏱️ 12.4s` 改为 `用时 12.4s`，速度由 `211 tok/s` 改为 `211 t/s`，上下文照旧。
+
 ## [0.6.2.43] - 2026-11-12
 
 ### Fixed

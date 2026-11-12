@@ -530,7 +530,7 @@ class TestBuildFooterElements:
 
     def test_speed_displayed(self) -> None:
         result = _build_footer_elements({"tokens_per_sec": 207.6}, fields=[["speed"]])
-        assert "208 tok/s" in result[0]["content"]
+        assert "208 t/s" in result[0]["content"]
 
     def test_speed_hidden_without_data(self) -> None:
         assert _build_footer_elements({}, fields=[["speed"]]) == []
@@ -573,7 +573,7 @@ class TestBuildFooterElements:
             },
         )
         content = result[0]["content"]
-        for piece in ("208 tok/s", "Cache hit 54%", "50.0K", "deepseek-v4"):
+        for piece in ("208 t/s", "Cache hit 54%", "50.0K", "deepseek-v4"):
             assert piece in content
 
 
@@ -878,7 +878,7 @@ class TestPanelHeaderFields:
         panel = self._panel(self._card(footer_data={"duration": 8.0, "model": "deepseek-v4"}))
         title = panel["header"]["title"]["content"]
         assert "🍟 deepseek-v4" in title
-        assert "⏱️ 8.0s" in title
+        assert "用时 8.0s" in title
         # 封卡计数落详情框首行，不再占框头。
         assert "💭" not in title and "🔧" not in title
         assert panel["elements"][0]["tag"] == "markdown"
@@ -896,7 +896,7 @@ class TestPanelHeaderFields:
         ))
         title = panel["header"]["title"]["content"]
         assert "Cache hit 54%" in title
-        assert "208 tok/s" in title
+        assert "208 t/s" in title
         assert "💭1" not in title
 
     def test_header_i18n_zh(self) -> None:
