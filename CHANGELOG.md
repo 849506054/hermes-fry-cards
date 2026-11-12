@@ -7,19 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.6.2.46] - 2026-11-12
+## [0.6.3] - 2026-11-12
 
-### Changed
+### Added
 
-- 完成卡框头缓存命中率保留一位小数（`99.2%`）：满会话里四舍五入到整数会长期停在 100%，一位小数还看得出变化。
-
-## [0.6.2.45] - 2026-11-12
-
-### Changed
-
-- 完成卡框头新增缓存命中率，只显示百分比（`91%`）；数值取本回合各次调用的 `Σcache_read ÷ Σprompt`，由 `fry-metrics` 汇总，与 tok/s 同一窗口。
-
-## [0.6.2.44] - 2026-11-12
+- 完成卡框头新增缓存命中率，只显示百分比、保留一位小数（`99.2%`）：数值取本回合各次调用的 `Σcache_read ÷ Σprompt`，由 `fry-metrics` 汇总，与 tok/s 同一窗口；插件无样本时回退会话累计口径。
 
 ### Changed
 
