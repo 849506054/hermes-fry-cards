@@ -407,7 +407,12 @@ def test_complete_count_style_and_plain_detail_alignment(config_factory):
     panel = next(e for e in builder.body_content_elements(card) if e.get("element_id") == "unified_panel")
     title = panel["header"]["title"]
     assert title["tag"] == "plain_text"
-    assert "💭1" in title["i18n_content"]["zh_cn"]
+    # 计数搬进详情框首行：框头不带 💭，首行元素沿用同一套样式键。
+    assert "💭" not in title["i18n_content"]["zh_cn"]
+    counts_el = panel["elements"][0]
+    assert counts_el["tag"] == "markdown"
+    assert "💭 思考 1 轮 · 工具执行 0 步" in counts_el["i18n_content"]["zh_cn"]
+    assert counts_el["text_size"] == "notation"
     assert panel["header"]["text_size"] == "notation"
     assert panel["header"]["text_color"] == "purple"
     detail = builder._build_tool_step_detail({"detail": "literal <tag> **text**"}, config=cfg)
@@ -471,9 +476,9 @@ def test_completed_panel_keeps_messages_without_counts(config_factory):
         process_messages=["Progress line"], footer_data={"duration": 30}, config=config_factory(),
     )
     panel = _panel_of(card)
-    assert [e["content"] for e in panel["elements"]] == ["Progress line"]
+    assert [e["content"] for e in panel["elements"][1:]] == ["Progress line"]
     assert "icon" not in panel["header"]
-    assert "💭1" in panel["header"]["title"]["content"]
+    assert "💭" not in panel["header"]["title"]["content"]
 
 
 

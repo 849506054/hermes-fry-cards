@@ -237,20 +237,17 @@ def _process_title(
             "text_color": "grey", "text_size": "notation"}, "process_title")
 
 
-def _completed_counts_element(reasoning_count: int, tool_count: int) -> dict | None:
+def _completed_counts_element(reasoning_count: int, tool_count: int) -> dict:
     """封卡详情框首行：思考轮数与工具执行步数，文案沿用更新期的计数形态.
 
-    两者都是 0 时不出这一行，框内退回中途消息或占位句。
+    0 轮 0 步照常写出来，这一行本身就是框内内容，不再另补占位句。
+    框内那层 column_set 只收 markdown（plain_text 会被飞书判 10002 拒绝），
+    所以走 process summary 的灰字 markdown 形态。
     """
-    if reasoning_count <= 0 and tool_count <= 0:
-        return None
     en_tpl, zh_tpl = _T["process_counts_done"]
-    en = en_tpl.format(reasoning_count, tool_count)
-    zh = zh_tpl.format(reasoning_count, tool_count)
-    return text_element({
-        "tag": "plain_text", "content": en, "i18n_content": _i18n(en, zh),
-        "text_color": "grey", "text_size": "notation",
-    }, "process_title")
+    en = en_tpl.format(max(0, reasoning_count), max(0, tool_count))
+    zh = zh_tpl.format(max(0, reasoning_count), max(0, tool_count))
+    return _build_process_summary(en, zh_text=zh)
 
 
 @styled_builder
@@ -798,7 +795,7 @@ def _render_panel_field(
     return _render_footer_field(name, data, False, False, False)
 
 
-_PANEL_DEFAULT_FIELDS = ("model", "reasoning", "tools", "context", "elapsed")
+_PANEL_DEFAULT_FIELDS = ("model", "elapsed", "speed", "context")
 
 
 def _build_panel_header(
@@ -1284,22 +1281,19 @@ def build_complete_card(
     # 出错卡与正常完成卡照旧建框：框内只放中途消息，没有则一句占位。
     if not is_aborted:
         border_color = "red" if is_error else "green"
-        unified_children: list[dict] = []
-        # 框内首行放本轮计数（思考轮数 · 工具步数），框头只留 context/耗时/速度这类字段。
-        counts_el = _completed_counts_element(reasoning_count, tool_count)
-        if counts_el is not None:
-            unified_children.append(counts_el)
+        # 首行是本轮计数（思考轮数 · 工具步数），它本身就是框内内容，
+        # 因此不再另外补「本轮没有中途消息」这句占位。
+        unified_children: list[dict] = [_completed_counts_element(reasoning_count, tool_count)]
         for message in detail_messages:
             _append_content_elements(unified_children, message, text_size=body_text_size)
-        if not unified_children:
-            en, zh = _T["no_details"]
-            _append_content_elements(unified_children, en, text_size=body_text_size)
-            unified_children[-1]["i18n_content"] = _i18n(en, zh)
-        panel_elapsed_ms = tool_elapsed_ms
-        if not panel_elapsed_ms and footer_data:
-            _p_duration = footer_data.get("duration")
-            if isinstance(_p_duration, (int, float)) and _p_duration > 0:
-                panel_elapsed_ms = _p_duration * 1000
+        # 框头耗时口径固定为整轮（用户口径）：不随工具明细开关在「工具累计」和
+        # 「整轮」之间漂移；拿不到整轮时长时退回工具累计。
+        panel_elapsed_ms = 0
+        _p_duration = (footer_data or {}).get("duration")
+        if isinstance(_p_duration, (int, float)) and _p_duration > 0:
+            panel_elapsed_ms = _p_duration * 1000
+        elif tool_elapsed_ms:
+            panel_elapsed_ms = tool_elapsed_ms
         header_en, header_zh = _build_panel_header(
             panel_fields,
             footer_data or {},

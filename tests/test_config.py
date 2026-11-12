@@ -336,7 +336,7 @@ class TestShowToolUse:
 
 
 class TestPanelFields:
-    _DEFAULT = ["model", "reasoning", "tools", "context", "elapsed"]
+    _DEFAULT = ["model", "elapsed", "speed", "context"]
 
     def _make_config(self, raw: dict[str, Any]) -> Config:
         """Create a Config with _reload mocked to return given raw dict."""

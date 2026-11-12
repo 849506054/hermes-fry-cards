@@ -42,8 +42,8 @@ def assert_header(header, reasoning, tools, *, streaming=True, tool_mode=False):
     if streaming:
         assert zh == running_counts(reasoning, tools, tool_mode=tool_mode)
     else:
-        assert f'💭{reasoning}·🔧{tools}' in zh
-        assert '已思考' not in zh and '执行中' not in zh
+        # 封卡计数搬到详情框首行，框头不再带 💭/🔧 计数。
+        assert '💭' not in zh and '🔧' not in zh
 
 
 @pytest.mark.parametrize('reasoning,tools', [(True, False), (False, True), (True, True)])
@@ -115,8 +115,10 @@ async def test_stream_and_final_separate_count_from_detail(reasoning, tools):
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
-    # 封卡框一律出现（0.6.2.32 口径）：本回合没有中途消息时框内落一句占位
-    assert [e["tag"] for e in panels(final)[0]["elements"]] == ["markdown"]
+    # 封卡框一律出现：首行是本轮计数，中途消息跟在后面；没有中途消息时框里只剩计数行
+    children = panels(final)[0]["elements"]
+    assert children[0]["tag"] == "markdown"
+    assert children[1:] == []
     if not reasoning:
         assert 'THOUGHT_DETAILS' not in json.dumps(final)
     if not tools:
@@ -166,7 +168,10 @@ async def test_clarify_rollover_keeps_full_turn_counts():
     ctrl._apply_completion_payload(session=session, answer='FINAL', duration=30, model='', tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     final = ctrl._client.cardkit_update.call_args.args[1]
-    assert [e["tag"] for e in panels(final)[0]["elements"]] == ["markdown"]
+    children = panels(final)[0]["elements"]
+    assert children[0]["tag"] == "markdown"
+    assert "思考 3 轮" in children[0]["i18n_content"]["zh_cn"]
+    assert children[1:] == []
 
 
 @pytest.mark.asyncio
@@ -186,8 +191,10 @@ def test_both_modes_hidden_keep_placeholder_panel():
     state.on_reasoning_delta('hidden')
     state.on_completion_answer('FINAL')
     card = build_complete_card(segments=state.segments, all_tool_steps=[], show_reasoning=False, show_tool_use=False)
-    # 框存续与渲染开关无关：两种模式都关也建框，框内一句占位
-    assert [e["tag"] for e in panels(card)[0]["elements"]] == ["markdown"]
+    # 框存续与渲染开关无关：两种模式都关也建框，框里只有计数行，0 步照写
+    children = panels(card)[0]["elements"]
+    assert [e["tag"] for e in children] == ["markdown"]
+    assert "💭 思考 1 轮 · 工具执行 0 步" in children[0]["i18n_content"]["zh_cn"]
     assert 'hidden' not in json.dumps(card)
 
 

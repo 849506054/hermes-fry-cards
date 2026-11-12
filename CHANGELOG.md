@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2.42] - 2026-11-12
+
+### Fixed
+
+- 详情框首行的计数行改用灰字 markdown（`_build_process_summary`）：框内那层 column_set 不收 `plain_text`，飞书按 `10002 type of element is not supported` 拒绝整张卡，封卡连试三次失败后回落纯文本。0.6.2.41 线上首张卡即命中，本版修掉。
+
+## [0.6.2.41] - 2026-11-12
+
+### Changed
+
+- 详情框首行的计数（`💭 思考 N 轮 · 工具执行 N 步`）恒显示，0 轮 0 步照写；框里有了这一行就不再补「本轮没有中途消息」占位。
+- 框头耗时统一取整轮时长，不再随工具明细开关在「工具累计」和「整轮」之间漂移；拿不到整轮时长才退回工具累计。
+- 框头字段顺序改为 耗时 → 速度 → 上下文，生产配置 `panel_fields` 同步为 `[elapsed, speed, context]`。
+
+## [0.6.2.40] - 2026-11-12
+
+### Changed
+
+- 封卡的思考轮数与工具步数从框头搬进详情框首行，文案沿用更新期形态「💭 思考 N 轮 · 工具执行 N 步」；框头改由 `panel_fields` 决定，默认字段换成 `model / speed / context / elapsed`，速度（tok/s）在这里显示，数据仍取近 10 次 API 调用的滚动均值。框内没有中途消息时占位句照旧，计数行排在占位之前。
+
 ## [0.6.2.39] - 2026-11-12
 
 ### Changed

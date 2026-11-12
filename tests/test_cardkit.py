@@ -878,9 +878,11 @@ class TestPanelHeaderFields:
         panel = self._panel(self._card(footer_data={"duration": 8.0, "model": "deepseek-v4"}))
         title = panel["header"]["title"]["content"]
         assert "🍟 deepseek-v4" in title
-        assert "💭1" in title
-        assert "🔧1" in title
         assert "⏱️ 8.0s" in title
+        # 封卡计数落详情框首行，不再占框头。
+        assert "💭" not in title and "🔧" not in title
+        assert panel["elements"][0]["tag"] == "markdown"
+        assert "思考 1 轮" in panel["elements"][0]["i18n_content"]["zh_cn"]
 
     def test_custom_fields_speed_cache(self) -> None:
         panel = self._panel(self._card(
@@ -895,7 +897,7 @@ class TestPanelHeaderFields:
         title = panel["header"]["title"]["content"]
         assert "Cache hit 54%" in title
         assert "208 tok/s" in title
-        assert "💭1" in title
+        assert "💭1" not in title
 
     def test_header_i18n_zh(self) -> None:
         panel = self._panel(self._card(
@@ -913,14 +915,14 @@ class TestPanelHeaderFields:
 
     def test_all_hidden_falls_back_to_placeholder(self) -> None:
         panel = self._panel(self._card(panel_fields=["model"], footer_data={"duration": 8.0}))
-        assert panel["header"]["title"]["content"] == "💭1·🔧1"
+        assert panel["header"]["title"]["content"] == "🍟"
 
     def test_context_hidden_when_no_data(self) -> None:
         panel = self._panel(self._card(
             panel_fields=["context"],
             footer_data={"duration": 8.0},
         ))
-        assert panel["header"]["title"]["content"] == "💭1·🔧1"
+        assert panel["header"]["title"]["content"] == "🍟"
 
 
 class TestBuildCronCard:

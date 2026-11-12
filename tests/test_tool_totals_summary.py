@@ -22,9 +22,11 @@ def test_final_totals_shared_by_modes(reasoning, tools):
                                show_reasoning=reasoning, show_tool_use=tools,
                                reasoning_count=1, tool_count=3, total_tool_elapsed_ms=3500)
     panel = next(e for e in body_content_elements(card) if e["tag"] == "collapsible_panel")
-    assert "💭1·🔧3" in panel["header"]["title"]["i18n_content"]["zh_cn"]
-    assert [e["content"] for e in panel["elements"]] == ["Visible progress"]
-    assert all(e["tag"] == "markdown" for e in panel["elements"])
+    # 计数搬到框内首行，框头只剩配置里的字段（默认 fields 下无数据即落 🍟）。
+    assert "💭" not in panel["header"]["title"]["i18n_content"]["zh_cn"]
+    assert panel["elements"][0]["tag"] == "markdown"
+    assert "💭 思考 1 轮 · 工具执行 3 步" in panel["elements"][0]["i18n_content"]["zh_cn"]
+    assert [e["content"] for e in panel["elements"][1:]] == ["Visible progress"]
     assert panel["expanded"] is False
     assert panel["header"]["position"] == "top"
     assert "tool_totals" not in str(card)

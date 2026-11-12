@@ -1,5 +1,6 @@
 """Completed details retain visible progress while the body takes the final answer."""
 import asyncio
+import re
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -26,13 +27,29 @@ def make_session(reasoning=True, tools=False):
     return cast(Any, ctrl), cast(Any, session)
 
 
-def detail_texts(card):
+def detail_children(card):
     panel = next(e for e in body_content_elements(card)
                  if e.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
     assert panel["expanded"] is False
     assert panel["header"]["position"] == "top"
-    assert all(child["tag"] == "markdown" for child in panel["elements"])
-    return [child["content"] for child in panel["elements"]]
+    return panel["elements"]
+
+
+def detail_texts(card):
+    """框内中途消息文本（跳过首行计数）。"""
+    children = detail_children(card)
+    if children and counts_text(card) is not None:
+        children = children[1:]
+    return [child["content"] for child in children if child["tag"] == "markdown"]
+
+
+def counts_text(card):
+    """框内首行的本轮计数（思考轮数 · 工具步数）；没有计数时返回 None。"""
+    children = detail_children(card)
+    if children and children[0]["tag"] == "markdown":
+        text = children[0]["i18n_content"]["zh_cn"]
+        return re.sub(r"</?font[^>]*>", "", text)
+    return None
 
 
 @pytest.mark.asyncio
@@ -116,7 +133,8 @@ async def test_streamed_answer_deltas_stay_out_of_details():
                                    duration=5, model="", tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     card = ctrl._client.cardkit_update.call_args.args[1]
-    assert detail_texts(card) == ["No interim messages in this turn."]
+    assert detail_texts(card) == []
+    assert counts_text(card) is not None
 
 
 @pytest.mark.asyncio
@@ -128,7 +146,8 @@ async def test_panel_keeps_placeholder_when_turn_has_no_interim_messages():
                                    model="", tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     card = ctrl._client.cardkit_update.call_args.args[1]
-    assert detail_texts(card) == ["No interim messages in this turn."]
+    assert detail_texts(card) == []
+    assert counts_text(card) is not None
     assert "定稿正文" in str(card)
 
 
@@ -141,7 +160,8 @@ async def test_panel_appears_when_tools_are_hidden_but_present():
                                    model="", tokens=None, context=None)
     assert await ctrl._do_complete_card_inner(session)
     card = ctrl._client.cardkit_update.call_args.args[1]
-    assert detail_texts(card) == ["No interim messages in this turn."]
+    assert detail_texts(card) == []
+    assert counts_text(card) is not None
 
 
 @pytest.mark.asyncio
@@ -180,7 +200,8 @@ async def test_preview_equal_to_final_is_kept_only_as_body():
     session.segment_state.on_completion_answer("定稿的流式预览")
     assert await ctrl._do_complete_card_inner(session)
     card = ctrl._client.cardkit_update.call_args.args[1]
-    assert detail_texts(card) == ["No interim messages in this turn."]
+    assert detail_texts(card) == []
+    assert counts_text(card) is not None
 
 
 @pytest.mark.asyncio
@@ -227,6 +248,24 @@ async def test_answer_limit_still_preserves_message_boundaries():
     assert await ctrl._do_complete_card_inner(session)
     card = ctrl._client.cardkit_update.call_args.args[1]
     assert detail_texts(card) == [f"进度{i}" for i in range(12)]
+
+
+@pytest.mark.asyncio
+async def test_counts_line_leads_details_and_leaves_header():
+    """封卡后计数落详情框首行，框头只留 context / 耗时 / 速度。"""
+    ctrl, session = make_session()
+    ctrl.on_thinking(message_id=session.message_id, text="看结构")
+    ctrl.on_tool_update(message_id=session.message_id, tool_name="terminal", status="started")
+    ctrl.on_tool_update(message_id=session.message_id, tool_name="terminal", status="completed")
+    ctrl.on_reasoning(message_id=session.message_id, text="第二轮思考")
+    session.segment_state.on_completion_answer("定稿")
+    assert await ctrl._do_complete_card_inner(session)
+    card = ctrl._client.cardkit_update.call_args.args[1]
+    assert counts_text(card) == "💭 思考 1 轮 · 工具执行 1 步"
+    panel = next(e for e in body_content_elements(card)
+                 if e.get("element_id") == PROCESS_PANEL_ELEMENT_ID)
+    assert "💭" not in panel["header"]["title"]["content"]
+    assert detail_texts(card) == ["看结构"]
 
 
 @pytest.mark.asyncio

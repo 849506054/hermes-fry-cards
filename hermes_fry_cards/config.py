@@ -524,10 +524,10 @@ class Config:
         context 受 show_context 总闸与 context_display_mode 样式控制。
 
         优先级：display.platforms.feishu.panel_fields → display.panel_fields，
-        默认 ["model", "speed", "context", "elapsed"]。
+        默认 ["model", "elapsed", "speed", "context"]。
         非法或为空回落默认。
         """
-        default = ["model", "speed", "context", "elapsed"]
+        default = ["model", "elapsed", "speed", "context"]
         display = self._reload().get("display")
         if not isinstance(display, dict):
             return default
