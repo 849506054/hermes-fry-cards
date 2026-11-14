@@ -71,6 +71,8 @@ class CardSession:
         "process_header_counts",
         "process_panels",
         "reasoning_timeline",
+        "reasoning_trim_note_created",
+        "reasoning_trimmed",
         "render_config",
         "segment_state",
         "sequence",
@@ -136,6 +138,9 @@ class CardSession:
         self.clarify_pending_split: bool = False
         self.tool_panel_created: bool = False
         self.reasoning_timeline: bool = False
+        # 滚动窗口：本卡已回收的思考段总数、回收提示行是否已落在卡上。
+        self.reasoning_trimmed: int = 0
+        self.reasoning_trim_note_created: bool = False
         self.render_config: Config | None = None
         self.pending_render_config: Config | None = None
         self.pending_reasoning_structure: tuple[bool, int | None] | None = None
@@ -155,6 +160,9 @@ class CardSession:
         self.card_msg_id = card_msg_id
         # 300309 是每张卡各自的流式会话状态：换到新卡后重新从流式写入开始。
         self.stream_closed = False
+        # 回收提示行与计数都按卡计：新卡上还没有这行元素，从 0 重新累计。
+        self.reasoning_trimmed = 0
+        self.reasoning_trim_note_created = False
         if self.pending_render_config is not None:
             self.render_config = self.pending_render_config
             self.pending_render_config = None

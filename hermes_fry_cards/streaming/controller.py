@@ -12,11 +12,13 @@ from ..cardkit.builder import (
     LOADING_CURSOR_ELEMENT_ID,
     LOADING_ELEMENT_ID,
     NOTICE_ELEMENT_ID,
+    PROCESS_ANCHOR_ELEMENT_ID,
     PROCESS_PANEL_ELEMENT_ID,
     TOOL_PANEL_ELEMENT_ID,
     BODY_SURFACE_ELEMENT_COUNT,
     _process_title,
     body_content_elements,
+    build_reasoning_trim_note,
     build_streaming_process_pending_panel,
     build_streaming_tool_use_pending_panel,
     build_background_card,
@@ -68,6 +70,10 @@ from .segment_helper import (
 from .segments import Segment, SegmentState, SegmentType
 from .session import SessionState
 from .text import split_reasoning_text, strip_reasoning_tags
+from .window import (
+    REASONING_TRIM_NOTE_ELEMENT_ID,
+    reasoning_evictions,
+)
 from .tooluse import ToolUseTracker
 from .unavailable_guard import is_terminal_api_code
 
@@ -445,7 +451,7 @@ class StreamingController:
                 actions, new_el_ids, new_el_estimates, updated_tool_segs = [], set(), {}, []
                 new_el_total = 0
 
-            if not seg.created:
+            if not seg.created and not seg.evicted:
                 # 新卡首个 TOOL 段会整体替换共享面板（而不是在旧面板上叠加）：
                 # 容量判断按「替换后的面板估算」算，并先扣掉本卡已入账的面板量，
                 # 否则会把旧面板和新面板各算一遍，拆出来的卡只有 loading 图标（#41）。
@@ -559,7 +565,10 @@ class StreamingController:
                     new_el_estimates = {}
                     updated_tool_segs = []
                     new_el_total = 0
-            elif seg.type == SegmentType.REASONING and seg.elapsed_ms > 0 and not seg.reasoning_finalized:
+            elif (
+                seg.type == SegmentType.REASONING and seg.elapsed_ms > 0
+                and not seg.reasoning_finalized and not seg.evicted
+            ):
                 _logger.info(
                     "CardKit reasoning finalized: msg=%s el=%s elapsed=%.0fms seq=%d",
                     session.message_id[:12],
@@ -635,6 +644,8 @@ class StreamingController:
                 session, segments, actions, new_el_ids, new_el_estimates, updated_tool_segs,
             ):
                 return
+            # 卡片体积有整卡字节上限（200860），思考时间线按尾部窗口滚动回收。
+            await self._trim_reasoning_window(session, segment_state)
 
         # ── 步骤 1.5: 通知槽位同步 — 流式期到达的提示（含后台回执）当场可见 ──
         # 提示只进 notices 不会自己上屏：建卡之后才到的回执必须补一次元素更新，
@@ -755,6 +766,94 @@ class StreamingController:
         # 调整下一轮节流窗口；元素级档位优先（客户端重绘量由最大单元素决定）。
         session.flush.adapt_payload_size(payload_bytes, max_element_bytes=max_element_bytes)
         # A click arriving during a write is handled before releasing the writer.
+
+    async def _trim_reasoning_window(
+        self, session: CardSession, segment_state: SegmentState,
+    ) -> None:
+        """按尾部窗口回收最早的思考段，压住整卡字节数.
+
+        飞书整卡载荷有字节上限（超限返回 ``200860 card over max size``），撞上后
+        连封卡都会被拒、整轮退回纯文本。思考时间线里每段思考都是标题 + 正文两个
+        元素，段数一多就把卡撑到上限；这里保留最新若干段、删掉最旧的，
+        并在时间线顶部留一行「更早的 N 段思考已收起」。计数行照旧写全轮总数。
+        """
+        if not session.reasoning_timeline or not session.card_id:
+            return
+        segments = segment_state.segments
+        live = [
+            seg for seg in segments[session.split_index:]
+            if seg.type == SegmentType.REASONING and seg.created and not seg.evicted
+        ]
+        if not live:
+            return
+        sizes = [
+            len(clamp_utf8(seg.text, max_bytes=_REASONING_MAX_BYTES, preserve_tail=True).encode("utf-8")) + 200
+            for seg in live
+        ]
+        evict = reasoning_evictions(sizes)
+        if evict <= 0:
+            return
+
+        dropped = live[:evict]
+        element_ids: list[str] = []
+        for seg in dropped:
+            element_ids.extend([seg.el_id, seg.text_el_id])
+        total_trimmed = session.reasoning_trimmed + evict
+        note = build_reasoning_trim_note(
+            total_trimmed,
+            element_id=None if session.reasoning_trim_note_created else REASONING_TRIM_NOTE_ELEMENT_ID,
+            config=self._card_config(session),
+        )
+        if session.reasoning_trim_note_created:
+            note_action: dict[str, Any] = {
+                "action": "partial_update_element",
+                "params": {
+                    "element_id": REASONING_TRIM_NOTE_ELEMENT_ID,
+                    "partial_element": {"content": note["content"], "i18n_content": note.get("i18n_content")},
+                },
+            }
+        else:
+            # 提示行落在被回收区块原来的位置（旧的一段思考原本就在这里）
+            first_kept = live[evict] if evict < len(live) else None
+            note_action = {
+                "action": "add_elements",
+                "params": {
+                    "type": "insert_before",
+                    "target_element_id": first_kept.el_id if first_kept else PROCESS_ANCHOR_ELEMENT_ID,
+                    "elements": [note],
+                },
+            }
+        actions = [
+            {"action": "delete_elements", "params": {"element_ids": element_ids}},
+            note_action,
+        ]
+        assert self._client is not None
+        session.sequence += 1
+        try:
+            await self._client.cardkit_batch_update(
+                session.card_id, actions, sequence=session.sequence,
+            )
+        except Exception as error:  # 回收是体积保护，失败不该打断本轮
+            _logger.warning(
+                "CardKit reasoning trim failed: msg=%s card=%s evict=%d err=%s",
+                session.message_id[:12], (session.card_id or "")[:12], evict, error,
+            )
+            return
+
+        for seg in dropped:
+            seg.evicted = True
+            seg.created = False
+            seg.dirty = False
+            seg.reasoning_finalized = True
+        session.reasoning_trimmed = total_trimmed
+        session.reasoning_trim_note_created = True
+        # 每段思考在卡上是标题 + 正文两个元素，回收后同步扣减。
+        session.element_count = max(1, session.element_count - 2 * evict)
+        _logger.info(
+            "CardKit reasoning trim: msg=%s card=%s evicted=%d kept=%d trimmed_total=%d bytes=%d",
+            session.message_id[:12], (session.card_id or "")[:12], evict,
+            len(live) - evict, total_trimmed, sum(sizes[evict:]),
+        )
 
     async def _restore_reasoning_body(
         self, session: CardSession, seg: Segment, content: str,

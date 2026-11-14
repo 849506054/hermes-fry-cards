@@ -710,6 +710,22 @@ def _build_process_summary(
 
 
 @styled_builder
+def build_reasoning_trim_note(
+    evicted: int, *, element_id: str | None = None, config: Config | None = None,
+) -> dict[str, Any]:
+    """滚动窗口回收提示：一行说明更早的思考段已从卡上收起."""
+    en = f"<font color='grey'>{evicted} earlier thinking rounds collapsed</font>"
+    zh = f"<font color='grey'>更早的 {evicted} 段思考已收起</font>"
+    element: dict[str, Any] = {
+        "tag": "markdown", "content": zh, "i18n_content": _i18n(zh, en),
+        "text_size": "notation",
+    }
+    if element_id:
+        element["element_id"] = element_id
+    return text_element(element, "summary")
+
+
+@styled_builder
 def _build_reasoning_panel(
     text: str, elapsed_ms: float = 0, *, expanded: bool = False, element_id: str | None = None,
     text_element_id: str | None = REASONING_TEXT_ELEMENT_ID,

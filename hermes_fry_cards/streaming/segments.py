@@ -21,6 +21,7 @@ class Segment:
         "el_id",
         "elapsed_ms",
         "element_estimate",
+        "evicted",
         "reasoning_finalized",
         "start_time",
         "text",
@@ -34,6 +35,8 @@ class Segment:
         self.type = SegmentType(seg_type)
         self.el_id = el_id
         self.created = False
+        # 滚动窗口回收过的段：元素已从卡上删除，后续 flush 不得再写/再建。
+        self.evicted = False
         self.dirty = True
         self.element_estimate: int = 0
         self.text: str = ""
