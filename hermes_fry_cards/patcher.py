@@ -553,6 +553,8 @@ def _complete_hook(indent: str) -> str:
             "    )",
             "    if _lark_card_sent:",
             "        agent_result['already_sent'] = True",
+            "        # 卡片已渲染思考面板：清掉最后一段思考，核心不再拼进最终回复或独立补发（同上游 v0.6.5）。",
+            "        agent_result.pop('last_reasoning', None)",
             "        _footer_line = ''",
             "        if agent_result.get('failed'):",
             "            response = ''",
