@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4.1] - 2026-11-20
+
+### Fixed
+
+- 卡片已发出时清掉本回合最后一段思考（`agent_result.pop('last_reasoning', None)`，与上游 v0.6.5 同一处做法）：核心会把这段思考拼进最终回复或作为独立消息补发，而卡片内已渲染思考面板，结果是一份思考漏到卡外（2026-11-15 00:18 实测漏过一条 1.5 KB 的 `💭 推理` 消息）。属注入体改动，装机需 `uninstall` + `install` 重建注入后再重启。
+
 ## [0.6.4] - 2026-11-15
 
 ### Fixed
