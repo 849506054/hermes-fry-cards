@@ -29,6 +29,10 @@ RESULT_MARKERS = ("Approx request size:",)
 # Announced ahead of the compaction by the pre-API check (mid-turn) or the turn-start
 # threshold check; the start line that follows belongs to the same compression.
 PRE_ANNOUNCE_MARKERS = ("Pre-API compression", "Preflight compression")
+# Failure-class line the core keeps on chat surfaces: the context is over the
+# threshold while compression is blocked. It rides the same status channel, so a
+# turn with a running card takes it into that card; on an idle chat it stands alone.
+BLOCKED_MARKERS = ("Context is over the compression threshold",)
 
 _MAX_TRACKED = 64
 _TITLE_EN = "Context compaction"
@@ -56,6 +60,11 @@ def classify(content: str) -> str | None:
     if "Compressed" in text and any(marker in text for marker in RESULT_MARKERS):
         return "result"
     return None
+
+
+def is_blocked_warning(content: str) -> bool:
+    """True for the core's "over the threshold but compression is blocked" line."""
+    return any(marker in str(content or "") for marker in BLOCKED_MARKERS)
 
 
 def build_compaction_card(lines: list[str], config: Config) -> dict[str, Any]:

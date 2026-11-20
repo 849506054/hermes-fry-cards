@@ -66,6 +66,7 @@ class NotificationSlot:
 
 # 完成后到达、展示在卡片顶部的提示种类；其余（忙碌/重定向等本轮进行中的
 # 提示）一律落底部，避免和工具输出混在一起（#43 反馈）。
+_MAX_STACKED_NOTICES = 6
 POST_TURN_NOTICE_KINDS = frozenset({"background"})
 
 
@@ -167,7 +168,7 @@ class SegmentState:
         """结束本轮预览，后续正文由完成事件更新。"""
         self.completed_seen = True
 
-    def add_notice(self, text: str, kind: str = "notice") -> None:
+    def add_notice(self, text: str, kind: str = "notice", *, stack: bool = False) -> None:
         """记录一条状态提示（Hermes 原文），随完成态卡片一起渲染.
 
         #43：忙碌回执 / 重定向 / 后台回执由 Hermes 自己合成文案，插件只负责把它
@@ -179,7 +180,13 @@ class SegmentState:
             return
         # 单槽位：后到的提示覆盖先到的（用户口径）。同一时刻卡上最多一条提示，
         # 忙碌回执 / 重定向 / 后台回执都走这一格，不做堆叠。
+        # ``stack=True`` 例外：自动压缩的几条进度（开始 / 心跳 / 完成）按先后逐条显示，
+        # 封卡时统一清掉，不占正文位置。
         if self.notices and self.notices[-1].text == cleaned and self.notices[-1].kind == kind:
+            return
+        if stack:
+            self.notices.append(NotificationSlot(cleaned, kind))
+            del self.notices[:-_MAX_STACKED_NOTICES]
             return
         self.notices = [NotificationSlot(cleaned, kind)]
 

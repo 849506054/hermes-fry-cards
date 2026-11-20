@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4.2] - 2026-11-20
+
+### Added
+
+- 自动压缩的进度行并入本回合正在跑的那张卡：开始 / 心跳 / 完成按先后逐条显示在同一卡底部，封卡时这行随正文一起收掉，不再另开压缩卡。只在「恰好一张未收尾的卡」时合并，零张或多张活跃卡时退回独立压缩卡；手动 `/compress` 保持独立卡。
+- 「上下文超阈值但压缩被阻断」这类故障告警同样并入：有唯一活跃卡时写进卡里，无卡、多卡或手动压缩时仍按原独立提示发出。
+- `tests/test_compaction_merge.py`：合并判据与阻断告警去向的用例。
+
+### Changed
+
+- clarify 按钮补丁退役，适配器注入点改为 `SystemNoticePatcher`（系统通知走卡片）；`hermes_fry_cards/clarify.py` 与 `tests/test_clarify_buttons.py` 一并移除。
+- 缓存命中率取本回合各次调用并补上回合最后一次请求（`fry-metrics summary(include_previous=1)`），卡片 footer 读 `cache_hit_pct`；诊断收成单一判据行（`card_cache_field: source=turn|cumulative`、`fry_stats: calls/prev_calls`）。
+
+### Fixed
+
+- 网关重启遗留的卡封卡时被飞书以 300317 拒（序号必须递增）：遗留卡的一次性封卡改用高位序号 `1_000_000_000`。
+
 ## [0.6.4.1] - 2026-11-20
 
 ### Fixed

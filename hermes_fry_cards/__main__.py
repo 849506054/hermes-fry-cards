@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .patcher import ClarifyPatcher, CronPatcher, Patcher
+    from .patcher import SystemNoticePatcher, CronPatcher, Patcher
 
 _logger = logging.getLogger("hermes_fry_cards")
 
@@ -113,13 +113,13 @@ def _get_cron_patcher() -> CronPatcher | None:
         return None
 
 
-def _get_clarify_patcher() -> ClarifyPatcher | None:
-    from .patcher import ClarifyPatcher, PatcherError
+def _get_system_notice_patcher() -> SystemNoticePatcher | None:
+    from .patcher import PatcherError, SystemNoticePatcher
 
     try:
-        return ClarifyPatcher()
+        return SystemNoticePatcher()
     except PatcherError as e:
-        _logger.debug("clarify patcher unavailable: %s", e)
+        _logger.debug("system notice patcher unavailable: %s", e)
         return None
 
 
@@ -156,14 +156,14 @@ def _cmd_install() -> int:
         except Exception as e:
             print(f"Cron hook skipped: {e}")
 
-    clarify_patcher = _get_clarify_patcher()
-    if clarify_patcher is not None and not clarify_patcher.is_patched():
+    notice_patcher = _get_system_notice_patcher()
+    if notice_patcher is not None and not notice_patcher.is_patched():
         try:
-            clarify_patcher.verify_target()
-            clarify_patcher.apply()
-            print("Clarify button hook applied.")
+            notice_patcher.verify_target()
+            notice_patcher.apply()
+            print("System notice hook applied.")
         except Exception as e:
-            print(f"Clarify button hook skipped: {e}")
+            print(f"System notice hook skipped: {e}")
 
     return 0
 
@@ -173,13 +173,13 @@ def _cmd_uninstall() -> int:
     if patcher is None:
         return 1
 
-    clarify_patcher = _get_clarify_patcher()
-    if clarify_patcher is not None and clarify_patcher.is_patched():
+    notice_patcher = _get_system_notice_patcher()
+    if notice_patcher is not None and notice_patcher.is_patched():
         try:
-            clarify_patcher.remove()
-            print("Clarify button hook removed.")
+            notice_patcher.remove()
+            print("System notice hook removed.")
         except Exception as e:
-            print(f"Clarify button hook remove failed: {e}")
+            print(f"System notice hook remove failed: {e}")
 
     cron_patcher = _get_cron_patcher()
     if cron_patcher is not None and cron_patcher.is_patched():
@@ -216,11 +216,11 @@ def _cmd_restore() -> int:
         except Exception:
             pass
 
-    clarify_patcher = _get_clarify_patcher()
-    if clarify_patcher is not None:
+    notice_patcher = _get_system_notice_patcher()
+    if notice_patcher is not None:
         try:
-            clarify_patcher.restore()
-            print("Clarify button hook restored.")
+            notice_patcher.remove()
+            print("System notice hook removed.")
         except Exception:
             pass
 
@@ -252,9 +252,9 @@ def _cmd_status() -> int:
     if cron_patcher is not None:
         print(f"Cron hook: {'installed' if cron_patcher.is_patched() else 'not installed'}")
 
-    clarify_patcher = _get_clarify_patcher()
-    if clarify_patcher is not None:
-        print(f"Clarify button hook: {'installed' if clarify_patcher.is_patched() else 'not installed'}")
+    notice_patcher = _get_system_notice_patcher()
+    if notice_patcher is not None:
+        print(f"System notice hook: {'installed' if notice_patcher.is_patched() else 'not installed'}")
 
     # Match the Hermes gateway launcher, which loads profile credentials from
     # ``$HERMES_HOME/.env`` before constructing adapters.  A bare plugin CLI
@@ -310,15 +310,15 @@ def _cmd_verify() -> int:
             return 1
         print("Cron target compatible.")
 
-    clarify_patcher = _get_clarify_patcher()
-    if clarify_patcher is not None:
-        print(f"Clarify target: {clarify_patcher.adapter_path}")
+    notice_patcher = _get_system_notice_patcher()
+    if notice_patcher is not None:
+        print(f"System notice target: {notice_patcher.adapter_path}")
         try:
-            clarify_patcher.verify_target()
+            notice_patcher.verify_target()
         except Exception as e:
-            print(f"Clarify target incompatible: {e}")
+            print(f"System notice target incompatible: {e}")
             return 1
-        print("Clarify target compatible.")
+        print("System notice target compatible.")
 
     return 0
 

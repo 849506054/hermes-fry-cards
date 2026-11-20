@@ -15,7 +15,7 @@ from typing import Any
 
 from .cardkit.builder import _body_style, _build_body, build_notice_header, count_elements_recursive
 from .cardkit.styles import style_scope, text_element
-from .compaction_card import CompactionCards, build_compaction_card
+from .compaction_card import CompactionCards, build_compaction_card, is_blocked_warning
 from .compaction_card import classify as classify_compaction
 from .config import Config
 
@@ -157,10 +157,37 @@ def _allowed(config: Config, metadata: dict | None) -> bool:
     return allowed is None or chat_type in allowed
 
 
+def _merge_into_active_card(adapter: Any, content: str) -> bool:
+    """Write a compaction line into this turn's running card; False when there is none.
+
+    Only one running card can own the line: zero cards means nothing to write to and
+    several means no single owner, and the caller then keeps its standalone surface.
+    Manual /compress keeps its own card, so its lines never merge.
+    """
+    try:
+        from .manual_compaction import is_manual_compaction
+        if is_manual_compaction():
+            return False
+    except Exception:
+        pass
+    try:
+        from .patch import get_controller
+        ctrl = get_controller()
+        return bool(ctrl is not None and ctrl.on_compaction_notice(text=content))
+    except Exception as exc:
+        _logger.warning('compaction_merge_failed: type=%s', type(exc).__name__)
+        return False
+
+
 async def _send(self, chat_id: str, content: str, reply_to=None, metadata=None):
     original = self._hl_system_original_send
     if not self._client:
         return await original(chat_id, content, reply_to=reply_to, metadata=metadata)
+    if is_blocked_warning(content):
+        if _merge_into_active_card(self, content):
+            _logger.info('compaction_blocked_notice_merged: chars=%d', len(content))
+            return self._hl_SendResult(success=True)
+        _logger.info('compaction_blocked_notice_standalone: chars=%d', len(content))
     if classify_compaction(content) is not None:
         compaction = await _send_compaction(
             self, chat_id, content, reply_to=reply_to, metadata=metadata)
@@ -229,6 +256,10 @@ async def _send_compaction(self, chat_id: str, content: str, *, reply_to=None, m
     otherwise the second line still sees "no card yet" and posts a card beside
     the first instead of overwriting it.
     """
+    # 自动压缩：本回合有卡在跑就直接写进那张卡，不另开压缩卡（用户口径）。
+    # 手动 /compress 仍走独立卡；没有活跃卡或活跃卡不止一张时同样走独立卡兜底。
+    if _merge_into_active_card(self, content):
+        return self._hl_SendResult(success=True)
     cards = getattr(self, '_hl_compaction_cards', None)
     if cards is None:
         cards = self._hl_compaction_cards = CompactionCards()

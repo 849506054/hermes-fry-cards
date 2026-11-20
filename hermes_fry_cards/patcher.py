@@ -2136,31 +2136,8 @@ class CronPatcher:
 
 
 # ---------------------------------------------------------------------------
-# Clarify button cards (Feishu adapter runtime patch)
+# System notice cards (compaction progress / scoped notices) — Feishu adapter patch
 # ---------------------------------------------------------------------------
-
-MK_CLARIFY_CARD = f"# {PREFIX}_CLARIFY_CARD_BEGIN"
-MK_CLARIFY_CARD_END = f"# {PREFIX}_CLARIFY_CARD_END"
-
-_CLARIFY_BLOCK = f"""{MK_CLARIFY_CARD}
-try:  # hermes-fry-cards: clarify option buttons for Feishu
-    from hermes_fry_cards import clarify as _hl_clarify
-
-    _hl_clarify.apply_patch(
-        FeishuAdapter,
-        SendResult=SendResult,
-        CallBackCard=CallBackCard,
-        P2CardActionTriggerResponse=P2CardActionTriggerResponse,
-    )
-except Exception:  # pragma: no cover - never break the adapter import
-    import logging as _hl_logging
-
-    _hl_logging.getLogger("hermes_fry_cards").warning(
-        "[fry-cards] clarify button patch failed to apply", exc_info=True
-    )
-{MK_CLARIFY_CARD_END}
-"""
-
 
 def _default_feishu_adapter_path() -> Path:
     """Locate plugins/platforms/feishu/adapter.py under known Hermes roots."""
@@ -2176,13 +2153,33 @@ def _default_feishu_adapter_path() -> Path:
     )
 
 
-class ClarifyPatcher:
-    """Append a runtime-patch block to the Feishu adapter (clarify buttons).
+MK_SYSTEM_NOTICE = f"# {PREFIX}_SYSTEM_NOTICE_BEGIN"
+MK_SYSTEM_NOTICE_END = f"# {PREFIX}_SYSTEM_NOTICE_END"
 
-    Unlike the gateway hooks (AST injection into method bodies), this patch
-    only appends a self-contained block at module scope; the actual behavior
-    lives in ``hermes_fry_cards.clarify`` and is applied via monkey-patching
-    when the adapter module is imported.  Removal is a plain block delete.
+_SYSTEM_NOTICE_BLOCK = f"""{MK_SYSTEM_NOTICE}
+try:  # hermes-fry-cards: system notice cards (compaction progress, scoped notices)
+    from hermes_fry_cards.system_messages import apply_patch as _hl_system_notice_patch
+
+    _hl_system_notice_patch(FeishuAdapter, SendResult=SendResult)
+except Exception:  # pragma: no cover - never break the adapter import
+    import logging as _hl_logging
+
+    _hl_logging.getLogger("hermes_fry_cards").exception(
+        "[fry-cards] system notice patch failed to apply"
+    )
+{MK_SYSTEM_NOTICE_END}
+"""
+
+
+class SystemNoticePatcher:
+    """Append the system-notice runtime patch block to the Feishu adapter.
+
+    Native clarify cards retired the clarify button block, but the scoped system
+    notice path still ships from ``hermes_fry_cards.system_messages``: compaction
+    progress lines and other marked notices render as one card instead of one
+    text bubble each. Upstream 0.23.x dropped ``_is_interactive_operator_authorized``
+    so the clarify block can no longer be anchored; this block carries the notice
+    side on its own.
     """
 
     def __init__(self, adapter_path: Path | None = None) -> None:
@@ -2191,61 +2188,30 @@ class ClarifyPatcher:
             raise PatcherError(f"Feishu adapter not found: {self.adapter_path}")
 
     def is_patched(self) -> bool:
-        return MK_CLARIFY_CARD in self.adapter_path.read_text(encoding="utf-8")
+        return MK_SYSTEM_NOTICE in self.adapter_path.read_text(encoding="utf-8")
 
     def verify_target(self) -> None:
         content = self.adapter_path.read_text(encoding="utf-8")
-        required = (
-            "class FeishuAdapter",
-            "def _on_card_action_trigger",
-            "def _is_interactive_operator_authorized",
-            "def _feishu_send_with_retry",
-            "def _finalize_send_result",
-            "SendResult",
-        )
+        required = ("class FeishuAdapter", "SendResult", "def _feishu_send_with_retry")
         missing = [name for name in required if name not in content]
         if missing:
             raise PatcherError(
-                "Feishu adapter is missing expected anchors: "
-                + ", ".join(missing)
-                + " — Hermes version may be incompatible"
-            )
-        if "def send_clarify" in content:
-            raise PatcherError(
-                "Feishu adapter already defines send_clarify — "
-                "Hermes shipped a native implementation; clarify patch not needed"
+                "Feishu adapter is missing expected anchors: " + ", ".join(missing)
             )
 
     def apply(self) -> None:
         content = self.adapter_path.read_text(encoding="utf-8")
-        has_markers = MK_CLARIFY_CARD in content or MK_CLARIFY_CARD_END in content
-        if has_markers:
-            cleaned = _remove_block_checked(content, MK_CLARIFY_CARD, MK_CLARIFY_CARD_END)
-            if content.count(MK_CLARIFY_CARD) == 1 and content.count(MK_CLARIFY_CARD_END) == 1:
-                return
-            content = cleaned
+        if MK_SYSTEM_NOTICE in content:
+            return
         self.verify_target()
-        if not has_markers:
-            self._backup()
         if content and not content.endswith("\n"):
             content += "\n"
-        content += _CLARIFY_BLOCK
+        content += _SYSTEM_NOTICE_BLOCK
         _atomic_write(self.adapter_path, content)
 
     def remove(self) -> None:
         content = self.adapter_path.read_text(encoding="utf-8")
-        if MK_CLARIFY_CARD not in content and MK_CLARIFY_CARD_END not in content:
+        if MK_SYSTEM_NOTICE not in content:
             return
-        content = _remove_block_checked(content, MK_CLARIFY_CARD, MK_CLARIFY_CARD_END)
+        content = _remove_block_checked(content, MK_SYSTEM_NOTICE, MK_SYSTEM_NOTICE_END)
         _atomic_write(self.adapter_path, content)
-
-    def restore(self) -> None:
-        backup = self.adapter_path.with_suffix(self.adapter_path.suffix + _BACKUP_SUFFIX)
-        if not backup.exists():
-            raise PatcherError(f"No backup found: {backup}")
-        shutil.copy2(backup, self.adapter_path)
-
-    def _backup(self) -> None:
-        backup = self.adapter_path.with_suffix(self.adapter_path.suffix + _BACKUP_SUFFIX)
-        if not backup.exists():
-            shutil.copy2(self.adapter_path, backup)

@@ -136,7 +136,8 @@ def test_summary_reports_this_turns_cache_hit_rate():
     assert got["cache_hit_pct"] == pytest.approx(85.0)
 
 
-def test_cache_hit_rate_skips_the_previous_turn():
+def test_cache_hit_rate_includes_the_previous_turns_last_request():
+    """上回合最后一次请求也作为一条样本计入（用户口径）：本回合 + 上回合末尾一条。"""
     metrics = _load_metrics()
     metrics.clear()
     metrics.on_post_api_request(
@@ -150,4 +151,4 @@ def test_cache_hit_rate_skips_the_previous_turn():
     agent = _Agent()
     agent._inflight_turn_started = 199.0
     stats = patch.collect_stream_stats(_Gateway(agent), "sk")
-    assert stats["cache_hit_pct"] == pytest.approx(95.0)
+    assert stats["cache_hit_pct"] == pytest.approx(47.5)

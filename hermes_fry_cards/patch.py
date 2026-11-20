@@ -385,6 +385,7 @@ def collect_stream_stats(gateway: Any, session_key: str | None) -> dict[str, Any
         exact = fry_metrics.summary(
             str(getattr(agent, "session_id", "") or ""),
             since=turn_start or None,
+            include_previous=1,
         )
         decode = exact.get("decode_tokens_per_sec")
         if decode:
@@ -394,6 +395,10 @@ def collect_stream_stats(gateway: Any, session_key: str | None) -> dict[str, Any
             stats["ttft_ms"] = float(exact["ttft_ms"])
         if exact.get("cache_hit_pct") is not None:
             stats["cache_hit_pct"] = float(exact["cache_hit_pct"])
+            _logger.info(
+                "fry_stats: calls=%s prev_calls=%s cache_hit_pct=%.1f",
+                exact.get("calls"), exact.get("prev_calls", 0), stats["cache_hit_pct"],
+            )
     except Exception:
         pass
     return stats

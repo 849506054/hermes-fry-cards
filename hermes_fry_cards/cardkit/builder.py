@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 from ..config import Config
 from ..streaming.segments import Segment, SegmentType
@@ -971,11 +974,13 @@ def _render_footer_field(
         turn_pct = data.get("cache_hit_pct")
         if isinstance(turn_pct, (int, float)) and turn_pct > 0:
             pct = f"{min(float(turn_pct), 100.0):.1f}"
+            _logger.info("card_cache_field: source=turn value=%s", pct)
             return _T["cache_hit"][0].format(pct), _T["cache_hit"][1].format(pct)
         cache_read = data.get("cache_read_tokens", 0) or 0
         input_t = data.get("input_tokens", 0) or 0
         if cache_read > 0 and input_t > 0:
             pct = f"{min(cache_read / input_t * 100, 100.0):.1f}"
+            _logger.info("card_cache_field: source=cumulative value=%s", pct)
             return _T["cache_hit"][0].format(pct), _T["cache_hit"][1].format(pct)
         return None, None
 

@@ -206,6 +206,9 @@ def _interrupted_card(*, config: Config | None = None) -> dict[str, Any]:
     return card
 
 
+# 遗留卡只做最后一次封卡；序号必须高于重启前的所有更新（300317）。
+_STALE_CLOSE_SEQUENCE = 1_000_000_000
+
 _NOTICE_RESTART_EN = "⚠️ The gateway restarted during this turn; this card stopped updating."
 _NOTICE_RESTART_ZH = "⚠️ 网关在本轮处理中重启，卡片已停止更新。"
 
@@ -424,8 +427,12 @@ class StreamCardController(StreamingController):
                 continue
             try:
                 assert self._client is not None
+                # Feishu rejects any sequence that does not increase on the card
+                # (300317): the pre-restart process already pushed it far past 1.
+                # A stale card takes no further updates, so jump to the top.
                 await self._client.cardkit_update(
-                    card_id, _interrupted_card(config=self._snapshot_config()), sequence=1,
+                    card_id, _interrupted_card(config=self._snapshot_config()),
+                    sequence=_STALE_CLOSE_SEQUENCE,
                 )
             except Exception:
                 attempts = int(record.get("attempts", 0)) + 1 if isinstance(record, dict) else 1
@@ -567,6 +574,23 @@ class StreamCardController(StreamingController):
             session.message_id,
             session_key or "",
         )
+        return True
+
+    def on_compaction_notice(self, *, text: str) -> bool:
+        """自动压缩的进度行 → 写进正在跑的那张卡（不另开卡）.
+
+        只在「恰好一张未收尾的卡」时合并：多张活跃卡说明会话不唯一，写错卡比多一张
+        提示卡更糟，此时返回 False 交给独立压缩卡兜底。手动 /compress 不走这里。
+        """
+        if not text.strip():
+            return False
+        session = self._notice_session(None, None)
+        if session is None or session.segment_state is None or session.state.is_terminal:
+            return False
+        session.segment_state.add_notice(text.strip(), kind="compaction", stack=True)
+        self._schedule_flush(session)
+        _logger.info("compaction_notice_merged: owner=%s chars=%d",
+                     session.message_id or "", len(text))
         return True
 
     def on_redirected_notice(
@@ -1628,6 +1652,7 @@ class StreamCardController(StreamingController):
             "model": model or prev_model,
             **({"input_tokens": tokens.get("input_tokens")} if tokens else {}),
             **({"output_tokens": tokens.get("output_tokens")} if tokens else {}),
+            **({"cache_hit_pct": tokens.get("cache_hit_pct")} if tokens and tokens.get("cache_hit_pct") else {}),
             **({"cache_read_tokens": _cache_read} if _cache_read else {}),
             **({"tokens_per_sec": _tps} if _tps else {}),
             **({"context_used": context.get("used_tokens")} if context else {}),

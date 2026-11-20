@@ -17,6 +17,13 @@ from typing import Any
 _logger = logging.getLogger('hermes_fry_cards')
 
 _manual_target: ContextVar = ContextVar('hl_manual_compress_target', default=None)
+# 手动 /compress 的进度行沿用独立的压缩卡；自动压缩才合进正在跑的卡。
+_manual_lines: ContextVar = ContextVar('hl_manual_compress_lines', default=False)
+
+
+def is_manual_compaction() -> bool:
+    """当前这条状态行是否来自手动 /compress（决定压缩提示是否另开卡）."""
+    return bool(_manual_lines.get())
 
 
 def _emitter(adapter: Any, chat_id: str, loop: asyncio.AbstractEventLoop):
@@ -26,10 +33,13 @@ def _emitter(adapter: Any, chat_id: str, loop: asyncio.AbstractEventLoop):
             return
 
         async def _deliver() -> None:
+            token = _manual_lines.set(True)
             try:
                 await adapter.send(chat_id, text)
             except Exception as exc:
                 _logger.warning('manual_compaction_status_failed: type=%s', type(exc).__name__)
+            finally:
+                _manual_lines.reset(token)
 
         try:
             loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_deliver()))
