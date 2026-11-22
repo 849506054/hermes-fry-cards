@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 from collections.abc import Callable
 from datetime import datetime
 from functools import wraps
-from inspect import iscoroutinefunction
+from inspect import isawaitable, iscoroutinefunction
 from typing import Any
 
 from .controller import busy_receipt_suppressed, get_controller
@@ -438,6 +439,158 @@ async def on_message_completed_wait(
             is_interrupted=is_interrupted,
         )
     )
+
+
+def collect_served_model(gateway: Any, session_key: str | None) -> str | None:
+    """路由代理上报的实际服务模型(Hermes #54864 served-model 机制),供卡片 footer 展示.
+
+    Hermes 的 httpx 响应钩子(``agent/served_model.py``)把 ``x-litellm-model-id`` /
+    ``x-litellm-model-api-base`` 头存到 ``agent.last_served_model``(每响应刷新,无头时
+    置 None,值不会串轮)。路由头不存在时由本插件的 body 捕获(见
+    ``install_served_model_body_capture``)补位。agent 不在缓存或值不存在返回
+    None,全程 fail-open。
+    """
+    agent = _locate_agent(gateway, session_key)
+    served = getattr(agent, "last_served_model", None) if agent is not None else None
+    if isinstance(served, str) and served.strip():
+        return served.strip()
+    return None
+
+
+def _locate_agent(gateway: Any, session_key: str | None) -> Any:
+    """按 session_key 从 gateway 定位活跃 agent(_running_agents 优先,_agent_cache 次之)."""
+    if gateway is None or not session_key:
+        return None
+    try:
+        running = getattr(gateway, "_running_agents", None)
+        if isinstance(running, dict):
+            agent = running.get(session_key)
+            if agent is not None:
+                return agent
+        cache = getattr(gateway, "_agent_cache", None)
+        if cache is not None:
+            entry = cache.get(session_key)
+            return (entry[0] if entry else None) if isinstance(entry, tuple) else entry
+    except Exception:
+        pass
+    return None
+
+
+def ensure_served_model_capture(gateway: Any, session_key: str | None) -> None:
+    """回合开始时安装 body 模型捕获(幂等):路由代理不回路由头时的纯插件侧补位."""
+    try:
+        agent = _locate_agent(gateway, session_key)
+        if agent is not None:
+            install_served_model_body_capture(agent)
+    except Exception:
+        pass
+
+
+def ensure_served_model_capture_ctx(ctx: Any) -> None:
+    """流式回调期的安装入口:直接经 turn_ctx.agent_holder 拿本轮 agent(不依赖缓存键).
+
+    START 注入点处 ``session_key`` 尚未绑定(locals 只有 ``_quick_key``,与
+    ``_agent_cache`` 的键不匹配),缓存查找会落空；首个 delta 回调时 ctx 已持有
+    agent_holder —— 据此安装,多步回合从第二次 API 调用起全部被捕获(含最终响应)。
+    """
+    try:
+        holder = getattr(ctx, "agent_holder", None)
+        agent = holder[0] if holder else None
+        if agent is not None:
+            install_served_model_body_capture(agent)
+    except Exception:
+        pass
+
+
+def install_served_model_body_capture(agent: Any) -> bool:
+    """包裹 agent 的 OpenAI 兼容客户端,把响应体 ``model`` 字段写入 ``agent.last_served_model``.
+
+    背景:路由代理把实际服务的模型名回写进响应体 / 流式 chunk 的 ``model`` 字段,
+    但响应头里没有路由信息,Hermes 自带的头捕获(#54864)拿不到。本包裹补齐 body
+    路径,写进同一个槽位:头捕获每响应先跑(无头时置 None),本包裹在 create 返回 /
+    首 chunk 到达时后跑,body 值总是后写获胜。
+
+    覆盖两条 create 面:``agent.client``(非流式主路径,随 agent 缓存常驻)与
+    ``agent._create_request_openai_client`` 工厂(流式等每请求客户端)。幂等
+    (per-completions 实例守卫)；找不到 OpenAI 表面(anthropic api_mode 等)
+    或 SDK 对象不接受属性赋值时静默跳过,全程 fail-open。
+    """
+    if agent is None:
+        return False
+
+    def _capture(obj: Any) -> None:
+        model = obj.get("model") if isinstance(obj, dict) else getattr(obj, "model", None)
+        if isinstance(model, str) and model.strip():
+            agent.last_served_model = model.strip()
+
+    def _wrap_stream(stream: Any) -> Any:
+        if not hasattr(stream, "__anext__"):
+            return stream  # 同步流或未知对象:不包装,fail-open
+
+        class _StreamCapture:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(stream, name)
+
+            def __aiter__(self) -> _StreamCapture:
+                return self
+
+            async def __anext__(self) -> Any:
+                chunk = await stream.__anext__()
+                with contextlib.suppress(Exception):
+                    _capture(chunk)
+                return chunk
+
+        return _StreamCapture()
+
+    def _wrap_create(completions: Any) -> None:
+        if completions is None or getattr(completions, "_hl_body_model_wrapped", False):
+            return
+        orig = completions.create
+        try:
+            # 双模式包装:不能靠 iscoroutinefunction 判定 —— OpenAI SDK 的 create 被
+            # required_args 同步包装器包过(__wrapped__ 在,iscoroutinefunction 为
+            # False),但调用仍返回 awaitable。统一按「返回值是否 awaitable」分流:
+            # 同步 def 包装器与 async def 原生定义都覆盖；网关调用方一律 await。
+            def create(*args: Any, **kwargs: Any) -> Any:
+                obj = orig(*args, **kwargs)
+                if not isawaitable(obj):
+                    with contextlib.suppress(Exception):
+                        if hasattr(obj, "choices"):
+                            _capture(obj)
+                        else:
+                            obj = _wrap_stream(obj)
+                    return obj
+
+                async def _finish() -> Any:
+                    r = await obj
+                    with contextlib.suppress(Exception):
+                        if hasattr(r, "choices"):
+                            _capture(r)
+                        else:
+                            r = _wrap_stream(r)
+                    return r
+                return _finish()
+            completions.create = create
+            completions._hl_body_model_wrapped = True
+        except Exception:
+            pass  # SDK 对象不接受属性赋值等:放弃该客户端,fail-open
+
+    # 非流式主路径:agent.client 常驻(init / switch_model 时重建)。
+    with contextlib.suppress(Exception):
+        client = getattr(agent, "client", None)
+        _wrap_create(getattr(getattr(client, "chat", None), "completions", None))
+    # 流式等每请求客户端:包工厂,之后由工厂创建的每个 client 在返回前被就地包裹。
+    with contextlib.suppress(Exception):
+        factory = getattr(agent, "_create_request_openai_client", None)
+        if callable(factory) and not getattr(factory, "_hl_body_model_factory", False):
+            def factory_wrapper(*args: Any, **kwargs: Any) -> Any:
+                client = factory(*args, **kwargs)
+                with contextlib.suppress(Exception):
+                    _wrap_create(getattr(getattr(client, "chat", None), "completions", None))
+                return client
+            factory_wrapper._hl_body_model_factory = True  # type: ignore[attr-defined]
+            agent._create_request_openai_client = factory_wrapper
+    return True
 
 
 @_safe_hook(default_return=False)
