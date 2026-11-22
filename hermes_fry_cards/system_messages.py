@@ -364,5 +364,12 @@ def apply_patch(cls: Any, *, SendResult: Any) -> bool:
 
         cls.connect = connect
     scoped = apply_producer_scopes()
-    _logger.info('system_card_patch_applied: marked_notice=card producers=%d ordinary_send=original', scoped)
+    try:
+        from .button_cards import apply_patch as _apply_button_cards
+        buttons = _apply_button_cards(cls)
+    except Exception:  # 按钮卡样式是增量，挂不上也不许影响系统通知卡这条主路径
+        _logger.exception('button_card_patch_failed')
+        buttons = False
+    _logger.info('system_card_patch_applied: marked_notice=card producers=%d button_cards=%s',
+                 scoped, buttons)
     return True

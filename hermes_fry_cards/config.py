@@ -620,6 +620,7 @@ class Config:
             for status, field in (
                 ("streaming", "icon_processing"), ("completed", "icon_completed"),
                 ("stopped", "icon_stopped"), ("error", "icon_error"), ("cron", "icon_cron"),
+                ("approval", "icon_approval"), ("choice", "icon_choice"),
             )
             if values.get(field)
         }

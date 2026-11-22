@@ -43,6 +43,7 @@ STYLE_FIELDS: dict[str, dict[str, str]] = {
         "icon_color": "color", "icon_img_key": "img_key",
         "icon_processing": "img_key", "icon_completed": "img_key",
         "icon_stopped": "img_key", "icon_error": "img_key", "icon_cron": "img_key",
+        "icon_approval": "img_key", "icon_choice": "img_key",
     },
     "body": {
         **_TEXT_FIELDS, "light_color": "hex_color", "dark_color": "hex_color",
