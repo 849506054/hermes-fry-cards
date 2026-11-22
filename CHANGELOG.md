@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4.3] - 2026-11-22
+
+### Added
+
+- 审批、选择与更新三类交互卡改用飞书 2.0 卡片绘制（`button_cards.py`，经 `system_messages.py` 接入）；样式转换失败按原卡发出，不影响系统通知主路径。
+- 卡片可显示本轮实际服务的模型：从响应体与流式块的 `model` 字段取值，写进核心的 `agent.last_served_model` 槽位，完成钩子与 `agent_result['served_model']` 一并读取（移植上游 0.6.7，采用 0.6.8 的写法：按返回值是否 awaitable 分流，START 钩子取不到会话键时从 tool/answer 钩子经 `turn_ctx.agent_holder` 装捕获）。模型字段需加入显示字段列表才上卡，未加时卡面与 0.6.4.2 一致。
+
 ## [0.6.4.2] - 2026-11-20
 
 ### Added
