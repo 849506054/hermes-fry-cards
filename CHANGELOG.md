@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4.4] - 2026-11-22
+
+### Added
+
+- 移植上游 v0.7.0 的厂商 logo 与官方模型名：命中模型家族时统一面板 header 的前缀图标槽（原 🍟 位置）显示厂商 PNG logo，footer 的 model 字段行首内联同款 PNG；模型名按厂商官网口径显示（`deepseek-v4.1-flash` → `DeepSeek v4.1 flash`、`tencent/hy4-flash:free` → `Hy4 flash`）。资产随包分发 20 家（`assets/vendor-logos/`），首次渲染懒上传换 `img_key`、进程内缓存并并发去重，上传失败静默回落。
+- Studio 新增「统一面板厂商 logo」开关，写 `display.platforms.feishu.vendor_logo`。**本机现役设为 `false`**：功能在包里，卡面保持原样；`model` 不在面板字段里，开关打开也要把该字段加进 `panel_fields` / footer 才会看到 logo 与官方名。
+- 未命中厂商或开关关闭时行为与 0.6.4.3 一致：header 回落 🍟 品牌位，模型字段仍是本线「别名 → 实际模型」形态。
+
+### Changed
+
+- 不移植上游同版本的 served-model 抓取重写（改实例包装）：本线 0.6.4.3 已用钩子方式实现，两条路径不并入。注入体未改，装机走 `pip install -U` + 重启。
+
 ## [0.6.4.3] - 2026-11-22
 
 ### Added

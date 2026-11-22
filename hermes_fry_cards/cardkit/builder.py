@@ -766,14 +766,21 @@ def _build_reasoning_panel(
 def _model_with_served(data: dict) -> str | None:
     """model 字段显示名:别名解析 + 截断；路由代理上报了实际服务模型
     (``served_model``,来自响应头 / 响应体捕获)且与配置名不同时附「→ 实际模型」.
-    语义对齐 Hermes ``gateway/runtime_footer.py`` 的 served_model 字段
-    (``alias → served``,相同 / 缺失时不加箭头)。
+
+    命中厂商家族（``logo_image_key`` 存在，即 vendor 资产命中）时显示**官方模型名**
+    （如 ``deepseek-v4.1-flash`` → ``DeepSeek v4.1 flash``，厂商官网口径）；
+    未命中保持原形态（别名 → 实际模型）。
     """
     raw = str(data.get("model") or "").strip()
     if not raw:
         return None
-    name = _display_model(raw)
     served = str(data.get("served_model") or "").strip()
+    if str(data.get("logo_image_key") or "").strip():
+        from .vendor_logos import resolve_vendor_display_name
+
+        model_str = served or raw
+        return resolve_vendor_display_name(model_str) or model_str
+    name = _display_model(raw)
     if served and served != raw:
         return f"{name} → {served}"
     return name
@@ -788,18 +795,24 @@ def _render_panel_field(
     panel_elapsed_ms: int | float,
     show_context: bool,
     context_mode: str,
+    logo_image_key: str = "",
 ) -> tuple[str | None, str | None]:
     """统一面板 header 字段渲染 — 与 footer 共用字段池，外加面板专属计数.
 
     面板 flair：model 前缀 🍟、elapsed 为裸时长（工具执行/会话耗时）、💭/🔧 为面板
     专属计数（推理轮数/工具步数）；context 按 context_display_mode 渲染；
     其余共享字段（speed/cache/tokens/status）原样回落 footer 渲染器。
+
+    ``logo_image_key`` 存在（厂商命中）时 model 字段直显官方模型名、行首品牌位交给
+    面板 header 的前缀图标槽承载（见 ``build_complete_card``）。
     """
     if name == "model":
         v = _model_with_served(data)
-        if v:
-            return f"🍟 {v}", f"🍟 {v}"
-        return None, None
+        if not v:
+            return None, None
+        if logo_image_key:
+            return v, v
+        return f"🍟 {v}", f"🍟 {v}"
     if name == "process_counts":
         return (_T["process_counts_compact"][0].format(reasoning_count, tool_count),
                 _T["process_counts_compact"][1].format(reasoning_count, tool_count))
@@ -842,6 +855,7 @@ def _build_panel_header(
     show_context: bool,
     context_mode: str,
     counts_in_header: bool = True,
+    logo_image_key: str = "",
 ) -> tuple[str, str]:
     """组装统一面板 header 文本，返回 (en, zh)。无效/缺数据字段自动隐藏.
 
@@ -868,6 +882,7 @@ def _build_panel_header(
             panel_elapsed_ms=panel_elapsed_ms,
             show_context=show_context,
             context_mode=context_mode,
+            logo_image_key=logo_image_key,
         )
         if en:
             en_parts.append(en)
@@ -963,6 +978,11 @@ def _render_footer_field(
 
     if name == "model":
         v = _model_with_served(data)
+        if not v:
+            return v, v
+        logo = str(data.get("logo_image_key") or "").strip()
+        if logo:
+            return f"![]({logo}) {v}", f"![]({logo}) {v}"
         return v, v
 
     if name == "tokens":
@@ -1334,6 +1354,10 @@ def build_complete_card(
             panel_elapsed_ms = _p_duration * 1000
         elif tool_elapsed_ms:
             panel_elapsed_ms = tool_elapsed_ms
+        # 命中厂商资产（footer_data 带 logo_image_key）时：header 前缀图标槽位放家族
+        # PNG logo（icon_position=left，即原 🍟 位置），icon_expanded_angle=0 不旋转；
+        # 未命中 / 上传失败 / 开关关闭时不带 icon，模型字段回落 🍟 品牌位。
+        _logo_key = str((footer_data or {}).get("logo_image_key") or "").strip()
         header_en, header_zh = _build_panel_header(
             panel_fields,
             footer_data or {},
@@ -1343,6 +1367,7 @@ def build_complete_card(
             show_context=config.show_context,
             context_mode=config.context_display_mode,
             counts_in_header=False,
+            logo_image_key=_logo_key,
         )
         unified_panel = {
             "tag": "collapsible_panel",
@@ -1366,6 +1391,19 @@ def build_complete_card(
             },
             "elements": unified_children,
         }
+        # 命中厂商资产：header 前缀图标槽位放家族 PNG logo，icon_position=left
+        # 即原 🍟 的位置（标题区域最左侧）；icon_expanded_angle=0 保持正向不旋转。
+        # 注意：icon_position / icon_expanded_angle 是 header 层级字段（icon 的兄弟键），
+        # 嵌进 icon 对象里服务端不识别。
+        if _logo_key:
+            unified_panel["header"]["icon"] = {
+                "tag": "custom_icon", "img_key": _logo_key,
+                # 官方文档：size 支持 "[1,999] [1,999]px"，默认 10px 过小；
+                # 16px 与原旋转箭头同尺寸。
+                "size": "16px 16px",
+            }
+            unified_panel["header"]["icon_position"] = "left"
+            unified_panel["header"]["icon_expanded_angle"] = 0
         unified_panel = panel_element(
             unified_panel, completed=True, status="error" if is_error else "completed",
         )
