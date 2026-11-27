@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4.5] - 2026-11-27
+
+### Added
+
+- 移植上游 v0.7.4 的未识别模型兜底图标：面板头取图改三级，厂商命中优先 → 模型串里的智能体词（Hermes / OpenClaw / Claude Code / Codex / ZCode / kimi-code / Antigravity）→ 宿主品牌图兜最后一档，代理池路由名（`qd/qfmodel`、`10router/10r-free`）不再左侧空白。新增 `assets/agent-logos/` 7 张（256×256，随包分发、已登记 package-data）。
+- 智能体兜底档不改写模型名：新增 footer 字段 `logo_kind`（`vendor` / `agent`），官方拼写只跟随厂商命中，`model_aliases` 别名与 `⇲` 截断照旧。
+- `resolve_logo_asset` / `logo_asset_bytes` 只接受纯文件名与两个固定目录，`../` 与路径分隔符一律拒绝。
+
+### Fixed
+
+- 7 张厂商 logo（openai / moonshot / grok / dotsstudio / upstage / xiaomimimo / kimi）此前取的是深色变体，画在浅色卡头上等于隐形；换成白底可见版本。
+- 上传缓存键改为 `app|目录/文件名|sha256[:12]`：换过像素的资产会重新上传，不再命中旧 `image_key`。
+- 全部 27 张源图由 640×640 缩到 256×256，随包体积 269KB → 192KB（本仓资产目录实测 144KB + 48KB）。
+
 ## [0.6.4.4] - 2026-11-22
 
 ### Added

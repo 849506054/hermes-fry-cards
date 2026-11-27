@@ -775,7 +775,9 @@ def _model_with_served(data: dict) -> str | None:
     if not raw:
         return None
     served = str(data.get("served_model") or "").strip()
-    if str(data.get("logo_image_key") or "").strip():
+    if str(data.get("logo_image_key") or "").strip() and str(
+        data.get("logo_kind") or "vendor"
+    ) != "agent":
         from .vendor_logos import resolve_vendor_display_name
 
         model_str = served or raw

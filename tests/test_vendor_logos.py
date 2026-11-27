@@ -136,3 +136,50 @@ class TestPanelHeaderLogoIcon:
         assert "🍟" in header["title"]["content"]
         # 未命中厂商：回落本线「别名 → 实际模型」形态 + 🍟 品牌位（官方名只在 logo 命中时启用）
         assert "openclaw → qwen4-max" in header["title"]["content"]
+
+
+class TestLogoFallback:
+    """厂商未命中时的智能体 / 宿主品牌兜底（upstream 0.7.4 + 0.7.6 口径）."""
+
+    def test_vendor_hit_uses_vendor_dir(self) -> None:
+        from hermes_fry_cards.cardkit.vendor_logos import resolve_logo_asset
+
+        assert resolve_logo_asset("tencent/hy4-flash:free") == ("vendor-logos", "hunyuan.png")
+        assert resolve_logo_asset("kimi-k5") == ("vendor-logos", "kimi.png")
+
+    def test_proxy_name_falls_back_to_agent_or_host(self) -> None:
+        from hermes_fry_cards.cardkit.vendor_logos import resolve_logo_asset
+
+        assert resolve_logo_asset("combo/Hermes") == ("agent-logos", "hermes.png")
+        # 认不出厂商也认不出智能体 → 宿主品牌图兜最后一档，不留空白
+        assert resolve_logo_asset("qd/qfmodel") == ("agent-logos", "hermes.png")
+        assert resolve_logo_asset("10router/10r-free") == ("agent-logos", "hermes.png")
+
+    def test_empty_model_has_no_logo(self) -> None:
+        from hermes_fry_cards.cardkit.vendor_logos import resolve_logo_asset, resolve_logo_kind
+
+        assert resolve_logo_asset("") is None
+        assert resolve_logo_kind("   ") is None
+
+    def test_logo_kind_distinguishes_vendor_and_agent(self) -> None:
+        from hermes_fry_cards.cardkit.vendor_logos import resolve_logo_kind
+
+        assert resolve_logo_kind("deepseek-v4.1-flash") == "vendor"
+        assert resolve_logo_kind("openclaw/gateway") == "agent"
+        assert resolve_logo_kind("space-bunny-free") == "agent"
+
+    def test_agent_assets_bundled_and_traversal_rejected(self) -> None:
+        from hermes_fry_cards.cardkit.vendor_logos import AGENT_LOGO_WORDS, HOST_BRAND_LOGO, logo_asset_bytes
+
+        names = {f for _, f in AGENT_LOGO_WORDS} | {HOST_BRAND_LOGO}
+        for name in names:
+            assert logo_asset_bytes("agent-logos", name), name
+        assert logo_asset_bytes("agent-logos", "../vendor-logos/openai.png") is None
+        assert logo_asset_bytes("secrets", "hermes.png") is None
+
+    def test_agent_fallback_keeps_model_name(self) -> None:
+        # 智能体兜底图不改写模型名（官方拼写只跟随厂商命中）
+        data = {"logo_image_key": "img_v2_x", "logo_kind": "agent", "model": "space-bunny-free"}
+        assert _model_with_served(data) == "space-bunny-free"
+        vendor = {"logo_image_key": "img_v2_x", "logo_kind": "vendor", "model": "deepseek-v4.1-flash"}
+        assert _model_with_served(vendor) == "DeepSeek v4.1-flash"

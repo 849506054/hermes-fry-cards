@@ -37,7 +37,7 @@ from ..cardkit.markdown import (
     prepare_streaming_markdown,
 )
 from ..cardkit.styles import style_scope, text_content, text_element
-from ..cardkit.vendor_logos import resolve_vendor_logo_image_key
+from ..cardkit.vendor_logos import resolve_logo_kind, resolve_vendor_logo_image_key
 from ..config import Config
 from ..feishu import (
     CARDKIT_CONTENT_FAILED,
@@ -1638,6 +1638,7 @@ class StreamingController:
         # 厂商路由 logo：开关开启且命中厂商资产时懒上传换 img_key（进程内缓存，
         # 上传失败静默降级——footer 无 logo_image_key 时模型字段回落 🍟 品牌图标）
         session.footer.pop("logo_image_key", None)
+        session.footer.pop("logo_kind", None)
         if self._cfg.vendor_logo and self._client is not None:
             _logo_model = str(
                 session.footer.get("served_model") or session.footer.get("model") or ""
@@ -1646,6 +1647,9 @@ class StreamingController:
                 _logo_key = await resolve_vendor_logo_image_key(self._client, _logo_model)
                 if _logo_key:
                     session.footer["logo_image_key"] = _logo_key
+                    _kind = resolve_logo_kind(_logo_model)
+                    if _kind:
+                        session.footer["logo_kind"] = _kind
 
         if segment_state is not None:
             segment_state.finalize_segments(len(all_tool_steps))
